@@ -108,36 +108,70 @@ const contentKey = (signature, occurrence) => sha256Hex(`${CONTENT_KEY_VERSION}|
 const withSession = (query, session) => (session ? query.session(session) : query);
 const excluding = (excludeUploadId) => (excludeUploadId ? { uploadId: { $ne: excludeUploadId } } : {});
 
-// Receipts keep today's rule (receipt number + cafe-local day); BE-03-T04 adds the content comparison.
+const basketKey = (items = []) => items
+  .map((item) => {
+    const who = item.salesItemId ? `id:${item.salesItemId}` : `name:${String(item.name || '').trim().toLowerCase()}`;
+    return `${who}x${quantityText(item.quantity)}`;
+  })
+  .sort()
+  .join(',');
+
+/** A receipt's full content: when, how much, and which menu items (by id, which merges and renames keep stable). */
+const receiptSignature = (row, timezone) => `${contentSignature(row, timezone)}|${basketKey(row.items)}`;
+const minuteOf = (signature) => signature.split('|').slice(0, 2).join(' ');
+
+/**
+ * A receipt number is unique within a trading day on most tills, but not on all: per-shift numbering and second
+ * registers reuse "#0001" in one day (BE-03-T04). Two rows under one number are one sale only when their contents
+ * match. Different contents at a different minute are two sales. Different contents at the same minute are a
+ * contradiction the owner must see (the unique {cafeId, receiptId, date} index would refuse one of them anyway).
+ */
 const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUploadId }) => {
-  const firstInFile = [];
-  const seen = new Set();
+  const held = new Map();
+  const hold = (key, entry) => held.set(key, [...(held.get(key) || []), entry]);
+  for (const chunk of chunksOf([...new Set(rows.map((row) => row.receiptId))])) {
+    const stored = await withSession(
+      Transaction.find({ cafeId, receiptId: { $in: chunk }, ...excluding(excludeUploadId) })
+        .select('receiptId date total tip discount items.salesItemId items.name items.quantity uploadId'),
+      session
+    ).lean();
+    for (const doc of stored) {
+      const signature = receiptSignature(doc, timezone);
+      hold(`${doc.receiptId}|${zonedDateKey(doc.date, timezone)}`, {
+        signature, minute: minuteOf(signature), total: doc.total, uploadId: doc.uploadId || null, inFile: false,
+      });
+    }
+  }
+  const importable = [];
+  const duplicates = [];
+  const conflicts = [];
   let inFileDuplicates = 0;
   for (const row of rows) {
     const dayKey = row.dateKey || zonedDateKey(row.date, timezone);
     const key = `${row.receiptId}|${dayKey}`;
-    if (seen.has(key)) {
-      inFileDuplicates += 1;
+    const signature = receiptSignature(row, timezone);
+    const entries = held.get(key) || [];
+    const same = entries.find((entry) => entry.signature === signature);
+    if (same) {
+      if (same.inFile) inFileDuplicates += 1;
+      else duplicates.push({ row, uploadId: same.uploadId });
       continue;
     }
-    seen.add(key);
-    firstInFile.push({ row, key, identity: { type: 'receiptId', value: row.receiptId, dayKey } });
+    const clash = entries.find((entry) => entry.minute === minuteOf(signature));
+    if (clash) {
+      const [, at] = minuteOf(signature).split(' ');
+      conflicts.push({
+        row,
+        reason: `Receipt ${row.receiptId} appears twice on ${dayKey} at ${at} with different contents `
+          + `(R${Number(clash.total).toFixed(2)} and R${Number(row.total).toFixed(2)}); only the first was imported. `
+          + 'Check the till for an edited or voided sale.',
+      });
+      continue;
+    }
+    hold(key, { signature, minute: minuteOf(signature), total: row.total, uploadId: null, inFile: true });
+    importable.push({ row, identity: { type: 'receiptId', value: row.receiptId, dayKey } });
   }
-  const held = new Map();
-  for (const chunk of chunksOf([...new Set(firstInFile.map(({ row }) => row.receiptId))])) {
-    const stored = await withSession(
-      Transaction.find({ cafeId, receiptId: { $in: chunk }, ...excluding(excludeUploadId) }).select('receiptId date uploadId'),
-      session
-    ).lean();
-    for (const doc of stored) held.set(`${doc.receiptId}|${zonedDateKey(doc.date, timezone)}`, doc.uploadId || null);
-  }
-  const importable = [];
-  const duplicates = [];
-  for (const candidate of firstInFile) {
-    if (held.has(candidate.key)) duplicates.push({ row: candidate.row, uploadId: held.get(candidate.key) });
-    else importable.push({ row: candidate.row, identity: candidate.identity });
-  }
-  return { importable, duplicates, inFileDuplicates };
+  return { importable, duplicates, inFileDuplicates, conflicts };
 };
 
 /**
@@ -194,6 +228,7 @@ const resolveIdentities = async (rows, options) => {
     importable: [...receipts.importable, ...content.importable],
     duplicates: [...receipts.duplicates, ...content.duplicates],
     inFileDuplicates: receipts.inFileDuplicates,
+    conflicts: receipts.conflicts,
   };
 };
 
@@ -217,6 +252,7 @@ module.exports = {
   findExistingIdentities,
   contentSignature,
   contentKey,
+  receiptSignature,
   resolveIdentities,
   tallyDuplicatesByUpload,
 };

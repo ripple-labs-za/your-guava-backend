@@ -1,7 +1,7 @@
 // Packed items: the linear scanner over a "2 x Latte, 1 x Muffin" cell (BE-01-T05) and the packed-row builder.
 // Moved from parser.service.js by BE-11-T01; behaviour unchanged.
 const { parserLimits } = require('./limits');
-const { setSourceRowNumbers } = require('./rowErrors');
+const { setSourceRowNumbers, receiptIdError } = require('./rowErrors');
 const { parseBoundedAmount, parseOptionalAmount } = require('./numbers');
 const { parseDate, transactionDateError, temporalFields } = require('./dates');
 const { unitPriceSource } = require('./lineItems');
@@ -204,9 +204,8 @@ const buildPackedRow = (raw, mapping, rowNumber, timezone) => {
     };
   }
   const receiptId = mapping.receiptId ? String(raw[mapping.receiptId] || '').trim() : '';
-  if (receiptId.length > limits.maxIdentifierChars) {
-    return { error: `Receipt ID exceeds the ${limits.maxIdentifierChars} character limit` };
-  }
+  const receiptError = receiptId ? receiptIdError(receiptId, limits) : null;
+  if (receiptError) return { error: receiptError };
   const paymentMethod = mapping.paymentMethod
     ? String(raw[mapping.paymentMethod] || '').trim()
     : '';

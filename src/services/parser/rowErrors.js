@@ -49,6 +49,22 @@ const addRowError = (rowErrors, rowNumber, reason, raw) => {
   });
 };
 
+// "20260914000123" saved through Excel comes back as "2.02609E+16": different sales now share one number, and
+// identity-by-receipt would merge them. Refuse the row and say how to fix the export.
+const EXCEL_SCIENTIFIC_RE = /^[+-]?\d(?:[.,]\d+)?e[+-]?\d+$/i;
+
+/** Why a receipt number cannot identify a sale, or null. Shared by the packed and line-per-row builders. */
+const receiptIdError = (receiptId, limits) => {
+  if (receiptId.length > limits.maxIdentifierChars) {
+    return `Receipt ID exceeds the ${limits.maxIdentifierChars} character limit`;
+  }
+  if (EXCEL_SCIENTIFIC_RE.test(receiptId)) {
+    return `Receipt number "${receiptId}" was shortened by Excel into scientific notation, so different sales share it. `
+      + 'Export again from the till, or format the receipt column as Text in Excel before saving.';
+  }
+  return null;
+};
+
 module.exports = {
-  SOURCE_ROW_NUMBERS, MAX_ROW_ERRORS, sourceRowNumber, setSourceRowNumbers, addRowError,
+  SOURCE_ROW_NUMBERS, MAX_ROW_ERRORS, sourceRowNumber, setSourceRowNumbers, addRowError, receiptIdError,
 };

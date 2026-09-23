@@ -106,6 +106,13 @@ const assertImportableResult = (result) => {
     throw err;
   }
 
+  // Nothing new, and what was not a duplicate contradicts a held sale (BE-03-T04): say which, not "the mapping".
+  if (result.imported === 0 && result.conflictRows > 0 && result.duplicateRows + result.conflictRows >= result.approvedRows) {
+    const err = new Error(`No new transactions were imported. ${result.firstConflictReason}`);
+    err.statusCode = 409;
+    throw err;
+  }
+
   if (result.imported === 0 && result.errors > 0 && result.errors >= result.totalRows) {
     const err = new Error('No valid transaction rows could be imported with this mapping');
     err.statusCode = 400;

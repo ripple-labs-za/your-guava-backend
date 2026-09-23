@@ -2,7 +2,7 @@
 // Moved from parser.service.js by BE-11-T01; behaviour unchanged.
 const { zonedDateKey } = require('../../utils/timezone');
 const { parserLimits } = require('./limits');
-const { sourceRowNumber, addRowError, setSourceRowNumbers, SOURCE_ROW_NUMBERS } = require('./rowErrors');
+const { sourceRowNumber, addRowError, setSourceRowNumbers, SOURCE_ROW_NUMBERS, receiptIdError } = require('./rowErrors');
 const { parseQuantity, parseBoundedAmount, parseOptionalAmount } = require('./numbers');
 const { parseDate, transactionDateError, temporalFields } = require('./dates');
 
@@ -94,14 +94,10 @@ const groupLinePerRow = (rawRows, mapping, timezone) => {
         addRowError(rowErrors, rowNumber, 'Missing receipt ID', raw);
         continue;
       }
-      if (receiptId.length > limits.maxIdentifierChars) {
+      const receiptError = receiptIdError(receiptId, limits);
+      if (receiptError) {
         errors++;
-        addRowError(
-          rowErrors,
-          rowNumber,
-          `Receipt ID exceeds the ${limits.maxIdentifierChars} character limit`,
-          raw
-        );
+        addRowError(rowErrors, rowNumber, receiptError, raw);
         continue;
       }
       // Receipt numbers are only unique within a day on most tills -- plenty

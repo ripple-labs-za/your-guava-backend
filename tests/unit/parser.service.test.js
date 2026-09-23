@@ -1726,3 +1726,30 @@ describe('one CSV reader for preview and parse', () => {
     })).rejects.toMatchObject(expected);
   });
 });
+
+describe('Excel scientific notation in receipt numbers', () => {
+  const LF = String.fromCharCode(10);
+  const packed = { receiptId: 'Receipt', date: 'Date', items: 'Items', total: 'Total' };
+
+  it('makes a mangled receipt number a row error that says what happened', async () => {
+    const result = await parseBuffer(
+      Buffer.from(['Receipt,Date,Items,Total', '2.02609E+16,2026-09-14,1 x Latte,38.00'].join(LF)),
+      { columnMapping: packed, itemsMode: 'packed', timezone: 'Africa/Johannesburg' }
+    );
+    expect(result.rows).toHaveLength(0);
+    expect(result.rowErrors[0].reason).toMatch(/Excel into scientific notation/);
+  });
+
+  it('does the same in line-per-row mode and leaves ordinary numbers alone', async () => {
+    const result = await parseBuffer(
+      Buffer.from(['Receipt,Date,Item,Line Total', '2.02609e16,2026-09-14,Latte,38.00', 'E-1001,2026-09-14,Muffin,30.00'].join(LF)),
+      {
+        columnMapping: { receiptId: 'Receipt', date: 'Date', items: 'Item', total: 'Line Total' },
+        itemsMode: 'line-per-row',
+        timezone: 'Africa/Johannesburg',
+      }
+    );
+    expect(result.rows.map((row) => row.receiptId)).toEqual(['E-1001']);
+    expect(result.rowErrors[0].reason).toMatch(/scientific notation/);
+  });
+});

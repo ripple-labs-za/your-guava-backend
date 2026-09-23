@@ -180,8 +180,13 @@ const persistParsedRowsBulk = async (
     }
   }
 
-  // One identity rule (BE-03-T03): receipts by number and cafe-local day, receipt-less sales by content, counted.
+  // One identity rule (BE-03-T03): receipts by number, cafe-local day and content (BE-03-T04), receipt-less sales by
+  // content, counted. A reused number whose contents contradict a held sale at the same minute is a named row error.
   const resolution = await resolveIdentities(approved, { cafeId, session, timezone });
+  for (const { row, reason } of resolution.conflicts) {
+    errors += 1;
+    addPersistenceRowError(rowErrors, row, reason);
+  }
   const existingDuplicateRows = resolution.duplicates.length;
   const inFileDuplicateRows = resolution.inFileDuplicates;
   skipped += existingDuplicateRows + inFileDuplicateRows;
@@ -206,6 +211,8 @@ const persistParsedRowsBulk = async (
     duplicateRows,
     existingDuplicateRows,
     inFileDuplicateRows,
+    conflictRows: resolution.conflicts.length,
+    firstConflictReason: resolution.conflicts[0]?.reason || null,
     duplicatesByUpload: tallyDuplicatesByUpload(resolution.duplicates),
     dateRange: parsed.dateRange,
   };
