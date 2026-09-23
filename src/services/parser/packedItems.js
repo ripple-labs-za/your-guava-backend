@@ -3,7 +3,7 @@
 const { parserLimits } = require('./limits');
 const { setSourceRowNumbers, receiptIdError } = require('./rowErrors');
 const { parseBoundedAmount, parseOptionalAmount } = require('./numbers');
-const { parseDate, transactionDateError, temporalFields } = require('./dates');
+const { parseDateTime, transactionDateError, temporalFields } = require('./dates');
 const { unitPriceSource } = require('./lineItems');
 
 // Quantities may be fractional: cafes selling by weight export rows like
@@ -175,9 +175,9 @@ const parsePackedItems = (str) => {
     .filter((item) => item && item.name && item.quantity != null && item.quantity !== 0);
 };
 
-const buildPackedRow = (raw, mapping, rowNumber, timezone) => {
+const buildPackedRow = (raw, mapping, rowNumber, timezone, context = {}) => {
   const limits = parserLimits();
-  const date = parseDate(raw[mapping.date], mapping.time && raw[mapping.time], timezone);
+  const { date, timeKnown } = parseDateTime(raw[mapping.date], mapping.time && raw[mapping.time], timezone, context);
   if (!date) return { error: 'Could not parse date or time' };
   const dateError = transactionDateError(date, timezone);
   if (dateError) return { error: dateError };
@@ -240,7 +240,7 @@ const buildPackedRow = (raw, mapping, rowNumber, timezone) => {
   const row = {
     receiptId: receiptId || undefined,
     date,
-    ...temporalFields(date, timezone),
+    ...temporalFields(date, timezone, { timeKnown }),
     items: items.map((i) => ({ ...i, unitPrice, priceSource })),
     total,
     tip,

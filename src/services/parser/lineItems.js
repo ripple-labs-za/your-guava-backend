@@ -4,7 +4,7 @@ const { zonedDateKey } = require('../../utils/timezone');
 const { parserLimits } = require('./limits');
 const { sourceRowNumber, addRowError, setSourceRowNumbers, SOURCE_ROW_NUMBERS, receiptIdError } = require('./rowErrors');
 const { parseQuantity, parseBoundedAmount, parseOptionalAmount } = require('./numbers');
-const { parseDate, transactionDateError, temporalFields } = require('./dates');
+const { parseDateTime, transactionDateError, temporalFields } = require('./dates');
 
 /**
  * A packed receipt carries one total for the whole basket. With a single
@@ -67,7 +67,7 @@ const inferTotalsAreLineAmounts = (groups, mapping) => {
   return headerSuggestsLineAmounts(mapping);
 };
 
-const groupLinePerRow = (rawRows, mapping, timezone) => {
+const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
   const limits = parserLimits();
   const groups = new Map();
   const rowErrors = [];
@@ -76,7 +76,7 @@ const groupLinePerRow = (rawRows, mapping, timezone) => {
   for (const [index, raw] of rawRows.entries()) {
     const rowNumber = sourceRowNumber(raw, index);
     try {
-      const date = parseDate(raw[mapping.date], mapping.time && raw[mapping.time], timezone);
+      const { date, timeKnown } = parseDateTime(raw[mapping.date], mapping.time && raw[mapping.time], timezone, context);
       if (!date) {
         errors++;
         addRowError(rowErrors, rowNumber, 'Could not parse date or time', raw);
@@ -169,7 +169,7 @@ const groupLinePerRow = (rawRows, mapping, timezone) => {
         groups.set(groupKey, setSourceRowNumbers({
           receiptId,
           date,
-          ...temporalFields(date, timezone),
+          ...temporalFields(date, timezone, { timeKnown }),
           items: [],
           totals: [],
           tip,

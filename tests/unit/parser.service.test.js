@@ -1753,3 +1753,78 @@ describe('Excel scientific notation in receipt numbers', () => {
     expect(result.rowErrors[0].reason).toMatch(/scientific notation/);
   });
 });
+
+describe('dates and times as tills write them', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const LF = String.fromCharCode(10);
+  const ZONE = 'Africa/Johannesburg';
+  const WITH_TIME = { date: 'Date', time: 'Time', items: 'Items', total: 'Total' };
+  const DATE_ONLY = { date: 'Date', items: 'Items', total: 'Total' };
+  const parse = (lines, mapping, timezone = ZONE) =>
+    parseBuffer(Buffer.from(lines.join(LF)), { columnMapping: mapping, itemsMode: 'packed', timezone });
+
+  it.each([
+    ['2:15 PM', 14, 15],
+    ['2:15:30 pm', 14, 15],
+    ['12:05 AM', 0, 5],
+    ['12:30 PM', 12, 30],
+    ['11:59 p.m.', 23, 59],
+    ['09:45', 9, 45],
+    ['09:45:12.500', 9, 45],
+  ])('reads %s as %i:%i in the cafe zone', async (time, hour, minute) => {
+    const result = await parse(['Date,Time,Items,Total', `2026-09-14,${time},1 x Latte,38.00`], WITH_TIME);
+    expect(result.rowErrors).toEqual([]);
+    expect(result.rows[0]).toMatchObject({ hour, hourKnown: true, dateKey: '2026-09-14' });
+    expect(result.rows[0].date.getUTCMinutes()).toBe(minute);
+  });
+
+  it('refuses an hour above 12 written with AM or PM', async () => {
+    const result = await parse(['Date,Time,Items,Total', '2026-09-14,13:00 PM,1 x Latte,38.00'], WITH_TIME);
+    expect(result.rows).toHaveLength(0);
+    expect(result.rowErrors[0].reason).toBe('Could not parse date or time');
+  });
+
+  it.each([
+    ['2026-09-14 2:15 PM', '2026-09-14T12:15:00.000Z'],
+    ['2026-09-14 23:30:00.000', '2026-09-14T21:30:00.000Z'],
+    ['14 Sep 2026 23:30', '2026-09-14T21:30:00.000Z'],
+    ['14-Sep-2026 23:30', '2026-09-14T21:30:00.000Z'],
+    ['Sep 14, 2026 11:30 PM', '2026-09-14T21:30:00.000Z'],
+    ['Mon, 14 September 2026 23:30', '2026-09-14T21:30:00.000Z'],
+  ])('builds %s from its parts in the cafe zone', async (cell, iso) => {
+    const za = await parse(['Date,Items,Total', `"${cell}",1 x Latte,38.00`], DATE_ONLY);
+    expect(za.rows[0].date.toISOString()).toBe(iso);
+    expect(za.rows[0].hourKnown).toBe(true);
+    const nz = await parse(['Date,Items,Total', `"${cell}",1 x Latte,38.00`], DATE_ONLY, 'Pacific/Auckland');
+    expect(nz.rows[0].dateKey).toBe('2026-09-14'); // the same wall-clock day in the other zone, not the host's
+  });
+
+  it('reads a month-first file month-first, from its own values', async () => {
+    // UAT-00 F06 month-first-dates.csv: a day above 12 in the second position settles the order.
+    const result = await parse(['Date,Items,Total', '09/13/2026,1 x Latte,38.00', '09/03/2026,1 x Muffin,30.00'], DATE_ONLY);
+    expect(result.rowErrors).toEqual([]);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-13', '2026-09-03']);
+  });
+
+  it('keeps an undecidable file day-first, the South African default', async () => {
+    const result = await parse(['Date,Items,Total', '03/09/2026,1 x Latte,38.00', '04/09/2026,1 x Muffin,30.00'], DATE_ONLY);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-03', '2026-09-04']);
+  });
+
+  it('refuses a file that mixes both orders, naming the rows', async () => {
+    await expect(parse(['Date,Items,Total', '13/09/2026,1 x Latte,38.00', '09/14/2026,1 x Muffin,30.00'], DATE_ONLY))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringMatching(/row 2 reads 13\/09\/2026 and row 3 reads 09\/14\/2026/) });
+  });
+
+  it('marks a date-only export as having no time of day', async () => {
+    // UAT-00 F28 date-only.csv
+    const result = await parse(['Date,Items,Total', '2026-09-14,1 x Latte,38.00'], DATE_ONLY);
+    expect(result.rows[0]).toMatchObject({ hourKnown: false, hour: null, dateKey: '2026-09-14' });
+  });
+
+  it('never builds a date from a string with new Date', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'services', 'parser', 'dates.js'), 'utf8');
+    expect(source).not.toMatch(/new Date\((value|dateStr|dateValue|datePart|timeStr|timeValue|String\()/);
+  });
+});

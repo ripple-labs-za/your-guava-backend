@@ -6,6 +6,7 @@ const { sourceRowNumber, addRowError } = require('./rowErrors');
 const { validateMapping } = require('./headers');
 const { assertSupportedFileBuffer } = require('./fileType');
 const { groupLinePerRow } = require('./lineItems');
+const { inferDayMonthOrder } = require('./dates');
 const { buildPackedRow } = require('./packedItems');
 const { repairOverflowColumns, readRows } = require('./csv');
 
@@ -33,13 +34,19 @@ const parseBuffer = async (
   assertSupportedFileBuffer(buffer, normalizedExt);
   validateMapping(columnMapping, itemsMode);
   const rawRows = repairOverflowColumns(await readRows(buffer, normalizedExt), columnMapping);
+  // Settled once per file from its own values (BE-03-T06); later cards add to this object, none replaces it.
+  const parseContext = {
+    dateOrder: inferDayMonthOrder(rawRows.map((raw, index) => ({
+      value: raw[columnMapping.date], rowNumber: sourceRowNumber(raw, index),
+    }))),
+  };
 
   let rows;
   let errors = 0;
   let rowErrors = [];
 
   if (itemsMode === 'line-per-row') {
-    const grouped = groupLinePerRow(rawRows, columnMapping, resolvedTimezone);
+    const grouped = groupLinePerRow(rawRows, columnMapping, resolvedTimezone, parseContext);
     rows = grouped.rows;
     errors = grouped.errors;
     rowErrors = grouped.rowErrors;
@@ -48,7 +55,7 @@ const parseBuffer = async (
     for (const [index, raw] of rawRows.entries()) {
       const rowNumber = sourceRowNumber(raw, index);
       try {
-        const parsed = buildPackedRow(raw, columnMapping, rowNumber, resolvedTimezone);
+        const parsed = buildPackedRow(raw, columnMapping, rowNumber, resolvedTimezone, parseContext);
         if (parsed.row) {
           rows.push(parsed.row);
         } else {
