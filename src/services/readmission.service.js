@@ -19,7 +19,7 @@ const HARD_SYNC_MAX_UPLOADS = 20;
 const DEFAULT_SYNC_MAX_ROWS = 50000;
 const HARD_SYNC_MAX_ROWS = 200000;
 const MAX_LISTED_OVERLAPS = 20;
-const SELECT = '_id cafeId fileName r2Key fileFingerprint columnMapping itemsMode dateRange updatedAt completedAt';
+const SELECT = '_id cafeId fileName r2Key fileFingerprint columnMapping itemsMode dateRange completedAt';
 
 const readmissionLimits = () => ({
   maxUploads: parser.boundedInteger(process.env.UPLOAD_READMIT_SYNC_MAX_UPLOADS, DEFAULT_SYNC_MAX_UPLOADS, 0, HARD_SYNC_MAX_UPLOADS),
@@ -100,14 +100,17 @@ const prepareReadmission = async ({ cafeId, range, excludeUploadId, timezone }) 
 /**
  * Inside the caller's transaction, after the deleted or remapped upload's rows are gone: persist each prepared
  * upload's rows through the normal identity dedupe, so only rows the cafe no longer holds come back.
- * An upload that changed since it was parsed is returned as `stale` for the queue.
+ * An upload re-committed or being re-parsed since it was parsed is returned as `stale` for the queue.
  */
 const applyReadmission = async ({ prepared, cafeId, session, timezone }) => {
   const applied = [];
   const stale = [];
   for (const { upload, parsed } of prepared) {
+    // completedAt moves only when the upload's rows are committed again (confirm or remap), and status leaves
+    // 'completed' while it is re-parsed. updatedAt would also move on every background maintenance write, which
+    // turned a delete made just after confirming the overlapping upload into a needless queued re-read.
     const unchanged = await Upload.exists({
-      _id: upload._id, cafeId, status: 'completed', updatedAt: upload.updatedAt,
+      _id: upload._id, cafeId, status: 'completed', completedAt: upload.completedAt,
     }).session(session);
     if (!unchanged) {
       stale.push(upload);
