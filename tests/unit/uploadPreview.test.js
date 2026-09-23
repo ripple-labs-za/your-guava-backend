@@ -1,4 +1,5 @@
-const { previewBuffer, extractHeaders } = require('../../src/services/ingestion.service');
+const { previewBuffer } = require('../../src/services/ingestion.service');
+const { readCsv } = require('../../src/services/parser.service');
 const { parseBuffer } = require('../../src/services/parser.service');
 
 const LF = String.fromCharCode(10);
@@ -22,7 +23,7 @@ describe('upload preview reads a CSV the way the import does', () => {
 
     expect(headers).toEqual(['Receipt', 'Date', 'Time', 'Status', 'Items', 'Total (incl. tax)']);
     expect(sampleRows[0]).toMatchObject({ Receipt: '1001', 'Total (incl. tax)': '38.00' });
-    expect(await extractHeaders(semicolonExport, 'csv')).toEqual(headers);
+    expect((await readCsv(semicolonExport)).headers).toEqual(headers);
   });
 
   it('names a repeated column the way the import will read it', async () => {
@@ -37,7 +38,7 @@ describe('upload preview reads a CSV the way the import does', () => {
 
     expect(headers).toEqual(['Receipt', 'Date', 'Time', 'Status', 'Items', 'Total', 'Total (2)']);
     expect(sampleRows[0]).toMatchObject({ Total: '38.00', 'Total (2)': '40.00' });
-    expect(await extractHeaders(twoTotals, 'csv')).toEqual(headers);
+    expect((await readCsv(twoTotals)).headers).toEqual(headers);
 
     // The column picked in the wizard is the column that is imported.
     const parsed = await parseBuffer(twoTotals, {

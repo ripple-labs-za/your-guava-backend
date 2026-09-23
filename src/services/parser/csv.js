@@ -1,5 +1,5 @@
-// CSV reading: separator detection and the sep= directive, the bounded csv-parser stream, overflow-column repair, readRows.
-// Moved from parser.service.js by BE-11-T01; behaviour unchanged.
+// CSV reading: separator detection and the sep= directive, the one bounded reader (readCsv) behind preview and import,
+// overflow-column repair, readRows. BE-11-T01 moved it here; BE-03-T01 made readCsv the only reader.
 const { parserLimits, createClientInputError, tooManyColumnsError } = require('./limits');
 const { SOURCE_ROW_NUMBERS } = require('./rowErrors');
 const { headerDeduper, normaliseCell, UNNAMED_COLUMN_RE, normaliseRows } = require('./headers');
@@ -119,9 +119,9 @@ const detectCsvSeparator = (buffer) => {
  * have its own reader, and it drifted: it kept an Excel "sep=" line as its
  * header row (so the wizard had nothing to map) and showed a repeated "Total"
  * once, with one column's money, while the import read the other column.
- * Returns the csv-parser stream; the source is piped in already.
+ * Returns the csv-parser stream; the source is piped in already. Only readCsv calls it.
  */
-const readCsvStream = (buffer, limits = parserLimits()) => {
+const readCsvStream = (buffer, { limits = parserLimits() } = {}) => {
   const dedupeHeader = headerDeduper();
   // Stripped before parsing; left in place the directive becomes the header
   // row and every real column disappears behind it.
@@ -134,6 +134,64 @@ const readCsvStream = (buffer, limits = parserLimits()) => {
     mapValues: ({ value }) => normaliseCell(value, limits),
   }));
 };
+
+/**
+ * The one CSV reader. The upload preview (limit 5) and the import (no limit) both come through here, so the
+ * columns an owner maps are the columns the import reads: an Excel `sep=` line is dropped, repeated headers
+ * become "Total (2)", and the same column, row and row-size limits apply to both. Two readers that were
+ * "the same" drifted once already and made a production file un-importable; do not add a second one.
+ *
+ * @param {Buffer} buffer
+ * @param {{ limit?: number, limits?: ReturnType<typeof parserLimits> }} [options]
+ * @returns {Promise<{ headers: string[], rows: object[] }>}
+ */
+const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
+  new Promise((resolve, reject) => {
+    const rows = [];
+    let headers = [];
+    let rowNumber = 1;
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (!error) {
+        resolve({ headers, rows: normaliseRows(rows) });
+        return;
+      }
+      if (!error.statusCode) error.statusCode = 400;
+      reject(error);
+    };
+    const parserStream = readCsvStream(buffer, { limits });
+    parserStream
+      .on('headers', (names) => {
+        if (names.length > limits.maxColumns) {
+          parserStream.destroy(tooManyColumnsError(limits));
+          return;
+        }
+        headers = names;
+      })
+      .on('data', (row) => {
+        if (settled) return;
+        if (Object.keys(row).length > limits.maxColumns) {
+          parserStream.destroy(tooManyColumnsError(limits));
+          return;
+        }
+        if (rows.length >= limits.maxRows) {
+          parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
+          return;
+        }
+        rowNumber += 1;
+        Object.defineProperty(row, SOURCE_ROW_NUMBERS, { value: [rowNumber], enumerable: false, configurable: true });
+        rows.push(row);
+        if (rows.length >= limit) {
+          finish();
+          parserStream.destroy();
+        }
+      })
+      // csv-parser's over-long-line error becomes BE-01-T02's 400 with code CSV_ROW_TOO_LONG.
+      .on('error', (error) => finish(csvReadError(error, limits)))
+      .on('end', () => finish());
+  });
 
 const extraColumnIndex = (key) => {
   const match = String(key).match(UNNAMED_COLUMN_RE);
@@ -183,55 +241,13 @@ const repairOverflowColumns = (rawRows, mapping) =>
     return repaired;
   });
 
-const readRows = (buffer, fileExt) => {
+const readRows = async (buffer, fileExt) => {
   assertSupportedFileBuffer(buffer, fileExt);
-  if (fileExt === 'xlsx') {
-    return readWorkbookRows(buffer);
-  }
-  return new Promise((resolve, reject) => {
-    const limits = parserLimits();
-    const rows = [];
-    let rowNumber = 1;
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-    const parserStream = readCsvStream(buffer, limits);
-    parserStream
-      .on('headers', (headers) => {
-        if (headers.length > limits.maxColumns) parserStream.destroy(tooManyColumnsError(limits));
-      })
-      .on('data', (row) => {
-        if (settled) return;
-        if (Object.keys(row).length > limits.maxColumns) {
-          parserStream.destroy(tooManyColumnsError(limits));
-          return;
-        }
-        if (rows.length >= limits.maxRows) {
-          const error = createClientInputError(`File exceeds the ${limits.maxRows} row limit`);
-          parserStream.destroy(error);
-          return;
-        }
-        rowNumber += 1;
-        Object.defineProperty(row, SOURCE_ROW_NUMBERS, {
-          value: [rowNumber],
-          enumerable: false,
-          configurable: true,
-        });
-        rows.push(row);
-      })
-      .on('error', (error) => fail(csvReadError(error, limits)))
-      .on('end', () => {
-        if (settled) return;
-        settled = true;
-        resolve(normaliseRows(rows));
-      });
-  });
+  if (fileExt === 'xlsx') return readWorkbookRows(buffer);
+  return (await readCsv(buffer)).rows;
 };
 
 module.exports = {
-  csvMaxRowBytes, csvReadError, csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvSeparator, readCsvStream,
+  csvMaxRowBytes, csvReadError, csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvSeparator, readCsv,
   repairOverflowColumns, readRows,
 };

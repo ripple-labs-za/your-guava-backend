@@ -3,14 +3,9 @@ const path = require('path');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
-  normaliseRow,
-  readCsvStream,
-  csvReadError,
-  tooManyColumnsError,
-  readWorkbookRows,
+  readCsv,
   readWorkbook,
   assertSupportedFileBuffer,
-  parserLimits,
   MAX_ROW_ERRORS,
 } = require('./parser.service');
 const { zonedDateKey, safeTimezone } = require('../utils/timezone');
@@ -56,41 +51,16 @@ const yocoMapping = () => ({
   itemsMode: 'packed',
 });
 
-/**
- * Reads the first row of a CSV buffer to extract headers.
- * @param {Buffer} buffer
- * @returns {Promise<string[]>}
- */
+// The upload preview: the header row and the first five data rows, read exactly as the import reads them.
+const PREVIEW_ROWS = 5;
+
 const previewWorkbook = async (buffer) => {
   assertSupportedFileBuffer(buffer, 'xlsx');
   // Take the sheet's own header row rather than the keys of the first data row,
   // so an export covering a quiet period still reports its columns instead of
   // looking like a file whose headers could not be read.
   const { headers, rows } = await readWorkbook(buffer);
-  return { headers, sampleRows: rows.slice(0, 5) };
-};
-
-const extractHeaders = async (buffer, fileExt = 'csv') => {
-  assertSupportedFileBuffer(buffer, fileExt);
-  if (fileExt === 'xlsx') {
-    return (await previewWorkbook(buffer)).headers;
-  }
-  if (fileExt === 'xls') {
-    throw new Error('Legacy XLS files are not supported. Please export as CSV or XLSX.');
-  }
-  return new Promise((resolve, reject) => {
-    let captured = false;
-    const stream = readCsvStream(buffer);
-    stream.on('headers', (h) => {
-      captured = true;
-      resolve(h);
-      stream.destroy();
-    });
-    stream.on('error', (error) => reject(csvReadError(error)));
-    stream.on('end', () => {
-      if (!captured) resolve([]);
-    });
-  });
+  return { headers, sampleRows: rows.slice(0, PREVIEW_ROWS) };
 };
 
 /**
@@ -98,54 +68,9 @@ const extractHeaders = async (buffer, fileExt = 'csv') => {
  */
 const previewBuffer = async (buffer, fileExt = 'csv') => {
   assertSupportedFileBuffer(buffer, fileExt);
-  if (fileExt === 'xlsx') {
-    return previewWorkbook(buffer);
-  }
-  if (fileExt === 'xls') {
-    throw new Error('Legacy XLS files are not supported. Please export as CSV or XLSX.');
-  }
-  return new Promise((resolve, reject) => {
-    const limits = parserLimits();
-    const rows = [];
-    let headers = [];
-    let settled = false;
-    const parserStream = readCsvStream(buffer, limits);
-    parserStream
-      .on('headers', (h) => {
-        if (h.length > limits.maxColumns) {
-          parserStream.destroy(tooManyColumnsError(limits));
-          return;
-        }
-        headers = h;
-      })
-      .on('data', (row) => {
-        if (settled) return;
-        // Preview used to copy a row of any width; one line of separators was a
-        // ten-million-key object before anything looked at it.
-        if (Object.keys(row).length > limits.maxColumns) {
-          parserStream.destroy(tooManyColumnsError(limits));
-          return;
-        }
-        if (rows.length < 5) rows.push(normaliseRow(row));
-        if (rows.length === 5) {
-          settled = true;
-          resolve({ headers, sampleRows: rows });
-          parserStream.destroy();
-        }
-      })
-      .on('error', (error) => {
-        if (settled) return;
-        settled = true;
-        const mapped = csvReadError(error, limits);
-        if (!mapped.statusCode) mapped.statusCode = 400;
-        reject(mapped);
-      })
-      .on('end', () => {
-        if (settled) return;
-        settled = true;
-        resolve({ headers, sampleRows: rows });
-      });
-  });
+  if (fileExt === 'xlsx') return previewWorkbook(buffer);
+  const { headers, rows } = await readCsv(buffer, { limit: PREVIEW_ROWS });
+  return { headers, sampleRows: rows };
 };
 
 const cloneRowErrors = (rowErrors) =>
@@ -491,7 +416,6 @@ module.exports = {
   reconcileParsedRows,
   isYocoFormat,
   yocoMapping,
-  extractHeaders,
   previewBuffer,
   rebuildItemsForCafe,
   parseYocoCSV,

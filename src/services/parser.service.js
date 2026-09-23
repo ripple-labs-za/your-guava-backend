@@ -16,7 +16,7 @@ const { readWorkbook, readWorkbookRows } = require('./parser/xlsx');
 const { streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError } = require('./parser/xlsxStream');
 const { assertSupportedFileBuffer } = require('./parser/fileType');
 const {
-  csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsvStream, csvMaxRowBytes, csvReadError,
+  csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
 } = require('./parser/csv');
 const { parsePackedItems } = require('./parser/packedItems');
 const { groupLinePerRow } = require('./parser/lineItems');
@@ -29,7 +29,7 @@ module.exports = {
   // Headers and cells
   requiredFieldsForMode, normaliseHeader, headerDeduper, normaliseCell, normaliseRow, normaliseRows, MAX_HEADER_CHARS,
   // Readers and file checks
-  csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsvStream, csvMaxRowBytes, csvReadError,
+  csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
   readWorkbook, readWorkbookRows, assertSupportedFileBuffer,
   streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError,
   // Limits

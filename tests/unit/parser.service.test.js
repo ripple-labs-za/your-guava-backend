@@ -1025,6 +1025,16 @@ describe('xlsx workbook reading', () => {
     expect(headers).toEqual(['Receipt', 'Total']);
     expect(rows).toHaveLength(1);
   });
+
+  it('de-duplicates repeated workbook headers the same way for preview and parse (BE-03-T01, WS-08-T08)', async () => {
+    const { previewBuffer } = require('../../src/services/ingestion.service');
+    const workbook = xlsxWith([['Date', 'Total', 'Total'], ['2026-09-14', '100.00', '86.96']]);
+    const read = await readWorkbook(workbook);
+    const preview = await previewBuffer(workbook, 'xlsx');
+    expect(read.headers).toEqual(['Date', 'Total', 'Total (2)']);
+    expect(preview.headers).toEqual(read.headers);
+    expect(preview.sampleRows[0]).toMatchObject({ Total: '100.00', 'Total (2)': '86.96' });
+  });
 });
 
 
@@ -1665,5 +1675,54 @@ describe('Excel "sep=" preamble', () => {
     // The directive only counts on the first line, alone on it.
     expect(csvSeparatorDirective(Buffer.from('Receipt,sep=x' + LF + '1001,yes'))).toBeNull();
     expect(csvSeparatorDirective(Buffer.from('Receipt,Total' + LF + 'sep=;'))).toBeNull();
+  });
+});
+
+describe('one CSV reader for preview and parse', () => {
+  const LF = String.fromCharCode(10);
+  const { readCsv } = require('../../src/services/parser.service');
+  const { previewBuffer } = require('../../src/services/ingestion.service');
+  const MAPPING = { receiptId: 'Receipt', date: 'Date', time: 'Time', items: 'Items', total: 'Total (2)' };
+  const DUPLICATE_TOTALS = [
+    'Receipt,Date,Time,Items,Total,Total',
+    'D1,2026-09-14,09:00,1 x Latte,100.00,86.96',
+    'D2,2026-09-14,10:00,2 x Muffin,60.00,52.17',
+  ].join(LF);
+
+  afterEach(() => { delete process.env.UPLOAD_MAX_COLUMNS; });
+
+  it('is the reader behind both preview and parse, so they see the same columns', async () => {
+    const buffer = Buffer.from(DUPLICATE_TOTALS);
+    const read = await readCsv(buffer);
+    const preview = await previewBuffer(buffer, 'csv');
+
+    expect(read.headers).toEqual(['Receipt', 'Date', 'Time', 'Items', 'Total', 'Total (2)']);
+    expect(preview.headers).toEqual(read.headers);
+    expect(preview.sampleRows[0]).toEqual(read.rows[0]);
+    expect(read.rows[0]).toMatchObject({ Total: '100.00', 'Total (2)': '86.96' });
+    expect(read.rows[0].__sourceRowNumbers).toEqual([2]);
+  });
+
+  it('imports the column the preview showed under the name the preview gave it', async () => {
+    const parsed = await parseBuffer(Buffer.from(DUPLICATE_TOTALS), { columnMapping: MAPPING, fileExt: 'csv' });
+    expect(parsed.rows.map((row) => row.total)).toEqual([86.96, 52.17]);
+  });
+
+  it('strips an Excel sep= line in preview exactly as in parse', async () => {
+    const buffer = Buffer.from(['sep=;', 'Sale Date;Description;Amount', '2026-09-14;1 x Latte;R 35,00'].join(LF));
+    const preview = await previewBuffer(buffer, 'csv');
+    expect(preview.headers).toEqual(['Sale Date', 'Description', 'Amount']);
+    expect(preview.sampleRows[0]).toMatchObject({ Amount: 'R 35,00' });
+    expect((await readCsv(buffer)).headers).toEqual(preview.headers);
+  });
+
+  it('applies the same column limit to a wide data row in preview and in parse', async () => {
+    process.env.UPLOAD_MAX_COLUMNS = '3';
+    const buffer = Buffer.from(['Date,Items,Total', '2026-09-14,1 x Latte,38.00,extra,cells'].join(LF));
+    const expected = { statusCode: 400, message: 'File exceeds the 3 column limit' };
+    await expect(previewBuffer(buffer, 'csv')).rejects.toMatchObject(expected);
+    await expect(parseBuffer(buffer, {
+      columnMapping: { date: 'Date', items: 'Items', total: 'Total' }, fileExt: 'csv',
+    })).rejects.toMatchObject(expected);
   });
 });
