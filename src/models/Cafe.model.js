@@ -72,6 +72,12 @@ const cafeSchema = new mongoose.Schema(
           status: { type: String },
           quantity: { type: String },
           itemsMode: { type: String, enum: ['packed', 'line-per-row'] },
+          // Where this mapping came from. A saved mapping only imports without asking when a new file has this same header
+          // row; before, a mapping that half-fitted a different export was applied silently (BE-03-T05).
+          sourceHeaders: { type: [String], default: undefined },
+          savedAt: { type: Date },
+          sourceUploadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Upload' },
+          sourceFileName: { type: String },
         },
         { _id: false }
       ),

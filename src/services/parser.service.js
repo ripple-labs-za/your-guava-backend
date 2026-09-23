@@ -11,6 +11,7 @@ const {
 const { parserLimits, boundedInteger, tooManyColumnsError } = require('./parser/limits');
 const {
   requiredFieldsForMode, normaliseHeader, headerDeduper, normaliseCell, normaliseRow, normaliseRows, MAX_HEADER_CHARS,
+  COLUMN_MAPPING_FIELDS, pickColumnMapping,
 } = require('./parser/headers');
 const { readWorkbook, readWorkbookRows } = require('./parser/xlsx');
 const { streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError } = require('./parser/xlsxStream');
@@ -28,6 +29,8 @@ module.exports = {
   parseBuffer, groupLinePerRow, parsePackedItems, VALID_ITEMS_MODES, MAX_ROW_ERRORS,
   // Headers and cells
   requiredFieldsForMode, normaliseHeader, headerDeduper, normaliseCell, normaliseRow, normaliseRows, MAX_HEADER_CHARS,
+  // Column mappings
+  COLUMN_MAPPING_FIELDS, pickColumnMapping,
   // Readers and file checks
   csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
   readWorkbook, readWorkbookRows, assertSupportedFileBuffer,

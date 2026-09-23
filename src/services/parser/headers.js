@@ -73,6 +73,18 @@ const normaliseRow = (row) => {
 
 const normaliseRows = (rows) => rows.map(normaliseRow);
 
+/** The ten fields a column mapping may name, in one place (the uploads code and the saved mapping use it). */
+const COLUMN_MAPPING_FIELDS = Object.freeze([
+  'receiptId', 'date', 'time', 'items', 'total', 'tip', 'discount', 'paymentMethod', 'status', 'quantity',
+]);
+
+/** Only the mapping fields of `source` that name a column, dropping provenance, itemsMode and blanks. */
+const pickColumnMapping = (source = {}) => Object.fromEntries(
+  COLUMN_MAPPING_FIELDS
+    .filter((field) => typeof source?.[field] === 'string' && source[field] !== '')
+    .map((field) => [field, source[field]])
+);
+
 const validateMapping = (mapping, itemsMode = 'packed') => {
   const missing = requiredFieldsForMode(itemsMode).filter((f) => !mapping?.[f]);
   if (missing.length > 0) {
@@ -82,5 +94,5 @@ const validateMapping = (mapping, itemsMode = 'packed') => {
 
 module.exports = {
   REQUIRED_FIELDS, UNNAMED_COLUMN_RE, MAX_HEADER_CHARS, requiredFieldsForMode, normaliseHeader, headerDeduper, normaliseCell,
-  normaliseRow, normaliseRows, validateMapping,
+  normaliseRow, normaliseRows, validateMapping, COLUMN_MAPPING_FIELDS, pickColumnMapping,
 };

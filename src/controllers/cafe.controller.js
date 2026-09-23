@@ -5,6 +5,7 @@ const { normalizeTradingHours, defaultTradingHours, tradingHoursInputError } = r
 const { clearApiCache } = require('../middleware/cache.middleware');
 const { safeTimezone, zonedDayStart } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
+const { pickColumnMapping } = require('../services/parser.service');
 
 const FORECAST_INPUT_PREFIXES = ['location.lat', 'location.lng', 'location.city', 'tradingHours'];
 
@@ -186,4 +187,39 @@ const updateMe = async (req, res, next) => {
   }
 };
 
-module.exports = { cafeDto, listCafes, getMe, updateMe };
+const savedMappingDto = (saved) => (saved ? {
+  mapping: pickColumnMapping(saved),
+  itemsMode: saved.itemsMode || 'packed',
+  sourceHeaders: Array.isArray(saved.sourceHeaders) ? saved.sourceHeaders : [],
+  savedAt: saved.savedAt || null,
+  sourceUploadId: saved.sourceUploadId || null,
+  sourceFileName: saved.sourceFileName || null,
+} : null);
+
+// GET /api/cafe/me/column-mapping — how non-Yoco files of this cafe are read, and where that came from (BE-03-T05).
+const getSavedMapping = async (req, res, next) => {
+  try {
+    const cafe = await Cafe.findOne({ _id: activeCafeId(req), orgId: req.user.orgId }).select('savedColumnMapping').lean();
+    if (!cafe) return res.status(404).json({ success: false, message: 'Cafe not found' });
+    return res.status(200).json({ success: true, savedColumnMapping: savedMappingDto(cafe.savedColumnMapping) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// DELETE /api/cafe/me/column-mapping — the next non-Yoco upload opens the wizard (or the AI mapper) again.
+const clearSavedMapping = async (req, res, next) => {
+  try {
+    const cafe = await Cafe.findOneAndUpdate(
+      { _id: activeCafeId(req), orgId: req.user.orgId },
+      { $unset: { savedColumnMapping: '' } },
+      { new: true }
+    );
+    if (!cafe) return res.status(404).json({ success: false, message: 'Cafe not found' });
+    return res.status(200).json({ success: true, savedColumnMapping: null });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = { cafeDto, listCafes, getMe, updateMe, getSavedMapping, clearSavedMapping };

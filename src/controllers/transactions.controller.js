@@ -39,6 +39,32 @@ const hasRequiredHeaderMapping = (mapping = {}, headers = [], itemsMode = 'packe
     return typeof mappedHeader === 'string' && headers.includes(mappedHeader);
   });
 
+const sameHeaderSet = (a = [], b = []) => a.length === b.length && new Set([...a, ...b]).size === a.length;
+
+/**
+ * Whether a cafe's saved mapping may import this file without asking (BE-03-T05). Every column it names must be in
+ * this file, the required fields must be covered, and, when we know the header row it was saved from, this file must
+ * have that same set of headers. A mapping that half-fitted used to drop its missing columns in silence and
+ * auto-import, so a till export that lost its Status column imported refunds as sales.
+ */
+const savedMappingFit = (saved, headers) => {
+  if (!saved) return { status: 'none', missingColumns: [], mapping: {}, itemsMode: 'packed', coversRequired: false };
+  const itemsMode = saved.itemsMode || 'packed';
+  const named = parser.pickColumnMapping(saved);
+  const missingColumns = [...new Set(Object.values(named).filter((column) => !headers.includes(column)))];
+  const mapping = cleanColumnMapping(named, headers);
+  const coversRequired = hasRequiredHeaderMapping(mapping, headers, itemsMode);
+  const headersChanged = Array.isArray(saved.sourceHeaders) && saved.sourceHeaders.length > 0
+    && !sameHeaderSet(saved.sourceHeaders, headers);
+  if (missingColumns.length === 0 && !headersChanged && coversRequired) {
+    return { status: 'applied', missingColumns, mapping, itemsMode, coversRequired };
+  }
+  let reason = 'incomplete'; // every column it names is here, but it never covered the required fields (line-per-row, no receipt)
+  if (missingColumns.length > 0) reason = 'missing_columns';
+  else if (headersChanged) reason = 'headers_changed';
+  return { status: 'did_not_fit', reason, missingColumns, mapping, itemsMode, coversRequired };
+};
+
 const upload = async (req, res, next) => {
   let filePath;
   let stagedR2Key = null;
@@ -105,6 +131,7 @@ const upload = async (req, res, next) => {
     // Detect format
     let posType, columnMapping, itemsMode;
     let usedSavedMapping = false;
+    let savedMapping = { status: 'none', missingColumns: [] };
     let mappingAssistedByAi = false;
     let mappingCreditsUsed = 0;
     const cafe = await Cafe.findById(cafeId).lean();
@@ -115,11 +142,19 @@ const upload = async (req, res, next) => {
       itemsMode = yoco.itemsMode;
     } else {
       posType = 'wizard';
-      // Try cafe-saved mapping first
-      if (cafe?.savedColumnMapping) {
-        const saved = cafe.savedColumnMapping;
-        columnMapping = cleanColumnMapping(saved, headers);
-        itemsMode = saved.itemsMode || 'packed';
+      const fit = savedMappingFit(cafe?.savedColumnMapping, headers);
+      savedMapping = {
+        status: fit.status,
+        ...(fit.reason ? { reason: fit.reason } : {}),
+        missingColumns: fit.missingColumns,
+      };
+      if (fit.status !== 'none' && (fit.coversRequired || fit.missingColumns.length === 0)) {
+        // A fitting mapping imports as before. One that still covers date, items and total, or whose every column is
+        // still in the file, is offered in the wizard with its own items mode: no AI credits are spent on a file the
+        // cafe's own mapping nearly reads. Only a mapping that lost columns AND cannot cover the required fields asks
+        // the AI (uploads-catalogue-21).
+        columnMapping = fit.mapping;
+        itemsMode = fit.itemsMode;
         usedSavedMapping = true;
       } else {
         const proposal = await proposeColumnMapping(headers, sampleRows, {
@@ -177,7 +212,8 @@ const upload = async (req, res, next) => {
       itemsMode,
       headers,
       preview: sampleRows,
-      needsConfirmation: posType !== 'yoco' && !(usedSavedMapping && hasRequiredMapping),
+      needsConfirmation: posType !== 'yoco' && !(savedMapping.status === 'applied' && hasRequiredMapping),
+      savedMapping,
       mappingAssistedByAi,
       mappingCreditsUsed,
     });

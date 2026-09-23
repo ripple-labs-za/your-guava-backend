@@ -13,16 +13,12 @@ const ABANDONED_CLEANUP_CLAIM = 'Removing an abandoned unconfirmed upload.';
 const SEVERE_PARTIAL_MIN_ERRORS = 10;
 const SEVERE_PARTIAL_ERROR_RATIO = 0.25;
 const CONFIRMATION_KEY_MAX_LENGTH = 160;
-const MAPPING_FIELDS = [
-  'receiptId', 'date', 'time', 'items', 'total', 'tip', 'discount',
-  'paymentMethod', 'status', 'quantity',
-];
 
 
 const confirmationMappingHash = (columnMapping, itemsMode) => sha256Hex(JSON.stringify({
   itemsMode,
   columnMapping: Object.fromEntries(
-    MAPPING_FIELDS.map((field) => [field, columnMapping?.[field] || null])
+    parser.COLUMN_MAPPING_FIELDS.map((field) => [field, columnMapping?.[field] || null])
   ),
 }));
 

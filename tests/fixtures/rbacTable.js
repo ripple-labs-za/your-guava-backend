@@ -17,6 +17,8 @@ const RBAC_TABLE = [
   ['GET', '/api/cafe/list', 'member', 'read'],
   ['GET', '/api/cafe/me', 'member', 'read'],
   ['PUT', '/api/cafe/me', 'owner', 'cafe configuration; wipes future forecasts'],
+  ['GET', '/api/cafe/me/column-mapping', 'member', 'read'],
+  ['DELETE', '/api/cafe/me/column-mapping', 'owner', 'cafe settings'],
   ['POST', '/api/transactions/upload', 'member', 'data entry'],
   ['GET', '/api/transactions/status', 'member', 'read'],
   ['GET', '/api/transactions/stats', 'member', 'read'],

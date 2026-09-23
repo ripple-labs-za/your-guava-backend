@@ -115,7 +115,7 @@ const remap = async (req, res, next) => {
         parsed,
         columnMapping,
         itemsMode,
-        persistMapping: false,
+        persistMapping: upload.posType === 'wizard',
         mappingHash: confirmationMappingHash(columnMapping, itemsMode),
         idempotencyKeyHash: remapKeyHash,
         timezone,

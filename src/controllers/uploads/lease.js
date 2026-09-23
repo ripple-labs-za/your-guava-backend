@@ -8,6 +8,7 @@ const Cafe = require('../../models/Cafe.model');
 const Forecast = require('../../models/Forecast.model');
 const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const ingestion = require('../../services/ingestion.service');
+const parser = require('../../services/parser.service');
 const { zonedDateKey, zonedDayStart } = require('../../utils/timezone');
 const {
   boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash, describeOverlap,
@@ -248,7 +249,14 @@ const commitParsedUpload = async ({
 
       const cafeFields = { dataUploaded: true, lastSyncAt: new Date() };
       if (persistMapping) {
-        cafeFields.savedColumnMapping = { ...columnMapping, itemsMode };
+        cafeFields.savedColumnMapping = {
+          ...parser.pickColumnMapping(columnMapping),
+          itemsMode,
+          sourceHeaders: Array.isArray(upload.headers) ? [...upload.headers] : [],
+          savedAt: new Date(),
+          sourceUploadId: upload._id,
+          sourceFileName: upload.fileName,
+        };
       }
       const cafeUpdate = await Cafe.findByIdAndUpdate(
         cafeId,
