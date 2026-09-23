@@ -6,7 +6,7 @@ const { sourceRowNumber, addRowError } = require('./rowErrors');
 const { validateMapping } = require('./headers');
 const { assertSupportedFileBuffer } = require('./fileType');
 const { groupLinePerRow } = require('./lineItems');
-const { inferDayMonthOrder } = require('./dates');
+const { inferDayMonthOrder, markMidnightOnlyFileDateOnly } = require('./dates');
 const { buildPackedRow } = require('./packedItems');
 const { repairOverflowColumns, readRows } = require('./csv');
 
@@ -68,6 +68,8 @@ const parseBuffer = async (
       }
     }
   }
+
+  if (!columnMapping.time) rows = markMidnightOnlyFileDateOnly(rows, resolvedTimezone);
 
   let firstDate = null;
   let lastDate = null;

@@ -128,3 +128,42 @@ describe('shapes the old new Date(string) fallback already read', () => {
   });
 });
 
+// Second review of BE-03-T06: a date-only column exported with a midnight time on every row is still date-only.
+describe('a file whose every time is midnight', () => {
+  const packed = { date: 'Date', items: 'Items', total: 'Total' };
+  const parseFile = (cells) => parseBuffer(
+    Buffer.from(['Date,Items,Total', ...cells.map((cell) => `"${cell}",1 x Latte,38.00`)].join(LF)),
+    { columnMapping: packed, itemsMode: 'packed', timezone: ZONE }
+  );
+
+  it.each([
+    [['2026-09-14 00:00:00', '2026-09-15 00:00:00']],
+    [['2026-09-14T00:00:00.000', '2026-09-15T00:00:00.000']],
+    [['14/09/2026 00:00', '15/09/2026 00:00']],
+  ])('stores %j with no hour', async (cells) => {
+    const result = await parseFile(cells);
+    expect(result.rows.map((row) => [row.hourKnown, row.hour])).toEqual([[false, null], [false, null]]);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-14', '2026-09-15']);
+  });
+
+  it('keeps a real midnight sale when other rows of the file carry times', async () => {
+    const result = await parseFile(['2026-09-14 00:00:00', '2026-09-14 09:30:00']);
+    expect(result.rows.map((row) => [row.hourKnown, row.hour])).toEqual([[true, 0], [true, 9]]);
+  });
+
+  it('keeps midnight from a mapped Time column as a known hour', async () => {
+    const result = await parseBuffer(
+      Buffer.from(['Date,Time,Items,Total', '2026-09-14,00:00,1 x Latte,38.00'].join(LF)),
+      { columnMapping: { ...packed, time: 'Time' }, itemsMode: 'packed', timezone: ZONE }
+    );
+    expect(result.rows[0]).toMatchObject({ hourKnown: true, hour: 0 });
+  });
+
+  it.each(['2026-09-14 (Mon)', '2026-09-14 Z', '14 Sep 2026 UTC'])('treats %s, a zone with no clock, as a date only', (cell) => {
+    const { date, timeKnown } = parseDateTime(cell, undefined, ZONE);
+    expect(timeKnown).toBe(false);
+    expect(localClock(date)).toBe('00:00');
+    expect(date.toLocaleDateString('en-CA', { timeZone: ZONE })).toBe('2026-09-14');
+  });
+});
+

@@ -4,6 +4,7 @@
 const { DEFAULT_TIMEZONE, getZonedDateParts, zonedDateTimeToUtc, zonedDayStart, addZonedDays, zonedDateKey } = require('../../utils/timezone');
 const { parserLimits, createClientInputError } = require('./limits');
 const { excelSerialDateToDate } = require('./xlsx');
+const { setSourceRowNumbers, SOURCE_ROW_NUMBERS } = require('./rowErrors');
 
 // "2:30 PM" was read as 02:30 and "12:15 AM" as midday: the old pattern had no meridiem and no end anchor.
 // Fractions up to nine digits (.NET writes seven) are kept to the millisecond.
@@ -193,6 +194,8 @@ const parseDateString = (dateValue, timeValue, timezone, { dateOrder = 'DMY' } =
   const cellTime = numeric ? combined?.[2] : named.time;
   if (!hasText(cellTime)) return result(fromParts(undefined, timezone), false);
   const { time, offsetMinutes } = readCellTime(cellTime);
+  // "2026-09-14 (Mon)", "2026-09-14 Z": a zone with no clock says nothing about the hour.
+  if (!hasText(time)) return result(fromParts(undefined, timezone), false);
   if (offsetMinutes === null) return result(fromParts(time, timezone), true);
   if (Math.abs(offsetMinutes) > MAX_OFFSET_MINUTES) return result(null, false);
   const wallClockAsUtc = fromParts(time, 'UTC');
@@ -259,6 +262,24 @@ const inferDayMonthOrder = (entries) => {
   return twelveHourCells ? 'MDY' : 'DMY';
 };
 
+const isCafeMidnight = (date, timezone) => {
+  const parts = getZonedDateParts(date, timezone);
+  return parts.hour === 0 && parts.minute === 0 && parts.second === 0 && date.getUTCMilliseconds() === 0;
+};
+
+/**
+ * A date-only column exported with a midnight time on every row ("2026-09-14 00:00:00", as SQL and Excel write a
+ * date) is still date-only: each cell looks timed, but the file as a whole says no hour. Only a file with no mapped
+ * Time column, whose every timed row sits at exactly 00:00 cafe time, is marked; one real time anywhere keeps them all.
+ */
+const markMidnightOnlyFileDateOnly = (rows, timezone) => {
+  const timed = rows.filter((row) => row.hourKnown);
+  if (timed.length === 0 || !timed.every((row) => isCafeMidnight(row.date, timezone))) return rows;
+  return rows.map((row) => (row.hourKnown
+    ? setSourceRowNumbers({ ...row, hourKnown: false, hour: null }, row[SOURCE_ROW_NUMBERS] || [])
+    : row));
+};
+
 const transactionDateError = (date, timezone) => {
   const limits = parserLimits();
   const earliest = zonedDayStart(`${limits.minYear}-01-01`, timezone);
@@ -283,5 +304,5 @@ const temporalFields = (date, timezone, { timeKnown = true } = {}) => {
 };
 
 module.exports = {
-  parseDate, parseDateTime, inferDayMonthOrder, transactionDateError, temporalFields,
+  parseDate, parseDateTime, inferDayMonthOrder, markMidnightOnlyFileDateOnly, transactionDateError, temporalFields,
 };
