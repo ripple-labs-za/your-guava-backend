@@ -124,6 +124,28 @@ describe('receipt-less exports are identified by what was sold, not by which fil
     expect(res.body.stats.imported).toBe(14);
   });
 
+  it('never commits the overlap twice when both exports are confirmed at once', async () => {
+    const { token, user } = await createTestUser();
+    const stage = async (text, name) => (await request
+      .post('/api/transactions/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from(text), name)).body.uploadId;
+    const confirm = (uploadId) => request
+      .post(`/api/uploads/${uploadId}/confirm`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ columnMapping: MAPPING, itemsMode: 'packed' });
+    const ids = [await stage(fileA(), 'receiptless-a.csv'), await stage(fileB(), 'receiptless-b.csv')];
+
+    const results = await Promise.all(ids.map(confirm));
+
+    const imported = results.filter((r) => r.status === 200).reduce((sum, r) => sum + r.body.stats.imported, 0);
+    const total = await Transaction.countDocuments({ cafeId: user.activeCafeId });
+    expect(total).toBe(imported); // every stored row is one a confirm reported, and no response hid a write
+    expect([29, 43]).toContain(total); // one file, or both with the overlap once
+    expect(await onDay(user.activeCafeId, '2026-09-10')).toBe(3);
+    for (const r of results) expect([200, 409, 500]).toContain(r.status);
+  });
+
   it('matches sales stored under the old file-scoped keys', async () => {
     const { token, user } = await createTestUser();
     await Transaction.create({
