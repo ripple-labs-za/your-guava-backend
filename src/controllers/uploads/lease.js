@@ -10,7 +10,7 @@ const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const ingestion = require('../../services/ingestion.service');
 const { zonedDateKey, zonedDayStart } = require('../../utils/timezone');
 const {
-  boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash,
+  boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash, describeOverlap,
 } = require('./shared');
 const { sha256Hex } = require('../../utils/authPrimitives');
 
@@ -182,6 +182,7 @@ const commitParsedUpload = async ({
         timezone,
       });
       assertImportableResult(result);
+      const overlap = await describeOverlap(result.duplicatesByUpload, { cafeId, session });
       // A remap that no longer imports some rows lets overlapping uploads re-admit them (BE-03-T02).
       readmitted = await readmissionService.applyReadmission({ prepared, cafeId, session, timezone });
       await ingestion.rebuildItemsForCafe(cafeId, { session });
@@ -213,6 +214,7 @@ const commitParsedUpload = async ({
               errors: result.errors,
               totalRows: result.totalRows,
             },
+            overlap,
             dateRange: {
               ...result.dateRange,
               firstDateKey: result.dateRange?.firstDate

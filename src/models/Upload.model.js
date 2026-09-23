@@ -79,6 +79,19 @@ const uploadSchema = new mongoose.Schema(
       // 'skipped' alone told an operator a number and nothing else.
       skippedByReason: { type: Object, default: {} },
     },
+    // Sales this file carried that the cafe already held, and which uploads held them (BE-03-T03). 'skipped'
+    // alone read as rows lost; this says they were already in and where from.
+    overlap: {
+      rows: { type: Number, default: 0, min: 0 },
+      uploads: {
+        type: [new mongoose.Schema({
+          uploadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Upload' },
+          fileName: { type: String },
+          rows: { type: Number, min: 0 },
+        }, { _id: false })],
+        default: [],
+      },
+    },
     dateRange: {
       firstDate: { type: Date },
       lastDate: { type: Date },

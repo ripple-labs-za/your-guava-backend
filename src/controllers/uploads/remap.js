@@ -5,9 +5,7 @@ const r2 = require('../../services/r2.service');
 const parser = require('../../services/parser.service');
 const { normaliseTransactionStatus } = require('../../utils/transactionStatus');
 const { clearApiCache } = require('../../middleware/cache.middleware');
-const {
-  transactionIdentity, identityComparisonKey, findExistingIdentities,
-} = require('../../services/transactionIdentity');
+const { resolveIdentities } = require('../../services/transactionIdentity');
 const {
   CONFIRMATION_KEY_MAX_LENGTH, validateUploadMapping, getCafeTimezone, assertParsedRowsImportable, confirmationMappingHash, confirmationResponse,
 } = require('./shared');
@@ -28,11 +26,8 @@ const assertRemapHasImportableRows = async (parsed, cafeId, uploadId, sourceFing
     throw err;
   }
 
-  const identities = approvedRows.map((row) => transactionIdentity(row, sourceFingerprint, timezone));
-  const existing = await findExistingIdentities(cafeId, identities, { timezone, excludeUploadId: uploadId });
-  const duplicateRows = identities.filter((identity) => existing.has(identityComparisonKey(identity))).length;
-
-  if (duplicateRows === approvedRows.length) {
+  const resolution = await resolveIdentities(approvedRows, { cafeId, timezone, excludeUploadId: uploadId });
+  if (resolution.importable.length === 0) {
     const err = new Error('Every valid row already exists in another upload; remap would leave this upload empty');
     err.statusCode = 409;
     throw err;

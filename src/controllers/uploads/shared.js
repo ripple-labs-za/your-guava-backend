@@ -2,6 +2,7 @@
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const { sha256Hex } = require('../../utils/authPrimitives');
 const parser = require('../../services/parser.service');
+const Upload = require('../../models/Upload.model');
 const { getCafeTimezone } = require('../../utils/timezone');
 const { normaliseTransactionStatus } = require('../../utils/transactionStatus');
 
@@ -38,8 +39,27 @@ const confirmationResponse = (upload, { replayed = false } = {}) => ({
   dateRange: upload.dateRange,
   rowErrors: sanitizeRowErrors(upload.rowErrors),
   maintenance: upload.maintenance || { status: 'queued' },
+  overlap: upload.overlap || { rows: 0, uploads: [] },
   replayed,
 });
+
+const MAX_OVERLAP_UPLOADS = 20;
+
+/** Names the uploads that already held the sales this file skipped (BE-03-T03), largest first, at most 20. */
+const describeOverlap = async (duplicatesByUpload = [], { cafeId, session }) => {
+  const ids = duplicatesByUpload.map((entry) => entry.uploadId).filter(Boolean);
+  let query = Upload.find({ _id: { $in: ids }, cafeId }).select('fileName');
+  if (session) query = query.session(session);
+  const names = new Map((await query.lean()).map((upload) => [String(upload._id), upload.fileName]));
+  return {
+    rows: duplicatesByUpload.reduce((sum, entry) => sum + entry.rows, 0),
+    uploads: duplicatesByUpload.slice(0, MAX_OVERLAP_UPLOADS).map(({ uploadId, rows }) => ({
+      uploadId: uploadId || null,
+      fileName: uploadId ? names.get(uploadId) || null : null,
+      rows,
+    })),
+  };
+};
 
 // One definition, in services/parser/limits.js; lease, jobs and sweeper take it from here.
 const { boundedInteger } = parser;
@@ -137,5 +157,5 @@ const assertParsedRowsImportable = (parsed, { allowSeverePartial = false } = {})
 module.exports = {
   MAX_LIST_PAGE, STORAGE_CLEANUP_PENDING, ABANDONED_CLEANUP_CLAIM, CONFIRMATION_KEY_MAX_LENGTH,
   confirmationMappingHash, sanitizeRowErrors, confirmationResponse, boundedInteger, validateUploadMapping,
-  assertImportableResult, assertParsedRowsImportable, getCafeTimezone,
+  assertImportableResult, assertParsedRowsImportable, getCafeTimezone, describeOverlap,
 };

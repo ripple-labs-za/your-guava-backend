@@ -1,6 +1,9 @@
 const Transaction = require('../models/Transaction.model');
 const { computeDedupKey } = require('../utils/dedupKey');
-const { safeTimezone, zonedDateKey } = require('../utils/timezone');
+const {
+  safeTimezone, zonedDateKey, getZonedDateParts, zonedDayStart, zonedDayEnd,
+} = require('../utils/timezone');
+const { sha256Hex } = require('../utils/authPrimitives');
 
 /**
  * The one rule for "do we already hold this sale?" (BE-11-T05). The write path
@@ -9,8 +12,9 @@ const { safeTimezone, zonedDateKey } = require('../utils/timezone');
  *
  * A receipt number is only unique within a cafe-local trading day on tills that
  * restart their numbering, so a receipt identity carries the day. A receipt-less
- * row is identified by computeDedupKey over its UTC date and time: that key is
- * stored on every imported row, so its inputs must never change.
+ * row was identified by computeDedupKey over its UTC date, time and source file (transactionIdentity, kept only for the
+ * legacy non-bulk path and for rows stored before BE-03-T03); resolveIdentities now identifies it by its content
+ * (contentSignature, counted per occurrence) and still matches rows stored under those old keys.
  */
 const IDENTITY_QUERY_CHUNK_SIZE = 500;
 
@@ -69,6 +73,141 @@ const findExistingIdentities = async (cafeId, identities, { session, timezone, e
   return existing;
 };
 
+const CONTENT_KEY_VERSION = 'content-v1';
+const pad = (value) => String(value).padStart(2, '0');
+const money = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0).toFixed(2);
+const quantityText = (value) => String(Math.round(Number(value) * 1000) / 1000);
+
+/**
+ * A receipt-less sale's identity (BE-03-T03): what the till recorded, not which file or row carried it. The
+ * file-scoped key this replaces counted every overlapping or re-saved export again, silently doubling revenue.
+ *
+ * Cafe-local day and minute, total, tip, discount, and the basket's shape. Item names are left out on purpose:
+ * merge, rename and map_to rewrite the names on stored lines, and an identity must not change after it is stored.
+ * Identical sales in one minute are counted, not merged (resolveContentRows), so leaving names out only matters when
+ * two overlapping exports disagree about which sales happened.
+ */
+const contentSignature = (row, timezone) => {
+  const parts = getZonedDateParts(row.date, timezone);
+  const quantities = (row.items || [])
+    .map((item) => quantityText(item.quantity))
+    .sort((a, b) => Number(a) - Number(b));
+  return [
+    `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`,
+    `${pad(parts.hour)}:${pad(parts.minute)}`,
+    money(row.total),
+    money(row.tip),
+    money(row.discount),
+    quantities.length,
+    quantities.join(','),
+  ].join('|');
+};
+
+const contentKey = (signature, occurrence) => sha256Hex(`${CONTENT_KEY_VERSION}|${signature}|${occurrence}`);
+
+const withSession = (query, session) => (session ? query.session(session) : query);
+const excluding = (excludeUploadId) => (excludeUploadId ? { uploadId: { $ne: excludeUploadId } } : {});
+
+// Receipts keep today's rule (receipt number + cafe-local day); BE-03-T04 adds the content comparison.
+const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUploadId }) => {
+  const firstInFile = [];
+  const seen = new Set();
+  let inFileDuplicates = 0;
+  for (const row of rows) {
+    const dayKey = row.dateKey || zonedDateKey(row.date, timezone);
+    const key = `${row.receiptId}|${dayKey}`;
+    if (seen.has(key)) {
+      inFileDuplicates += 1;
+      continue;
+    }
+    seen.add(key);
+    firstInFile.push({ row, key, identity: { type: 'receiptId', value: row.receiptId, dayKey } });
+  }
+  const held = new Map();
+  for (const chunk of chunksOf([...new Set(firstInFile.map(({ row }) => row.receiptId))])) {
+    const stored = await withSession(
+      Transaction.find({ cafeId, receiptId: { $in: chunk }, ...excluding(excludeUploadId) }).select('receiptId date uploadId'),
+      session
+    ).lean();
+    for (const doc of stored) held.set(`${doc.receiptId}|${zonedDateKey(doc.date, timezone)}`, doc.uploadId || null);
+  }
+  const importable = [];
+  const duplicates = [];
+  for (const candidate of firstInFile) {
+    if (held.has(candidate.key)) duplicates.push({ row: candidate.row, uploadId: held.get(candidate.key) });
+    else importable.push({ row: candidate.row, identity: candidate.identity });
+  }
+  return { importable, duplicates, inFileDuplicates };
+};
+
+/**
+ * A file with k copies of a sale the cafe already holds m times adds max(0, k - m). Stored rows are compared by
+ * their content too, so rows written under the old file-scoped keys are matched as well. New keys skip any
+ * occurrence number an existing row of that sale already uses, so the unique {cafeId, dedupKey} index never trips.
+ */
+const resolveContentRows = async (rows, { cafeId, session, timezone, excludeUploadId }) => {
+  if (rows.length === 0) return { importable: [], duplicates: [] };
+  const dayKeys = rows.map((row) => row.dateKey || zonedDateKey(row.date, timezone)).sort();
+  const stored = await withSession(
+    Transaction.find({
+      cafeId,
+      dedupKey: { $type: 'string' },
+      date: { $gte: zonedDayStart(dayKeys[0], timezone), $lte: zonedDayEnd(dayKeys[dayKeys.length - 1], timezone) },
+      ...excluding(excludeUploadId),
+    }).select('date total tip discount items.quantity uploadId dedupKey'),
+    session
+  ).lean();
+  const held = new Map();
+  for (const doc of stored) {
+    const signature = contentSignature(doc, timezone);
+    const entry = held.get(signature) || { remaining: 0, keys: new Set(), uploads: [] };
+    entry.remaining += 1;
+    entry.keys.add(doc.dedupKey);
+    entry.uploads.push(doc.uploadId || null);
+    held.set(signature, entry);
+  }
+  const importable = [];
+  const duplicates = [];
+  const nextOccurrence = new Map();
+  for (const row of rows) {
+    const signature = contentSignature(row, timezone);
+    const entry = held.get(signature);
+    if (entry && entry.remaining > 0) {
+      entry.remaining -= 1;
+      duplicates.push({ row, uploadId: entry.uploads[entry.remaining] });
+      continue;
+    }
+    let occurrence = nextOccurrence.get(signature) || 1;
+    while (entry && entry.keys.has(contentKey(signature, occurrence))) occurrence += 1;
+    nextOccurrence.set(signature, occurrence + 1);
+    importable.push({ row, identity: { type: 'dedupKey', value: contentKey(signature, occurrence) } });
+  }
+  return { importable, duplicates };
+};
+
+/** The one identity rule: commit, remap pre-check and re-admission all come through here. */
+const resolveIdentities = async (rows, options) => {
+  const scoped = { ...options, timezone: safeTimezone(options.timezone) };
+  const receipts = await resolveReceiptRows(rows.filter((row) => row.receiptId), scoped);
+  const content = await resolveContentRows(rows.filter((row) => !row.receiptId), scoped);
+  return {
+    importable: [...receipts.importable, ...content.importable],
+    duplicates: [...receipts.duplicates, ...content.duplicates],
+    inFileDuplicates: receipts.inFileDuplicates,
+  };
+};
+
+const tallyDuplicatesByUpload = (duplicates) => {
+  const counts = new Map();
+  for (const { uploadId } of duplicates) {
+    const key = uploadId ? String(uploadId) : null;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([uploadId, rows]) => ({ uploadId, rows }))
+    .sort((a, b) => b.rows - a.rows);
+};
+
 module.exports = {
   IDENTITY_QUERY_CHUNK_SIZE,
   chunksOf,
@@ -76,4 +215,8 @@ module.exports = {
   identityComparisonKey,
   storedIdentityKeys,
   findExistingIdentities,
+  contentSignature,
+  contentKey,
+  resolveIdentities,
+  tallyDuplicatesByUpload,
 };

@@ -10,7 +10,7 @@ const {
 } = require('./parser.service');
 const { zonedDateKey, safeTimezone } = require('../utils/timezone');
 const {
-  transactionIdentity, identityComparisonKey, findExistingIdentities,
+  transactionIdentity, resolveIdentities, tallyDuplicatesByUpload,
 } = require('./transactionIdentity');
 const {
   normaliseTransactionStatus,
@@ -134,7 +134,6 @@ const persistParsedRowsBulk = async (
     session,
     itemsAlreadyReconciled = false,
     failOnPersistenceError = false,
-    sourceFingerprint,
     timezone,
   }
 ) => {
@@ -145,8 +144,7 @@ const persistParsedRowsBulk = async (
   let approvedRows = 0;
   let declinedRows = 0;
   let duplicateRows = 0;
-  const candidates = [];
-  const seen = new Set();
+  const approved = [];
 
   for (const row of parsed.rows) {
     const { status, recognised } = normaliseTransactionStatus(row.status);
@@ -168,15 +166,7 @@ const persistParsedRowsBulk = async (
       if (!itemsAlreadyReconciled) {
         row.items = await reconcileTransactionItems(cafeId, row.items, { session });
       }
-      const identity = transactionIdentity(row, sourceFingerprint, timezone);
-      const identityKey = identityComparisonKey(identity);
-      if (seen.has(identityKey)) {
-        skipped++;
-        duplicateRows++;
-        continue;
-      }
-      seen.add(identityKey);
-      candidates.push({ row, identity, identityKey });
+      approved.push(row);
     } catch (error) {
       // These two lines used to be dead: an unconditional rethrow on the next
       // statement discarded both, so one unreconcilable line aborted the whole
@@ -190,19 +180,14 @@ const persistParsedRowsBulk = async (
     }
   }
 
-  const existing = await findExistingIdentities(
-    cafeId,
-    candidates.map((candidate) => candidate.identity),
-    { session, timezone }
-  );
-  const importable = candidates.filter((candidate) => {
-    if (!existing.has(candidate.identityKey)) return true;
-    skipped++;
-    duplicateRows++;
-    return false;
-  });
+  // One identity rule (BE-03-T03): receipts by number and cafe-local day, receipt-less sales by content, counted.
+  const resolution = await resolveIdentities(approved, { cafeId, session, timezone });
+  const existingDuplicateRows = resolution.duplicates.length;
+  const inFileDuplicateRows = resolution.inFileDuplicates;
+  skipped += existingDuplicateRows + inFileDuplicateRows;
+  duplicateRows += existingDuplicateRows + inFileDuplicateRows;
 
-  const documents = importable.map(({ row, identity }) =>
+  const documents = resolution.importable.map(({ row, identity }) =>
     transactionDocument(row, { cafeId, uploadId, identity })
   );
   if (documents.length > 0) {
@@ -219,6 +204,9 @@ const persistParsedRowsBulk = async (
     approvedRows,
     declinedRows,
     duplicateRows,
+    existingDuplicateRows,
+    inFileDuplicateRows,
+    duplicatesByUpload: tallyDuplicatesByUpload(resolution.duplicates),
     dateRange: parsed.dateRange,
   };
 };
