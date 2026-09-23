@@ -19,12 +19,19 @@ const getHeatmap = async (req, res, next) => {
     const timezone = safeTimezone(cafe?.timezone);
 
     const dateMatch = buildDateMatch(req.query, timezone);
-    const baseMatchStage = {
+    const windowMatch = {
       cafeId: cafeObjectId,
       status: 'approved',
       dayOfWeek: { $gte: 0, $lte: 6 },
       ...(Object.keys(dateMatch).length > 0 && { date: dateMatch }),
     };
+    // Sales from exports with dates but no times (BE-03-T06) have no hour: they fill no cell, and counting their days as
+    // observed drew an all-zero grid that read "no trade in any hour". Rows stored before hourKnown existed stay in.
+    const baseMatchStage = { ...windowMatch, hourKnown: { $ne: false } };
+    const coveragePipeline = [
+      { $match: windowMatch },
+      { $group: { _id: { $eq: ['$hourKnown', false] }, count: { $sum: 1 } } },
+    ];
     const heatmapMatchStage = {
       ...baseMatchStage,
       hour: { $gte: 6, $lte: 22 },
@@ -72,10 +79,13 @@ const getHeatmap = async (req, res, next) => {
       { $sort: { dayOfWeek: 1, hour: 1 } },
     ];
 
-    const [dayCounts, rawData] = await Promise.all([
+    const [dayCounts, rawData, coverage] = await Promise.all([
       Transaction.aggregate(dayCountPipeline),
       Transaction.aggregate(hourlyTotalsPipeline),
+      Transaction.aggregate(coveragePipeline),
     ]);
+    const transactionsWithoutTime = coverage.find((entry) => entry._id === true)?.count || 0;
+    const transactionsWithTime = coverage.find((entry) => entry._id === false)?.count || 0;
     const observedDaysByWeekday = new Map(
       dayCounts.map((entry) => [entry._id, entry.observedDays])
     );
@@ -124,6 +134,7 @@ const getHeatmap = async (req, res, next) => {
       meta: {
         ...analyticsRangeMeta(req.query, dateMatch),
         metric: 'average_per_observed_weekday',
+        timeOfDay: { transactionsWithTime, transactionsWithoutTime },
       },
     });
   } catch (error) {

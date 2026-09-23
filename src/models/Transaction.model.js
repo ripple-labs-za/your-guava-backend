@@ -17,6 +17,8 @@ const transactionSchema = new mongoose.Schema(
     dedupKey: { type: String },
     date: { type: Date, required: true, index: true },
     hour: { type: Number },
+    // False when the export had dates but no times: `hour` is then null, and hour-of-day views leave the sale out.
+    hourKnown: { type: Boolean, default: true },
     dayOfWeek: { type: Number },
     status: {
       type: String,

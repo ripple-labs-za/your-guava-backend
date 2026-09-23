@@ -144,6 +144,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     menuItemIssues,
     forecasts,
     upcomingEvents,
+    hourUnknownCount,
   ] = await Promise.all([
     Transaction.aggregate([
       { $match: { ...baseMatch, date: { $gte: ninetyDaysAgo } } },
@@ -197,7 +198,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       { $sort: { _id: 1 } },
     ]),
     Transaction.aggregate([
-      { $match: { ...activeCafeMatch, date: { $gte: ninetyDaysAgo }, hour: { $gte: 0, $lte: 23 } } },
+      { $match: { ...activeCafeMatch, date: { $gte: ninetyDaysAgo }, hour: { $gte: 0, $lte: 23 }, hourKnown: { $ne: false } } },
       {
         $group: {
           _id: '$hour',
@@ -250,6 +251,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       .sort({ date: 1 })
       .limit(20)
       .lean(),
+    Transaction.countDocuments({ ...activeCafeMatch, date: { $gte: ninetyDaysAgo }, hourKnown: false }),
   ]);
 
   const total = totals[0] || {};
@@ -282,7 +284,10 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       avgBasket: roundMoney(total.avgBasket),
       firstDate: total.firstDate ? zonedDateTimeLabel(total.firstDate, activeTimezone) : null,
       lastDate: total.lastDate ? zonedDateTimeLabel(total.lastDate, activeTimezone) : null,
-      contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters — if a question was longer than that, say so rather than answering as if you had seen all of it.',
+      contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters — if a question was longer than that, say so rather than answering as if you had seen all of it.'
+        + (hourUnknownCount > 0
+          ? ` ${hourUnknownCount} sales in the last 90 days came from exports with dates but no times; the hour pattern leaves them out, so do not describe their hours.`
+          : ''),
     },
     locationPerformance90d: locationTotals.map((row) => ({
       location: cafeNameById.get(row._id.toString()) || row._id,
@@ -311,6 +316,9 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       revenue: roundMoney(row.revenue),
       transactions: row.transactions,
     })),
+    // Sales from exports with dates but no times are not in the hour pattern. Saying how many stops the model reading
+    // a thin pattern as the cafe's real trading hours.
+    activeLocationHourCoverage90d: { transactionsWithoutTime: hourUnknownCount },
     paymentMethods90d: paymentStats.map((row) => ({
       method: row._id,
       transactions: row.transactions,
