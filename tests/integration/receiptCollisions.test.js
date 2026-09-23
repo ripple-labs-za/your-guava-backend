@@ -91,6 +91,18 @@ describe('a receipt number shared by two different sales', () => {
     expect(res.body.stats).toMatchObject({ imported: 1, skipped: 0, errors: 1 });
   });
 
+  it('judges a later line against every earlier line of that number in the file, not only the last', async () => {
+    const res = await importLines(token, [
+      HEADER,
+      '0005,2026-09-14,09:00,1 x Flat White,38.00',
+      '0005,2026-09-14,14:00,1 x Latte,42.00',
+      '0005,2026-09-14,09:00,1 x Scone,32.00',
+    ], 'three-under-one-number.csv');
+    expect(res.status).toBe(200);
+    expect(res.body.stats).toMatchObject({ imported: 2, skipped: 0, errors: 1 });
+    expect(res.body.rowErrors[0].reason).toMatch(/^Receipt 0005 appears twice on 2026-09-14 at 09:00 .*\(R38\.00 and R32\.00\)/);
+  });
+
   it('compares against sales already stored, not only within the file', async () => {
     await importLines(token, [HEADER, '0009,2026-09-14,09:00,1 x Flat White,38.00'], 'first.csv');
     const res = await importLines(token, [

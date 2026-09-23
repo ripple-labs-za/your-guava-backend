@@ -119,6 +119,8 @@ const basketKey = (items = []) => items
 /** A receipt's full content: when, how much, and which menu items (by id, which merges and renames keep stable). */
 const receiptSignature = (row, timezone) => `${contentSignature(row, timezone)}|${basketKey(row.items)}`;
 const minuteOf = (signature) => signature.split('|').slice(0, 2).join(' ');
+// A signature starts with the cafe-local day, so the day is read from it rather than formatted a second time.
+const dayOf = (signature) => signature.slice(0, signature.indexOf('|'));
 
 /**
  * A receipt number is unique within a trading day on most tills, but not on all: per-shift numbering and second
@@ -137,7 +139,7 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
     ).lean();
     for (const doc of stored) {
       const signature = receiptSignature(doc, timezone);
-      hold(`${doc.receiptId}|${zonedDateKey(doc.date, timezone)}`, {
+      hold(`${doc.receiptId}|${dayOf(signature)}`, {
         signature, minute: minuteOf(signature), total: doc.total, uploadId: doc.uploadId || null, inFile: false,
       });
     }
@@ -147,9 +149,9 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
   const conflicts = [];
   let inFileDuplicates = 0;
   for (const row of rows) {
-    const dayKey = row.dateKey || zonedDateKey(row.date, timezone);
-    const key = `${row.receiptId}|${dayKey}`;
     const signature = receiptSignature(row, timezone);
+    const dayKey = row.dateKey || dayOf(signature);
+    const key = `${row.receiptId}|${dayKey}`;
     const entries = held.get(key) || [];
     const same = entries.find((entry) => entry.signature === signature);
     if (same) {
