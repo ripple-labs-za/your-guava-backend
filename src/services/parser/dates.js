@@ -6,7 +6,8 @@ const { parserLimits, createClientInputError } = require('./limits');
 const { excelSerialDateToDate } = require('./xlsx');
 
 // "2:30 PM" was read as 02:30 and "12:15 AM" as midday: the old pattern had no meridiem and no end anchor.
-const CLOCK_TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:[.,]\d{1,6})?\s*(?:([AaPp])\.?\s*[Mm]\.?)?$/;
+// Fractions up to nine digits (.NET writes seven) are kept to the millisecond.
+const CLOCK_TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:[.,](\d{1,9}))?\s*(?:([AaPp])\.?\s*[Mm]\.?)?$/;
 
 const parseTimeParts = (timeValue) => {
   if (timeValue == null || timeValue === '') return null;
@@ -15,6 +16,7 @@ const parseTimeParts = (timeValue) => {
       hours: timeValue.getUTCHours(),
       minutes: timeValue.getUTCMinutes(),
       seconds: timeValue.getUTCSeconds(),
+      milliseconds: 0,
     };
   }
   if (typeof timeValue === 'number') {
@@ -25,6 +27,7 @@ const parseTimeParts = (timeValue) => {
       hours: Math.floor(totalSeconds / 3600) % 24,
       minutes: Math.floor((totalSeconds % 3600) / 60),
       seconds: totalSeconds % 60,
+      milliseconds: 0,
     };
   }
   const match = String(timeValue).trim().match(CLOCK_TIME_RE);
@@ -32,15 +35,18 @@ const parseTimeParts = (timeValue) => {
   let hours = parseInt(match[1], 10);
   const minutes = parseInt(match[2], 10);
   const seconds = parseInt(match[3] || '0', 10);
-  const meridiem = match[4] ? match[4].toLowerCase() : null;
+  const milliseconds = match[4] ? Math.min(999, Math.round(Number(`0.${match[4]}`) * 1000)) : 0;
+  const meridiem = match[5] ? match[5].toLowerCase() : null;
   if (meridiem) {
     if (hours < 1 || hours > 12) return null;
     if (meridiem === 'a') hours = hours === 12 ? 0 : hours;
     else hours = hours === 12 ? 12 : hours + 12;
   }
   if (hours > 23 || minutes > 59 || seconds > 59) return null;
-  return { hours, minutes, seconds };
+  return { hours, minutes, seconds, milliseconds };
 };
+
+const plusMilliseconds = (date, milliseconds) => (date && milliseconds ? new Date(date.getTime() + milliseconds) : date);
 
 const applyTimeParts = (date, timeValue, timezone = DEFAULT_TIMEZONE) => {
   const hasExplicitTime = timeValue != null && String(timeValue).trim() !== '';
@@ -49,14 +55,14 @@ const applyTimeParts = (date, timeValue, timezone = DEFAULT_TIMEZONE) => {
   if (!time) return null;
   const localDate = getZonedDateParts(date, timezone);
   if (!localDate) return null;
-  return zonedDateTimeToUtc({
+  return plusMilliseconds(zonedDateTimeToUtc({
     year: localDate.year,
     month: localDate.month,
     day: localDate.day,
     hour: time.hours,
     minute: time.minutes,
     second: time.seconds,
-  }, timezone);
+  }, timezone), time.milliseconds);
 };
 
 const dateFromParts = (year, month, day, timeValue, timezone = DEFAULT_TIMEZONE) => {
@@ -70,26 +76,42 @@ const dateFromParts = (year, month, day, timeValue, timezone = DEFAULT_TIMEZONE)
   }
   const time = timeValue != null && String(timeValue).trim() !== ''
     ? parseTimeParts(timeValue)
-    : { hours: 0, minutes: 0, seconds: 0 };
+    : { hours: 0, minutes: 0, seconds: 0, milliseconds: 0 };
   if (!time) return null;
-  return zonedDateTimeToUtc({
+  return plusMilliseconds(zonedDateTimeToUtc({
     year,
     month,
     day,
     hour: time.hours,
     minute: time.minutes,
     second: time.seconds,
-  }, timezone);
+  }, timezone), time.milliseconds);
 };
 
-// A cell carrying its own time -- "2026-09-03 23:30", "03/09/2026T14:30:00", now also with fractional seconds and AM/PM.
-// Built from its parts in the cafe zone. The end anchor keeps an offset-qualified timestamp out (see parseOffsetTimestamp).
-const COMBINED_DATE_TIME_RE =
-  /^(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})[T\s]+(\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,6})?(?:\s*[AaPp]\.?\s*[Mm]\.?)?)$/;
+// A numeric date followed by whatever the cell says about the time: "2026-09-03 23:30", "03/09/2026T14:30:00",
+// "2026/09/14, 23:30:00" (en-ZA toLocaleString), "2026-09-14T23:30:00.1234567+02:00". The tail is read by readCellTime.
+const COMBINED_DATE_TIME_RE = /^(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})(?:\s*,\s*|[T\s]+)(.+)$/;
 
-// Only a timestamp that states its own offset may skip the cafe zone, and it is built from its parts, not new Date(string).
-const OFFSET_TIMESTAMP_RE =
-  /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?\s*(Z|[+-]\d{2}:?\d{2})$/i;
+// A zone the cell states itself: "Z", "+02:00", "+0200", "+00", "UTC", "GMT+0200 (South Africa Standard Time)".
+// Only a stated zone may move a sale off the cafe zone; a naive time is the cafe's own clock.
+const ZONE_NAME_RE = /\s*\([^)]*\)\s*$/;
+const ZONE_SUFFIX_RE = /\s*(?:(?:GMT|UTC)\s*([+-]\d{2}(?::?\d{2})?)?|(Z)|([+-]\d{2}(?::?\d{2})?))$/i;
+const MAX_OFFSET_MINUTES = 14 * 60;
+
+const offsetMinutesOf = (offset) => {
+  const sign = offset[0] === '-' ? -1 : 1;
+  const digits = offset.slice(1).replace(':', '');
+  return sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4) || 0));
+};
+
+/** A cell's time text split into the clock and any zone it states (null when it states none). */
+const readCellTime = (text) => {
+  const clean = String(text).replace(ZONE_NAME_RE, '').trim();
+  const match = clean.match(ZONE_SUFFIX_RE);
+  if (!match) return { time: clean, offsetMinutes: null };
+  const offset = match[1] || match[3];
+  return { time: clean.slice(0, match.index).trim(), offsetMinutes: offset ? offsetMinutesOf(offset) : 0 };
+};
 
 // Two-digit years are day-first too, like every other date an SA till writes.
 // The pivot: 70-99 is the 1900s, 00-69 the 2000s, which covers every export
@@ -100,21 +122,6 @@ const TWO_DIGIT_YEAR_PIVOT = 70;
 const expandTwoDigitYear = (shortYear) =>
   (shortYear >= TWO_DIGIT_YEAR_PIVOT ? 1900 : 2000) + shortYear;
 
-const parseOffsetTimestamp = (value) => {
-  const match = value.match(OFFSET_TIMESTAMP_RE);
-  if (!match) return null;
-  const [, year, month, day, hour, minute, second = '0', fraction = '0', zone] = match;
-  if (!dateFromParts(Number(year), Number(month), Number(day), '00:00', 'UTC')) return null;
-  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
-  const sign = zone[0] === '-' ? -1 : 1;
-  const offsetMinutes = zone.toUpperCase() === 'Z'
-    ? 0
-    : sign * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(-2)));
-  const ms = Math.round(Number(`0.${fraction}`) * 1000);
-  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), ms)
-    - offsetMinutes * 60000);
-};
-
 const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october',
   'november', 'december'];
 const monthFromName = (name) => {
@@ -124,10 +131,15 @@ const monthFromName = (name) => {
   return index >= 0 ? index + 1 : null;
 };
 const WEEKDAY_PREFIX_RE = /^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+/i;
-const DAY_MONTH_NAME_RE = /^(\d{1,2})[\s\-/.]+([A-Za-z]{3,9}\.?)[\s\-/.,]+(\d{4}|\d{2})(?:[T\s,]+(.+))?$/;
-const MONTH_NAME_DAY_RE = /^([A-Za-z]{3,9}\.?)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})(?:[T\s,]+(.+))?$/;
+const ORDINAL = '(?:st|nd|rd|th)?';
+const SEP = '[\\s\\-/.]+';
+const TAIL = '(?:[T\\s,]+(.+))?$';
+// "14 Sep 2026", "14th Sep 2026", "14-Sep-2026"; "Sep 14, 2026", "Sep-14-2026"; "2026-Sep-14".
+const DAY_MONTH_NAME_RE = new RegExp(`^(\\d{1,2})${ORDINAL}${SEP}([A-Za-z]{3,9}\\.?)[\\s\\-/.,]+(\\d{4}|\\d{2})${TAIL}`);
+const MONTH_NAME_DAY_RE = new RegExp(`^([A-Za-z]{3,9}\\.?)${SEP}(\\d{1,2})${ORDINAL},?${SEP}(\\d{4})${TAIL}`);
+const YEAR_MONTH_NAME_DAY_RE = new RegExp(`^(\\d{4})${SEP}([A-Za-z]{3,9}\\.?)${SEP}(\\d{1,2})${ORDINAL}${TAIL}`);
 
-/** "14 Sep 2026 23:30", "14-Sep-2026", "Sep 14, 2026 11:30 PM" → parts and any trailing time. */
+/** Dates that name their month, with any trailing time. */
 const monthNameDateParts = (value) => {
   const text = value.replace(WEEKDAY_PREFIX_RE, '');
   let match = text.match(DAY_MONTH_NAME_RE);
@@ -140,6 +152,11 @@ const monthNameDateParts = (value) => {
   if (match) {
     const month = monthFromName(match[1]);
     return month ? { year: Number(match[3]), month, day: Number(match[2]), time: match[4] } : null;
+  }
+  match = text.match(YEAR_MONTH_NAME_DAY_RE);
+  if (match) {
+    const month = monthFromName(match[2]);
+    return month ? { year: Number(match[1]), month, day: Number(match[3]), time: match[4] } : null;
   }
   return null;
 };
@@ -163,9 +180,6 @@ const result = (date, timeKnown) =>
 
 const parseDateString = (dateValue, timeValue, timezone, { dateOrder = 'DMY' } = {}) => {
   const value = String(dateValue).trim();
-  const offset = parseOffsetTimestamp(value);
-  if (offset) return result(hasText(timeValue) ? applyTimeParts(offset, timeValue, timezone) : offset, true);
-
   const combined = value.match(COMBINED_DATE_TIME_RE);
   const numeric = numericDateParts(combined ? combined[1] : value, dateOrder);
   const named = numeric ? null : monthNameDateParts(value);
@@ -173,10 +187,16 @@ const parseDateString = (dateValue, timeValue, timezone, { dateOrder = 'DMY' } =
   // A bare number is not a date: new Date read "0" as the year 2000 and "45900" as the year 45899, and one junk cell
   // then widened the file's span far enough to have the whole upload refused. Anything unrecognised is a row error.
   if (!parts) return result(null, false);
-  const cellTime = combined?.[2] ?? named?.time;
-  // A mapped Time column still wins: it is the operator's explicit choice.
-  const time = hasText(timeValue) ? timeValue : cellTime;
-  return result(dateFromParts(parts.year, parts.month, parts.day, time, timezone), hasText(time));
+  const fromParts = (time, zone) => dateFromParts(parts.year, parts.month, parts.day, time, zone);
+  // A mapped Time column wins over any time in the date cell: it is the operator's explicit choice, on the cafe clock.
+  if (hasText(timeValue)) return result(fromParts(timeValue, timezone), true);
+  const cellTime = numeric ? combined?.[2] : named.time;
+  if (!hasText(cellTime)) return result(fromParts(undefined, timezone), false);
+  const { time, offsetMinutes } = readCellTime(cellTime);
+  if (offsetMinutes === null) return result(fromParts(time, timezone), true);
+  if (Math.abs(offsetMinutes) > MAX_OFFSET_MINUTES) return result(null, false);
+  const wallClockAsUtc = fromParts(time, 'UTC');
+  return result(wallClockAsUtc && new Date(wallClockAsUtc.getTime() - offsetMinutes * 60000), true);
 };
 
 /** The instant of a sale, and whether the file actually said what time it happened. */
@@ -204,24 +224,29 @@ const parseDateTime = (dateValue, timeValue, timezone = DEFAULT_TIMEZONE, contex
 
 const parseDate = (dateValue, timeValue, timezone, context) => parseDateTime(dateValue, timeValue, timezone, context).date;
 
-const AMBIGUOUS_ORDER_RE = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:[T\s].*)?$/;
+const AMBIGUOUS_ORDER_RE = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:(?:\s*,\s*|[T\s]).*)?$/;
+const MERIDIEM_IN_CELL_RE = /\d\s*[ap]\.?\s*m\.?(?:\s|$)/i;
 
 /**
  * Day-first or month-first, decided by the file's own values: a first number above 12 can only be a day, a second
  * number above 12 can only be a day in the month-first reading. Both in one file is a contradiction the owner must fix.
- * Neither keeps the South African default, day-first.
+ * With neither, a date cell that carries a 12-hour clock ("9/3/2026 2:15:00 PM") is the en-US shape and stays
+ * month-first, as new Date read it before; anything else keeps the South African default, day-first.
  */
 const inferDayMonthOrder = (entries) => {
   let dayFirst = null;
   let monthFirst = null;
+  let twelveHourCells = false;
   for (const { value, rowNumber } of entries) {
     if (typeof value !== 'string') continue;
-    const match = value.trim().match(AMBIGUOUS_ORDER_RE);
+    const text = value.trim();
+    const match = text.match(AMBIGUOUS_ORDER_RE);
     if (!match) continue;
     const first = Number(match[1]);
     const second = Number(match[2]);
-    if (!dayFirst && first > 12 && second <= 12) dayFirst = { value: value.trim(), rowNumber };
-    if (!monthFirst && second > 12 && first <= 12) monthFirst = { value: value.trim(), rowNumber };
+    if (!twelveHourCells && MERIDIEM_IN_CELL_RE.test(text)) twelveHourCells = true;
+    if (!dayFirst && first > 12 && second <= 12) dayFirst = { value: text, rowNumber };
+    if (!monthFirst && second > 12 && first <= 12) monthFirst = { value: text, rowNumber };
     if (dayFirst && monthFirst) {
       throw createClientInputError(
         `This file mixes day-first and month-first dates: row ${dayFirst.rowNumber} reads ${dayFirst.value} and row `
@@ -229,7 +254,9 @@ const inferDayMonthOrder = (entries) => {
       );
     }
   }
-  return monthFirst ? 'MDY' : 'DMY';
+  if (monthFirst) return 'MDY';
+  if (dayFirst) return 'DMY';
+  return twelveHourCells ? 'MDY' : 'DMY';
 };
 
 const transactionDateError = (date, timezone) => {

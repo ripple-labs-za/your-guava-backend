@@ -223,7 +223,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     Transaction.find(activeCafeMatch)
       .sort({ date: -1 })
       .limit(25)
-      .select('date total items paymentMethod source')
+      .select('date hourKnown total items paymentMethod source')
       .lean(),
     Item.find({ cafeId: { $in: cafeIds }, isActive: true })
       .sort({ totalSold: -1 })
@@ -286,7 +286,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       lastDate: total.lastDate ? zonedDateTimeLabel(total.lastDate, activeTimezone) : null,
       contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters — if a question was longer than that, say so rather than answering as if you had seen all of it.'
         + (hourUnknownCount > 0
-          ? ` ${hourUnknownCount} sales in the last 90 days came from exports with dates but no times; the hour pattern leaves them out, so do not describe their hours.`
+          ? ` ${hourUnknownCount === 1 ? '1 sale in the last 90 days came from an export' : `${hourUnknownCount} sales in the last 90 days came from exports`} with dates but no times; the hour pattern leaves ${hourUnknownCount === 1 ? 'it' : 'them'} out, so do not describe ${hourUnknownCount === 1 ? 'its hour' : 'their hours'}.`
           : ''),
     },
     locationPerformance90d: locationTotals.map((row) => ({
@@ -357,7 +357,9 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       notes: event.notes,
     })),
     recentTransactions: recentTransactions.map((tx) => ({
-      localDateTime: zonedDateTimeLabel(tx.date, activeTimezone),
+      // A sale from a date-only export has no time: label it with its day, not a made-up midnight.
+      localDateTime: tx.hourKnown === false ? zonedDateKey(tx.date, activeTimezone) : zonedDateTimeLabel(tx.date, activeTimezone),
+      timeKnown: tx.hourKnown !== false,
       timezone: activeTimezone,
       total: tx.total,
       paymentMethod: tx.paymentMethod,

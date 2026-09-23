@@ -76,3 +76,55 @@ describe('a cafe in another zone than the host', () => {
     expect(localClock(date, 'Pacific/Auckland')).toBe('23:30');
   });
 });
+
+// Review of BE-03-T06: shapes production already imported correctly (server.js pins the process zone to
+// Africa/Johannesburg, so new Date(string) read naive strings in the cafe zone for SA cafes).
+describe('shapes the old new Date(string) fallback already read', () => {
+  const packed = { date: 'Date', items: 'Items', total: 'Total' };
+  const parseFile = (cells) => parseBuffer(
+    Buffer.from(['Date,Items,Total', ...cells.map((cell) => `"${cell}",1 x Latte,38.00`)].join(LF)),
+    { columnMapping: packed, itemsMode: 'packed', timezone: ZONE }
+  );
+
+  it('keeps an en-US 12-hour file with no day above 12 month-first, as it imported before', async () => {
+    const result = await parseFile(['9/1/2026 8:05:00 AM', '9/3/2026 2:15:00 PM', '9/10/2026 11:30:00 AM']);
+    expect(result.rowErrors).toEqual([]);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-01', '2026-09-03', '2026-09-10']);
+    expect(localClock(result.rows[1].date)).toBe('14:15');
+  });
+
+  it('still reads a 24-hour file with no day above 12 day-first', async () => {
+    const result = await parseFile(['03/09/2026 14:15', '04/09/2026 09:00']);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-03', '2026-09-04']);
+  });
+
+  it('reads en-US toLocaleString cells (a comma before the time) month-first from the file', async () => {
+    const result = await parseFile(['9/14/2026, 11:30:00 PM', '9/3/2026, 8:05:00 AM']);
+    expect(result.rowErrors).toEqual([]);
+    expect(result.rows.map((row) => row.date.toISOString())).toEqual(['2026-09-14T21:30:00.000Z', '2026-09-03T06:05:00.000Z']);
+  });
+
+  it('lets a decisive day-first value win over AM/PM', async () => {
+    const result = await parseFile(['13/09/2026 2:15 PM', '03/09/2026 9:00 AM']);
+    expect(result.rows.map((row) => row.dateKey)).toEqual(['2026-09-13', '2026-09-03']);
+  });
+
+  it.each([
+    ['2026/09/14, 23:30:00', '2026-09-14T21:30:00.000Z'],
+    ['2026-09-14T23:30:00.1234567+02:00', '2026-09-14T21:30:00.123Z'],
+    ['2026-09-14T21:30:00.1234567Z', '2026-09-14T21:30:00.123Z'],
+    ['2026-09-14 21:30:00+00', '2026-09-14T21:30:00.000Z'],
+    ['2026-09-14 21:30:00 UTC', '2026-09-14T21:30:00.000Z'],
+    ['Mon, 14 Sep 2026 23:30:00 +0200', '2026-09-14T21:30:00.000Z'],
+    ['Mon Sep 14 2026 23:30:00 GMT+0200 (South Africa Standard Time)', '2026-09-14T21:30:00.000Z'],
+    ['Sep-14-2026 23:30', '2026-09-14T21:30:00.000Z'],
+    ['2026-Sep-14 23:30', '2026-09-14T21:30:00.000Z'],
+    ['14th Sep 2026 23:30', '2026-09-14T21:30:00.000Z'],
+    ['sept 14, 2026 11:30 pm', '2026-09-14T21:30:00.000Z'],
+  ])('reads %s', (cell, iso) => {
+    const { date, timeKnown } = parseDateTime(cell, undefined, ZONE);
+    expect(date && date.toISOString()).toBe(iso);
+    expect(timeKnown).toBe(true);
+  });
+});
+

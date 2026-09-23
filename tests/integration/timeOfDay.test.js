@@ -57,6 +57,11 @@ describe('sales with no time of day', () => {
 
     expect(context.activeLocationHourPattern90d.map((row) => row.hour)).toEqual([10]);
     expect(context.activeLocationHourCoverage90d).toEqual({ transactionsWithoutTime: 1 });
+    // Review of BE-03-T06: the samples do not show the date-only sale at a made-up midnight, and one sale is "1 sale".
+    const noTime = context.recentTransactions.find((tx) => tx.total === 60);
+    expect(noTime).toMatchObject({ timeKnown: false, localDateTime: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
+    expect(context.recentTransactions.find((tx) => tx.total === 40).timeKnown).toBe(true);
+    expect(context.dataset.contextWindow).toMatch(/ 1 sale in the last 90 days came from an export with dates but no times;/);
   });
 
   it('come from a date-only upload with hourKnown false and hour null', async () => {
