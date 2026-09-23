@@ -1,6 +1,7 @@
 // The parsing-lease state machine: lock, touch, snapshot, restore and commit an upload being parsed.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const mongoose = require('mongoose');
+const readmissionService = require('../../services/readmission.service');
 const Upload = require('../../models/Upload.model');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
@@ -159,8 +160,10 @@ const commitParsedUpload = async ({
   mappingHash,
   idempotencyKeyHash,
   timezone,
+  readmission: prepared = [],
 }) => {
   let result;
+  let readmitted = { applied: [], stale: [] };
   let committedUpload;
   const session = await mongoose.startSession();
   try {
@@ -179,6 +182,8 @@ const commitParsedUpload = async ({
         timezone,
       });
       assertImportableResult(result);
+      // A remap that no longer imports some rows lets overlapping uploads re-admit them (BE-03-T02).
+      readmitted = await readmissionService.applyReadmission({ prepared, cafeId, session, timezone });
       await ingestion.rebuildItemsForCafe(cafeId, { session });
 
       committedUpload = await Upload.findOneAndUpdate(
@@ -271,7 +276,7 @@ const commitParsedUpload = async ({
   } finally {
     await session.endSession();
   }
-  return { upload: committedUpload, result };
+  return { upload: committedUpload, result, readmitted };
 };
 
 module.exports = {

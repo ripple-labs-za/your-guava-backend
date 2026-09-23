@@ -85,6 +85,7 @@ const RBAC_TABLE = [
   ['GET', '/api/uploads/local-download', 'public', 'signed URL'],
   ['GET', '/api/uploads', 'member', 'read'],
   ['GET', '/api/uploads/:id/rows', 'member', 'read'],
+  ['GET', '/api/uploads/:id/overlaps', 'member', 'read'],
   ['GET', '/api/uploads/:id', 'member', 'read'],
   ['POST', '/api/uploads/:id/confirm', 'member', 'data entry: confirms new data'],
   ['PATCH', '/api/uploads/:id/mapping', 'owner', 'deletes and re-imports an upload (security-4, WS-07-T02)'],

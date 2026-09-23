@@ -15,7 +15,9 @@ const { sha256Hex } = require('../../utils/authPrimitives');
 const {
   recoverStaleParsingUpload, snapshotUploadState, lockUploadForParsing, touchParsingLease, commitParsedUpload, restoreUploadAfterFailure,
 } = require('./lease');
-const { schedulePostImportMaintenance } = require('./jobs');
+const { schedulePostImportMaintenance, recoverPendingUploadMaintenance } = require('./jobs');
+const readmission = require('../../services/readmission.service');
+const { zonedDateKey } = require('../../utils/timezone');
 const { activeCafeId } = require('../../utils/tenancy');
 
 const assertRemapHasImportableRows = async (parsed, cafeId, uploadId, sourceFingerprint, timezone) => {
@@ -70,6 +72,8 @@ const remap = async (req, res, next) => {
     let expectedUpdatedAt = upload.updatedAt;
     let parsed;
     let result;
+    let plan = { prepared: [], deferred: [], range: null };
+    let readmitted = { applied: [], stale: [] };
 
     try {
       // 1. Parse first (read-only — can fail without any side effects)
@@ -94,6 +98,17 @@ const remap = async (req, res, next) => {
         upload.fileFingerprint || sha256Hex(upload.r2Key),
         timezone
       );
+      // Whatever the new mapping no longer imports, overlapping uploads may re-admit (BE-03-T02).
+      const range = readmission.unionDayRange(
+        readmission.uploadDayRange(upload, timezone),
+        parsed.dateRange?.firstDate
+          ? {
+            firstDateKey: zonedDateKey(parsed.dateRange.firstDate, timezone),
+            lastDateKey: zonedDateKey(parsed.dateRange.lastDate, timezone),
+          }
+          : null
+      );
+      plan = await readmission.prepareReadmission({ cafeId, range, excludeUploadId: upload._id, timezone });
 
       // 2. Parse succeeded — now safe to delete existing transactions
       upload = await touchParsingLease(upload._id, cafeId, expectedUpdatedAt);
@@ -109,9 +124,11 @@ const remap = async (req, res, next) => {
         mappingHash: confirmationMappingHash(columnMapping, itemsMode),
         idempotencyKeyHash: remapKeyHash,
         timezone,
+        readmission: plan.prepared,
       });
       upload = committed.upload;
       result = committed.result;
+      readmitted = committed.readmitted;
 
       // Invalidate planning forecasts so they regenerate with fresh data.
       // Keep historical forecasts so imported actuals can be matched to the original predictions.
@@ -128,9 +145,23 @@ const remap = async (req, res, next) => {
       throw err;
     }
 
+    const queued = [...plan.deferred, ...readmitted.stale];
+    if (queued.length > 0) {
+      await readmission.queueReadmission(queued, plan.range, upload._id);
+      setImmediate(() => {
+        recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
+          console.error('[uploads] re-admission kick failed:', error.message);
+        });
+      });
+    }
+
     clearApiCache();
     await schedulePostImportMaintenance(upload._id, cafeId, result.dateRange, timezone);
-    return res.status(200).json(confirmationResponse(upload));
+    return res.status(200).json({
+      ...confirmationResponse(upload),
+      readmitted: readmission.summariseReadmission(readmitted.applied),
+      readmissionQueued: queued.map(({ _id, fileName }) => ({ uploadId: _id, fileName })),
+    });
   } catch (error) {
     next(error);
   }

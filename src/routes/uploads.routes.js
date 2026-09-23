@@ -9,6 +9,8 @@ const router = express.Router();
 router.get('/local-download', uploads.localDownload);
 router.get('/', authMiddleware, uploads.list);
 router.get('/:id/rows', authMiddleware, uploads.rows);
+// Any cafe member may see which uploads share an upload's days; deleting stays owner-only (BE-03-T02).
+router.get('/:id/overlaps', authMiddleware, uploads.overlaps);
 router.get('/:id', authMiddleware, uploads.detail);
 router.post('/:id/confirm', authMiddleware, parseLimiter, uploads.confirm);
 // Re-mapping deletes and re-imports the upload: owner-only, like DELETE (security-4, WS-07-T02).

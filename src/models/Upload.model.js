@@ -108,11 +108,24 @@ const uploadSchema = new mongoose.Schema(
       retryExhaustedAt: { type: Date },
       errors: [{ type: String }],
     },
+    // Rows another upload held only through this one are re-admitted from this upload's own file when that other
+    // upload is deleted or remapped (BE-03-T02). 'pending' means the maintenance queue still owes this upload that re-read.
+    readmission: {
+      status: { type: String, enum: ['pending', 'completed'] },
+      firstDateKey: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+      lastDateKey: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+      sourceUploadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Upload' },
+      requestedAt: { type: Date },
+      completedAt: { type: Date },
+      rows: { type: Number, min: 0 },
+    },
   },
   { timestamps: true }
 );
 
 uploadSchema.index({ cafeId: 1, createdAt: -1 });
 uploadSchema.index({ cafeId: 1, fileFingerprint: 1, createdAt: -1 });
+// Serves the overlap query of re-admission (BE-03-T02).
+uploadSchema.index({ cafeId: 1, status: 1, 'dateRange.firstDate': 1 });
 
 module.exports = mongoose.model('Upload', uploadSchema);

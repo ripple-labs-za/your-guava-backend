@@ -1,6 +1,7 @@
 // The post-import job queue: forecast invalidation, actuals fill, insight invalidation, claim, run, schedule and recovery.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const { backgroundJobsInline } = require('../../config/flags');
+const readmission = require('../../services/readmission.service');
 const Upload = require('../../models/Upload.model');
 const Forecast = require('../../models/Forecast.model');
 const { zonedDayEnd, zonedDayStart } = require('../../utils/timezone');
@@ -88,6 +89,8 @@ const runPostImportMaintenance = async (claimedUpload, timezone) => {
       errors.push(`${label}: ${error.message}`.slice(0, 500));
     }
   };
+  // First, so the forecast work that follows sees re-admitted rows (BE-03-T02). A failure leaves the re-read pending.
+  await safely('re-admission', () => readmission.runPendingReadmission(uploadId, timezone));
   await safely('forecast invalidation', () => invalidatePlanningForecasts(cafeId, timezone));
   await safely('week forecast regeneration', () => generateWeekForecast(cafeId));
   await safely('forecast actuals refresh', () => fillActualsForRange(cafeId, dateRange, timezone));

@@ -7,7 +7,7 @@
 const { localDownload } = require('./uploads/download');
 const { confirm } = require('./uploads/confirm');
 const { list } = require('./uploads/list');
-const { detail, rows } = require('./uploads/detail');
+const { detail, rows, overlaps } = require('./uploads/detail');
 const { remap } = require('./uploads/remap');
 const { remove } = require('./uploads/remove');
 const { cleanupAbandonedPendingUploads } = require('./uploads/sweeper');
@@ -19,6 +19,7 @@ module.exports = {
   list,
   detail,
   rows,
+  overlaps,
   remap,
   remove,
   cleanupAbandonedPendingUploads,

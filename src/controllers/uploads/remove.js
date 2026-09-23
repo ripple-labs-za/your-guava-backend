@@ -1,5 +1,5 @@
-// DELETE /uploads/:id: remove an upload, its rows and its storage object.
-// Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
+// DELETE /uploads/:id: remove an upload, its rows and its storage object, re-admitting from overlapping uploads
+// the rows they held only through it (BE-03-T02).
 const mongoose = require('mongoose');
 const Upload = require('../../models/Upload.model');
 const Transaction = require('../../models/Transaction.model');
@@ -12,7 +12,8 @@ const { zonedDayStart } = require('../../utils/timezone');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getCafeTimezone, STORAGE_CLEANUP_PENDING } = require('./shared');
 const { recoverStaleParsingUpload } = require('./lease');
-const { fillActualsForRange, invalidateAiInsights } = require('./jobs');
+const { fillActualsForRange, invalidateAiInsights, recoverPendingUploadMaintenance } = require('./jobs');
+const readmission = require('../../services/readmission.service');
 const { activeCafeId } = require('../../utils/tenancy');
 
 const remove = async (req, res, next) => {
@@ -27,6 +28,15 @@ const remove = async (req, res, next) => {
     const dateRange = upload.dateRange;
     const timezone = await getCafeTimezone(cafeId);
     const today = zonedDayStart(new Date(), timezone);
+    // Rows another upload holds only through this one come back from that upload's own file (BE-03-T02). The
+    // overlapping files are parsed here, outside the transaction; they are persisted inside it, after this upload's
+    // rows are gone, so the delete never leaves a hole another upload should fill.
+    const range = readmission.uploadDayRange(upload, timezone);
+    const heldRows = await Transaction.exists({ cafeId, uploadId: upload._id });
+    const plan = heldRows
+      ? await readmission.prepareReadmission({ cafeId, range, excludeUploadId: upload._id, timezone })
+      : { prepared: [], deferred: [], range };
+    let outcome = { applied: [], stale: [] };
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
@@ -44,6 +54,8 @@ const remove = async (req, res, next) => {
 
         if (contributedRows > 0) {
           await Transaction.deleteMany({ cafeId, uploadId: upload._id }).session(session);
+          // Reassigned on every attempt: withTransaction may re-run this callback on a transient error.
+          outcome = await readmission.applyReadmission({ prepared: plan.prepared, cafeId, session, timezone });
           await ingestion.rebuildItemsForCafe(cafeId, { session });
           await Forecast.deleteMany({ cafeId, date: { $gte: today } }).session(session);
           await GeneratedInsight.updateOne(
@@ -100,6 +112,17 @@ const remove = async (req, res, next) => {
       await session.endSession();
     }
 
+    const queued = [...plan.deferred, ...outcome.stale];
+    if (queued.length > 0) {
+      await readmission.queueReadmission(queued, plan.range, upload._id);
+      // Start the queue now rather than at the next sweep; the job is idempotent and claims atomically.
+      setImmediate(() => {
+        recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
+          console.error('[uploads] re-admission kick failed:', error.message);
+        });
+      });
+    }
+
     try { await fillActualsForRange(cafeId, dateRange, timezone); } catch (error) {
       console.error('[uploads] delete actuals refresh failed:', error.message);
     }
@@ -122,7 +145,11 @@ const remove = async (req, res, next) => {
       console.error('[uploads] delete AI insight invalidation failed:', error.message);
     }
     clearApiCache();
-    return res.status(200).json({ success: true });
+    return res.status(200).json({
+      success: true,
+      readmitted: readmission.summariseReadmission(outcome.applied),
+      readmissionQueued: queued.map(({ _id, fileName }) => ({ uploadId: _id, fileName })),
+    });
   } catch (error) {
     next(error);
   }

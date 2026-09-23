@@ -7,6 +7,8 @@ const { MAX_LIST_PAGE } = require('./shared');
 const { parsingLeaseMs } = require('./lease');
 const { maintenanceMaxAttempts, claimAndRunPostImportMaintenance } = require('./jobs');
 const { activeCafeId } = require('../../utils/tenancy');
+const { getCafeTimezone } = require('../../utils/timezone');
+const readmission = require('../../services/readmission.service');
 
 const detail = async (req, res, next) => {
   try {
@@ -72,6 +74,33 @@ const rows = async (req, res, next) => {
   }
 };
 
+// GET /uploads/:id/overlaps: the completed uploads of this cafe whose days meet this one's, so the delete dialog can
+// say which files keep those days covered. At most 20 are listed; `more` counts at most one beyond them (enough to say
+// "and more").
+const overlaps = async (req, res, next) => {
+  try {
+    const cafeId = activeCafeId(req);
+    const upload = await Upload.findOne({ _id: req.params.id, cafeId }).select('_id status dateRange').lean();
+    if (!upload || upload.status === 'deleted') {
+      return res.status(404).json({ success: false, message: 'Upload not found' });
+    }
+    const timezone = await getCafeTimezone(cafeId);
+    const range = readmission.uploadDayRange(upload, timezone);
+    if (!range) return res.status(200).json({ success: true, overlaps: [], more: 0 });
+    const found = await readmission.findOverlappingUploads(cafeId, range, {
+      excludeUploadId: upload._id, timezone, limit: readmission.MAX_LISTED_OVERLAPS + 1,
+    });
+    const listed = found.slice(0, readmission.MAX_LISTED_OVERLAPS);
+    return res.status(200).json({
+      success: true,
+      overlaps: listed.map((row) => ({ uploadId: row._id, fileName: row.fileName, ...readmission.uploadDayRange(row, timezone) })),
+      more: Math.max(0, found.length - listed.length),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
-  detail, rows,
+  detail, rows, overlaps,
 };
