@@ -3,6 +3,7 @@
 const Item = require('../models/Item.model');
 const {
   normalizeItemName, uniqueStrings, buildAliasKeys, areSiblingVariants, updateTransactionMenuItemLinks, rebuildItemsForCafe,
+  runMenuMutation,
 } = require('./menuItems.service');
 
 const MANUAL_FIELDS = ['category', 'expectedPrice', 'aliases'];
@@ -25,9 +26,9 @@ const markManualFields = (document, fields = []) => {
  * merged or ignored item (the sales landed where no screen shows them, and chains and cycles of merges became
  * possible). Both are refused before anything is written (BE-03-T10).
  */
-const mapTo = async (cafeId, item, { targetItemId, expectedPrice, category, aliases }) => {
+const mapTo = async (cafeId, item, { targetItemId, expectedPrice, category, aliases }, session) => {
   if (String(targetItemId) === String(item._id)) throw refusal(400, 'MAP_TO_SELF', 'A menu item cannot be linked to itself.');
-  const target = await Item.findOne({ _id: targetItemId, cafeId });
+  const target = await Item.findOne({ _id: targetItemId, cafeId }).session(session);
   if (!target) throw notFound('Target item not found');
   if (target.isActive === false || ['merged', 'ignored'].includes(target.reviewStatus)) {
     throw refusal(400, 'MAP_TO_INACTIVE_TARGET', target.reviewStatus === 'merged'
@@ -59,34 +60,37 @@ const mapTo = async (cafeId, item, { targetItemId, expectedPrice, category, alia
     markManualFields(target, ['category']);
   }
   target.reviewStatus = 'matched';
-  await target.save();
+  await target.save({ session });
 
   item.reviewStatus = 'merged';
   item.isActive = false;
   item.mergedInto = target._id;
-  await item.save();
+  await item.save({ session });
   // Items already linked to this one follow it, so every merge chain stays one hop and the resolver's hop limit is
   // never reached by ordinary use.
-  await Item.updateMany({ cafeId, mergedInto: item._id, _id: { $ne: target._id } }, { $set: { mergedInto: target._id } });
-  await updateTransactionMenuItemLinks(cafeId, item, target, { clearPriceMismatch: true });
-  await rebuildItemsForCafe(cafeId);
+  await Item.updateMany({ cafeId, mergedInto: item._id, _id: { $ne: target._id } }, { $set: { mergedInto: target._id } }, { session });
+  await updateTransactionMenuItemLinks(cafeId, item, target, { clearPriceMismatch: true, session });
+  await rebuildItemsForCafe(cafeId, { session });
   return target;
 };
 
-// Confirm, link and ignore are explicit resolutions, so each clears the price mismatches of the lines it relinks.
-const resolveMenuItem = async (cafeId, itemId, { action, targetItemId, expectedPrice, category, aliases, notes }) => {
-  const item = await Item.findOne({ _id: itemId, cafeId });
+// Confirm, link and ignore are explicit resolutions, so each clears the price mismatches of the lines it relinks. All of
+// it runs under the cafe's menu lock in one transaction (BE-03-T12), and runs again if the driver retries a conflict.
+const resolveMenuItem = (cafeId, itemId, body) => runMenuMutation(cafeId, (session) => resolveInSession(cafeId, itemId, body, session));
+
+const resolveInSession = async (cafeId, itemId, { action, targetItemId, expectedPrice, category, aliases, notes }, session) => {
+  const item = await Item.findOne({ _id: itemId, cafeId }).session(session);
   if (!item) throw notFound('Item not found');
 
-  if (action === 'map_to') return mapTo(cafeId, item, { targetItemId, expectedPrice, category, aliases });
+  if (action === 'map_to') return mapTo(cafeId, item, { targetItemId, expectedPrice, category, aliases }, session);
 
   if (action === 'ignore') {
     item.reviewStatus = 'ignored';
     item.isActive = false;
     if (notes !== undefined) item.notes = notes;
-    await item.save();
-    await updateTransactionMenuItemLinks(cafeId, item, item, { clearPriceMismatch: true });
-    await rebuildItemsForCafe(cafeId);
+    await item.save({ session });
+    await updateTransactionMenuItemLinks(cafeId, item, item, { clearPriceMismatch: true, session });
+    await rebuildItemsForCafe(cafeId, { session });
     return item;
   }
 
@@ -107,9 +111,9 @@ const resolveMenuItem = async (cafeId, itemId, { action, targetItemId, expectedP
     markManualFields(item, ['aliases']);
   }
   item.normalizedName = normalizeItemName(item.name);
-  await item.save();
-  await updateTransactionMenuItemLinks(cafeId, item, item, { clearPriceMismatch: true });
-  await rebuildItemsForCafe(cafeId);
+  await item.save({ session });
+  await updateTransactionMenuItemLinks(cafeId, item, item, { clearPriceMismatch: true, session });
+  await rebuildItemsForCafe(cafeId, { session });
   return item;
 };
 
@@ -137,8 +141,9 @@ const changedFields = (before, payload) => {
  * brand-new review item and split the history; and it skipped the uniqueness rule create enforces, so two items
  * could share a key and the resolver and rebuild flipped sales between them (BE-03-T10).
  */
-const renamedFields = async (cafeId, before, payload) => {
-  const clash = await Item.findOne({ cafeId, normalizedName: payload.normalizedName, _id: { $ne: before._id } }).select('name').lean();
+const renamedFields = async (cafeId, before, payload, session) => {
+  const clash = await Item.findOne({ cafeId, normalizedName: payload.normalizedName, _id: { $ne: before._id } })
+    .select('name').session(session).lean();
   if (clash) throw refusal(409, 'ITEM_NAME_TAKEN', `A menu item called "${clash.name}" already exists.`);
   // The till keeps printing the old name. Put it first so the 50-alias cap can never drop it; a sibling variant
   // (the small of a large) never becomes an alias, or the next import merges the variants again.
@@ -153,27 +158,29 @@ const renamedFields = async (cafeId, before, payload) => {
  * and wipe the forecasts, even a notes-only one. Now only a change to what the item is (name, aliases, active,
  * review status) or to its price relinks and rebuilds, and only a price or review-status change clears mismatches.
  */
-const updateMenuItem = async (cafeId, itemId, payload) => {
-  const item = await Item.findOne({ _id: itemId, cafeId });
+const updateMenuItem = (cafeId, itemId, payload) => runMenuMutation(cafeId, (session) => updateInSession(cafeId, itemId, payload, session));
+
+const updateInSession = async (cafeId, itemId, payload, session) => {
+  const item = await Item.findOne({ _id: itemId, cafeId }).session(session);
   if (!item) throw notFound('Item not found');
   const before = item.toObject();
   const changed = changedFields(before, payload);
   // Only what the owner changed is theirs; the old name a rename adds to the aliases is the till's, not theirs. A
   // rename itself is recorded, so the orphan clean-up never deletes an item the owner has named.
   const manual = [...MANUAL_FIELDS.filter((field) => changed[field]), ...(changed.name ? ['name'] : [])];
-  const changes = changed.name ? await renamedFields(cafeId, before, payload) : payload;
+  const changes = changed.name ? await renamedFields(cafeId, before, payload, session) : payload;
   if (changed.name) changed.aliases = true;
 
   Object.assign(item, changes);
   markManualFields(item, manual);
-  await item.save();
+  await item.save({ session });
   const identity = changed.name || changed.aliases || changed.isActive || changed.reviewStatus;
   if (identity || changed.expectedPrice) {
     // The old names find lines that still carry the old name or an alias the edit removed; the new aliases pick up
     // old lines written before lines carried an id.
     const linesOf = { ...before, aliases: [...(before.aliases || []), ...(item.aliases || [])] };
-    await updateTransactionMenuItemLinks(cafeId, linesOf, item, { clearPriceMismatch: changed.expectedPrice || changed.reviewStatus });
-    await rebuildItemsForCafe(cafeId);
+    await updateTransactionMenuItemLinks(cafeId, linesOf, item, { clearPriceMismatch: changed.expectedPrice || changed.reviewStatus, session });
+    await rebuildItemsForCafe(cafeId, { session });
   }
   return { item, changed: { identity, price: changed.expectedPrice, category: changed.category } };
 };

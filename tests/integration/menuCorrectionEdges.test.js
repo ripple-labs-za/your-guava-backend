@@ -181,29 +181,29 @@ describe('renames and links leave other items alone', () => {
   });
 });
 
-describe('orphans are only removed inside a transaction', () => {
+describe('orphans are only removed by the rebuilds that ask for it', () => {
   const mongoose = require('mongoose');
   const { rebuildItemsForCafe } = require('../../src/services/menuItems.service');
   let cafeId;
   beforeEach(async () => { const owner = await createTestUser(); cafeId = owner.user.activeCafeId; });
+  const inTransaction = async (work) => {
+    const session = await mongoose.startSession();
+    try { await session.withTransaction(() => work(session)); } finally { await session.endSession(); }
+  };
 
-  // Review of BE-03-T10: a rebuild without a session (a Link, an edit, every Yoco webhook) has no snapshot, so a
-  // brand-new item whose first sale was being written at that moment looked unsold and was deleted, leaving the
-  // sale pointing at nothing.
-  it('leaves an unsold imported item alone when the rebuild runs outside a transaction', async () => {
+  // Review of BE-03-T10: a menu edit's or a Yoco webhook's rebuild could count a brand-new item's sales before its
+  // first sale was written, delete the item and leave the sale pointing at nothing. BE-03-T12 runs every rebuild in a
+  // transaction, so pruning is an explicit flag that only import, remap, upload delete and re-admission pass.
+  it('leaves an unsold imported item alone on a rebuild that does not prune, with or without a session', async () => {
     const fresh = await Item.create({ cafeId, name: 'Iced Chai', normalizedName: 'iced chai', source: 'imported', reviewStatus: 'needs_review' });
     await rebuildItemsForCafe(cafeId);
+    await inTransaction((session) => rebuildItemsForCafe(cafeId, { session }));
     expect(await Item.findById(fresh._id).lean()).not.toBeNull();
   });
 
-  it('removes it when the rebuild runs inside the caller\'s transaction', async () => {
+  it('removes it when the calling transaction asks to prune', async () => {
     const orphan = await Item.create({ cafeId, name: 'Iced Chai', normalizedName: 'iced chai', source: 'imported', reviewStatus: 'needs_review' });
-    const session = await mongoose.startSession();
-    try {
-      await session.withTransaction(() => rebuildItemsForCafe(cafeId, { session }));
-    } finally {
-      await session.endSession();
-    }
+    await inTransaction((session) => rebuildItemsForCafe(cafeId, { session, pruneOrphans: true }));
     expect(await Item.findById(orphan._id).lean()).toBeNull();
   });
 });

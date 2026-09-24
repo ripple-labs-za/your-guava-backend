@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
 const Transaction = require('../models/Transaction.model');
+const Cafe = require('../models/Cafe.model');
 const { inferItemCategory } = require('../utils/itemCategory');
 
 const MAX_CANONICAL_NAME_CHARS = 200;
@@ -72,6 +73,27 @@ const buildAliasKeys = (aliases = []) =>
   uniqueStrings(aliases).map(normalizeItemName).filter(Boolean);
 
 const withSession = (query, session) => (session ? query.session(session) : query);
+
+/** The per-cafe menu lock: the first write of a transaction that rebuilds menu items (see Cafe.menuRevision). */
+const lockCafeMenu = (cafeId, session) =>
+  Cafe.updateOne({ _id: toObjectId(cafeId) }, { $inc: { menuRevision: 1 } }, session ? { session } : undefined);
+
+// Menu edits used to save, relink and rebuild with no transaction, so an import committing in between had its new
+// items zeroed and its totals overwritten by the edit's stale rebuild (uploads-catalogue-11). `work` runs again when
+// the driver retries a conflict, so it must load what it changes inside the session and have no outside side effect.
+const runMenuMutation = async (cafeId, work) => {
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      await lockCafeMenu(cafeId, session);
+      result = await work(session);
+    }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+};
 
 // A line whose unitPrice is a basket average spread across a multi-item
 // receipt (parser priceSource 'derived') is not a price observation. Rows
@@ -462,12 +484,12 @@ const rebuiltItemFields = (combined, existing) => {
 // and there is no delete route, so they sat in the review queue for ever (BE-03-T10). Only items no one has touched
 // go: imported, still needing review, no owner fields, no notes, and not the target of a merge.
 //
-// Only inside the caller's transaction: import, remap, upload delete and re-admission, gap-4's own triggers. There the
-// sales totals and the delete read one snapshot, and an import's own orphans roll back with it. A rebuild without one
-// (a Link, an edit, every Yoco webhook) could count a brand-new item's sales before its first sale was written, delete
-// the item, and leave that sale pointing at nothing.
+// Only when the caller asks (pruneOrphans): import, remap, upload delete and re-admission, gap-4's own triggers, all
+// inside their transaction, so an import's own orphans roll back with it. Since BE-03-T12 every rebuild runs in a
+// transaction, but a menu edit's or a Yoco webhook's rebuild still must not prune: a webhook creates its item and
+// writes its sale outside any transaction, so a rebuild between the two would delete the item and leave the sale
+// pointing at nothing (review of BE-03-T10; ISSUES #37).
 const deleteUntouchedOrphans = async (cafeObjectId, noSales, session) => {
-  if (!session) return;
   const mergeTargets = await withSession(Item.distinct('mergedInto', { cafeId: cafeObjectId, mergedInto: { $ne: null } }), session);
   await Item.deleteMany({
     cafeId: cafeObjectId,
@@ -483,7 +505,10 @@ const deleteUntouchedOrphans = async (cafeObjectId, noSales, session) => {
 };
 
 const rebuildItemsForCafe = async (cafeId, options = {}) => {
-  const { session } = options;
+  const { session, pruneOrphans = false } = options;
+  // Every rebuild holds the cafe's menu lock inside a transaction, its own when the caller has none (BE-03-T12).
+  if (!session) return runMenuMutation(cafeId, (own) => rebuildItemsForCafe(cafeId, { session: own, pruneOrphans }));
+  await lockCafeMenu(cafeId, session);
   const cafeObjectId = toObjectId(cafeId);
   const stats = await cafeSalesStats(cafeObjectId, session);
 
@@ -524,7 +549,7 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
     { $set: { totalSold: 0, avgPrice: 0 } },
     session ? { session } : undefined
   );
-  await deleteUntouchedOrphans(cafeObjectId, noSales, session);
+  if (pruneOrphans) await deleteUntouchedOrphans(cafeObjectId, noSales, session);
 
   const operations = groups.map(({ existing, entries }) => {
     const fields = rebuiltItemFields(combineStats(entries, existing), existing);
@@ -650,6 +675,8 @@ module.exports = {
   areSiblingVariants,
   reconcileTransactionItems,
   rebuildItemsForCafe,
+  lockCafeMenu,
+  runMenuMutation,
   findMatchCandidates,
   loadMatchCandidatePool,
   updateTransactionMenuItemLinks,

@@ -180,7 +180,7 @@ const runPendingReadmission = async (uploadId, timezone) => {
       const outcome = await applyReadmission({ prepared: [entry], cafeId: upload.cafeId, session, timezone });
       if (outcome.stale.length > 0) throw new Error('Upload changed during re-admission; the queue will retry');
       rows = outcome.applied[0]?.rows || 0;
-      await ingestion.rebuildItemsForCafe(upload.cafeId, { session });
+      await ingestion.rebuildItemsForCafe(upload.cafeId, { session, pruneOrphans: true });
       await Upload.updateOne(
         { _id: upload._id, 'readmission.status': 'pending', 'readmission.requestedAt': upload.readmission.requestedAt },
         { $set: { 'readmission.status': 'completed', 'readmission.completedAt': new Date(), 'readmission.rows': rows } },

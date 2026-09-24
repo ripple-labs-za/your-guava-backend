@@ -58,6 +58,10 @@ const cafeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Incremented as the first write of every transaction that rebuilds menu items (an import, an upload delete, a menu
+    // edit). Two such transactions for one cafe write the same document, so MongoDB lets only one proceed and retries the
+    // other on a fresh snapshot. Nothing reads the number; the write is the lock (BE-03-T12).
+    menuRevision: { type: Number, default: 0 },
     savedColumnMapping: {
       type: new mongoose.Schema(
         {

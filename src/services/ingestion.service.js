@@ -128,14 +128,21 @@ const transactionDocument = (row, { cafeId, uploadId, identity }) => ({
   source: 'csv',
 });
 
+// The parser's own lines for each row, kept the first time a row is reconciled. A transaction retried after a menu-lock
+// conflict (BE-03-T12) reconciles again, and reconciling the previous attempt's output took rawName from that attempt's
+// menu name, so the till's own spelling was lost (review of BE-03-T12).
+const parsedItemsOf = new WeakMap();
+
 const reconcileParsedRows = async (parsed, { cafeId, session }) => {
   const reconciledCache = new Map();
   for (const row of parsed.rows) {
     if (normaliseTransactionStatus(row.status).status !== 'approved') continue;
-    const cacheKey = JSON.stringify(row.items || []);
+    if (!parsedItemsOf.has(row)) parsedItemsOf.set(row, row.items);
+    const sourceItems = parsedItemsOf.get(row);
+    const cacheKey = JSON.stringify(sourceItems || []);
     let reconciled = reconciledCache.get(cacheKey);
     if (!reconciled) {
-      reconciled = await reconcileTransactionItems(cafeId, row.items, { session });
+      reconciled = await reconcileTransactionItems(cafeId, sourceItems, { session });
       reconciledCache.set(cacheKey, reconciled);
     }
     row.items = reconciled.map((item) => ({ ...item }));

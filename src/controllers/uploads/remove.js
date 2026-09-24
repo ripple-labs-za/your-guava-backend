@@ -8,6 +8,7 @@ const Forecast = require('../../models/Forecast.model');
 const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const r2 = require('../../services/r2.service');
 const ingestion = require('../../services/ingestion.service');
+const { lockCafeMenu } = require('../../services/menuItems.service');
 const { zonedDayStart } = require('../../utils/timezone');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getCafeTimezone, STORAGE_CLEANUP_PENDING } = require('./shared');
@@ -40,6 +41,8 @@ const remove = async (req, res, next) => {
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
+        // First, so a menu edit or an import of this cafe waits for this delete rather than interleaving (BE-03-T12).
+        await lockCafeMenu(cafeId, session);
         // Count what this upload actually contributed before removing it, rather
         // than trusting stats.imported - a re-map rewrites the rows without
         // rewriting the stat. An upload that contributed nothing (staged and
@@ -56,7 +59,7 @@ const remove = async (req, res, next) => {
           await Transaction.deleteMany({ cafeId, uploadId: upload._id }).session(session);
           // Reassigned on every attempt: withTransaction may re-run this callback on a transient error.
           outcome = await readmission.applyReadmission({ prepared: plan.prepared, cafeId, session, timezone });
-          await ingestion.rebuildItemsForCafe(cafeId, { session });
+          await ingestion.rebuildItemsForCafe(cafeId, { session, pruneOrphans: true });
           await Forecast.deleteMany({ cafeId, date: { $gte: today } }).session(session);
           await GeneratedInsight.updateOne(
             { cafeId },

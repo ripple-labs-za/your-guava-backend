@@ -14,6 +14,7 @@ const {
   boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash, describeOverlap,
 } = require('./shared');
 const { sha256Hex } = require('../../utils/authPrimitives');
+const { lockCafeMenu } = require('../../services/menuItems.service');
 
 const DEFAULT_PARSING_LEASE_MS = 15 * 60 * 1000;
 const MAX_PARSING_LEASE_MS = 60 * 60 * 1000;
@@ -23,6 +24,22 @@ const parsingLeaseMs = () => boundedInteger(
   DEFAULT_PARSING_LEASE_MS,
   60 * 1000,
   MAX_PARSING_LEASE_MS
+);
+
+/**
+ * Puts an upload whose parse lease ran out back to where it was: completed if it ever completed (an interrupted remap),
+ * else failed. Returns the recovered document, or null when it changed meanwhile. Used when the owner touches the
+ * upload, and by the sweeper for one nobody touches after a crash or deploy (BE-03-T12).
+ */
+const recoverStaleParsing = (upload, staleBefore) => Upload.findOneAndUpdate(
+  { _id: upload._id, cafeId: upload.cafeId, status: 'parsing', updatedAt: { $lte: staleBefore } },
+  {
+    $set: {
+      status: upload.completedAt ? 'completed' : 'failed',
+      errorMessage: 'Previous import did not finish; the upload is available to retry.',
+    },
+  },
+  { new: true }
 );
 
 const recoverStaleParsingUpload = async (upload, cafeId) => {
@@ -39,22 +56,7 @@ const recoverStaleParsingUpload = async (upload, cafeId) => {
     throw err;
   }
 
-  const fallbackStatus = upload.completedAt ? 'completed' : 'failed';
-  const recovered = await Upload.findOneAndUpdate(
-    {
-      _id: upload._id,
-      cafeId,
-      status: 'parsing',
-      updatedAt: { $lte: staleBefore },
-    },
-    {
-      $set: {
-        status: fallbackStatus,
-        errorMessage: 'Previous import did not finish; the upload is available to retry.',
-      },
-    },
-    { new: true }
-  );
+  const recovered = await recoverStaleParsing({ _id: upload._id, cafeId, completedAt: upload.completedAt }, staleBefore);
 
   if (!recovered) {
     const err = new Error('Upload status changed while recovering a stale import. Please refresh and retry.');
@@ -169,6 +171,11 @@ const commitParsedUpload = async ({
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      // First, so a menu edit or another import of this cafe waits for this one rather than interleaving (BE-03-T12).
+      // Taken only at the rebuild, every menu write that committed meanwhile (a Yoco webhook's rebuild, an edit) made the
+      // whole import retry; first, the short writes wait for the long one. Measured 3x per placement: no cost to the
+      // 10,000-row import budget (evidence ab-lock-3x3.txt).
+      await lockCafeMenu(cafeId, session);
       await ingestion.reconcileParsedRows(parsed, { cafeId, session });
       await Transaction.deleteMany({ cafeId, uploadId: upload._id }).session(session);
       result = await ingestion.persistParsedRows(parsed, {
@@ -186,7 +193,7 @@ const commitParsedUpload = async ({
       const overlap = await describeOverlap(result.duplicatesByUpload, { cafeId, session });
       // A remap that no longer imports some rows lets overlapping uploads re-admit them (BE-03-T02).
       readmitted = await readmissionService.applyReadmission({ prepared, cafeId, session, timezone });
-      await ingestion.rebuildItemsForCafe(cafeId, { session });
+      await ingestion.rebuildItemsForCafe(cafeId, { session, pruneOrphans: true });
 
       committedUpload = await Upload.findOneAndUpdate(
         {
@@ -290,6 +297,7 @@ const commitParsedUpload = async ({
 };
 
 module.exports = {
-  DEFAULT_PARSING_LEASE_MS, MAX_PARSING_LEASE_MS, parsingLeaseMs, recoverStaleParsingUpload, lockUploadForParsing, touchParsingLease,
+  DEFAULT_PARSING_LEASE_MS, MAX_PARSING_LEASE_MS, parsingLeaseMs, recoverStaleParsing, recoverStaleParsingUpload, lockUploadForParsing,
+  touchParsingLease,
   snapshotUploadState, restoreUploadAfterFailure, commitParsedUpload,
 };
