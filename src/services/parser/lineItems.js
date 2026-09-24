@@ -14,8 +14,7 @@ const { parseDateTime, transactionDateError, temporalFields } = require('./dates
  * used to learn it as one, so nearly every item showed a false "price
  * differs" warning. The flag lets price learning and mismatch checks skip it.
  */
-const unitPriceSource = (items, { isExactPerLine = false, tip = 0, discount = 0, hasRefund = false } = {}) => {
-  if (isExactPerLine) return 'exact';
+const unitPriceSource = (items, { tip = 0, discount = 0, hasRefund = false } = {}) => {
   // A refund or a void is a correction, not a price observation. Its arithmetic
   // can even divide to zero, which must never be learned as a menu price.
   if (hasRefund) return 'derived';
@@ -232,7 +231,6 @@ const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
   const rows = [];
   for (const row of groups.values()) {
     if (row.invalidReason) continue;
-    const totalQty = row.items.reduce((sum, item) => sum + item.quantity, 0);
     const uniqueTotals = [...new Set(row.totals.map((total) => Number(total.toFixed(2))))];
     if (!totalsAreLineAmounts && uniqueTotals.length !== 1) {
       // Every source row of this receipt is discarded, not just the first.
@@ -258,23 +256,25 @@ const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
       );
       continue;
     }
-    const averageUnitPrice = totalQty > 0 ? parseFloat((total / totalQty).toFixed(2)) : 0;
-    const priceSource = unitPriceSource(row.items, {
-      isExactPerLine: totalsAreLineAmounts,
-      tip: row.tip,
-      discount: row.discount,
-    });
+    const hasRefund = row.items.some((item) => item.quantity < 0);
+    // Magnitudes, as the packed path does: a receipt mixing a sale and a refund can net its quantity to zero, which
+    // priced the refund line at 0 and marked it exact (BE-03-T07).
+    const absQty = row.items.reduce((sum, item) => sum + Math.abs(item.quantity), 0);
+    const averageUnitPrice = absQty > 0 ? parseFloat((Math.abs(total) / absQty).toFixed(2)) : 0;
+    const receiptPriceSource = unitPriceSource(row.items, { tip: row.tip, discount: row.discount, hasRefund });
     const { totals, invalidReason, ...cleanRow } = row;
     rows.push(setSourceRowNumbers({
       ...cleanRow,
       total,
-      items: row.items.map(({ lineTotal, ...item }) => ({
-        ...item,
-        unitPrice: totalsAreLineAmounts && item.quantity > 0
-          ? parseFloat((lineTotal / item.quantity).toFixed(2))
-          : averageUnitPrice,
-        priceSource,
-      })),
+      items: row.items.map(({ lineTotal, ...item }) => (totalsAreLineAmounts
+        ? {
+          ...item,
+          // The line's own amount over its own quantity; the sign stays on the quantity. A refund or void line is a
+          // correction, not a price the till charged, so it is never learned as one.
+          unitPrice: parseFloat(Math.abs(lineTotal / item.quantity).toFixed(2)),
+          priceSource: item.quantity < 0 || lineTotal < 0 ? 'derived' : 'exact',
+        }
+        : { ...item, unitPrice: averageUnitPrice, priceSource: receiptPriceSource })),
     }, row[SOURCE_ROW_NUMBERS] || []));
   }
   return { rows, errors, rowErrors, totalsAreLineAmounts };
