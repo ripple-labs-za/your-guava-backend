@@ -414,6 +414,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
           totalPredictedQty,
           includesAllRevenue: true,
           accuracyMethod: 'aggregate_quantity',
+          predictedItemNames: forecastItemNames,
         },
         trainingData: {
           transactionCount: transactions.length,

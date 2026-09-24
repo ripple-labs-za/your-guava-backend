@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Transaction = require('../../models/Transaction.model');
 const { getCafeTimezone, buildDateMatch, analyticsRangeMeta, inclusiveLocalDayCount, localDayBoundaryUtc } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
+const { DEMAND_LINE_MATCH } = require('../../utils/demand');
 
 /**
  * GET /api/analytics/items
@@ -58,6 +59,7 @@ const getItems = async (req, res, next) => {
     const itemsPipeline = [
       { $match: matchStage },
       { $unwind: '$items' },
+      { $match: DEMAND_LINE_MATCH },
       {
         $group: {
           _id: '$items.name',
@@ -96,6 +98,7 @@ const getItems = async (req, res, next) => {
         },
       },
       { $unwind: '$items' },
+      { $match: DEMAND_LINE_MATCH },
       {
         $group: {
           _id: {

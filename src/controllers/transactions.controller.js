@@ -10,6 +10,7 @@ const ingestion = require('../services/ingestion.service');
 const parser = require('../services/parser.service');
 const { addZonedDays, zonedDayEnd, zonedDayOrdinal, zonedDayStart, getCafeTimezone } = require('../utils/timezone');
 const { proposeColumnMapping } = require('../services/anthropic.service');
+const { DEMAND_LINE_MATCH } = require('../utils/demand');
 const { canSpendCredits } = require('../middleware/rbac.middleware');
 const { activeCafeId } = require('../utils/tenancy');
 
@@ -319,6 +320,7 @@ const getStats = async (req, res, next) => {
           ],
           topItems: [
             { $unwind: '$items' },
+            { $match: DEMAND_LINE_MATCH },
             {
               $group: {
                 _id: '$items.name',

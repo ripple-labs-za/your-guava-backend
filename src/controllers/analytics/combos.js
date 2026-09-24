@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Transaction = require('../../models/Transaction.model');
 const { getCafeTimezone, buildDateMatch, analyticsRangeMeta } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
+const { demandLines, demandItemsExpression } = require('../../utils/demand');
 
 const MAX_COMBO_FALLBACK_TRANSACTIONS = 5000;
 const MAX_COMBO_FALLBACK_PAIR_WORK = 100000;
@@ -30,11 +31,16 @@ const getCombos = async (req, res, next) => {
       { $match: { 'items.1': { $exists: true } } },           // ≥2 items
       {
         $project: {
+          // Ignored lines (a delivery fee) are not part of what was bought together (BE-03-T11).
           itemNames: {
-            $sortArray: { input: { $setUnion: ['$items.name', []] }, sortBy: 1 },
+            $sortArray: {
+              input: { $setUnion: [{ $map: { input: demandItemsExpression(), as: 'line', in: '$$line.name' } }, []] },
+              sortBy: 1,
+            },
           },
         },
       },
+      { $match: { 'itemNames.1': { $exists: true } } },
       // Generate unordered pairs
       {
         $project: {
@@ -97,7 +103,7 @@ const getCombos = async (req, res, next) => {
           ...matchStage,
           'items.1': { $exists: true },
         })
-          .select('items.name')
+          .select('items.name items.menuItemStatus')
           .sort({ date: -1, _id: -1 })
           .limit(MAX_COMBO_FALLBACK_TRANSACTIONS + 1)
           .lean();
@@ -114,7 +120,8 @@ const getCombos = async (req, res, next) => {
         const pairCounts = {};
         let pairWork = 0;
         for (const tx of transactions) {
-          const names = [...new Set(tx.items.map((i) => i.name))].sort();
+          const names = [...new Set(demandLines(tx.items).map((i) => i.name))].sort();
+          if (names.length < 2) continue;
           pairWork += (names.length * (names.length - 1)) / 2;
           if (pairWork > MAX_COMBO_FALLBACK_PAIR_WORK) {
             const capacityError = new Error(

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Transaction = require('../../models/Transaction.model');
 const { getCafeTimezone, buildDateMatch, analyticsRangeMeta } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
+const { demandItemsExpression } = require('../../utils/demand');
 
 /**
  * GET /api/analytics/customers
@@ -32,7 +33,7 @@ const getCustomers = async (req, res, next) => {
           totalItems: {
             $sum: {
               $reduce: {
-                input: '$items',
+                input: demandItemsExpression(),
                 initialValue: 0,
                 in: { $add: ['$$value', '$$this.quantity'] },
               },

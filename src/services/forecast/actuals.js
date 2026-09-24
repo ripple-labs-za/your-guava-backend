@@ -5,6 +5,7 @@ const Forecast = require('../../models/Forecast.model');
 const Cafe = require('../../models/Cafe.model');
 const { backgroundJobsInline } = require('../../config/flags');
 const { safeTimezone, zonedDayStart, addZonedDays } = require('../../utils/timezone');
+const { isDemandLine } = require('../../utils/demand');
 
 /**
  * Pulls actual transactions for a given date and updates forecast accuracy.
@@ -43,7 +44,7 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
   const forecast = await Forecast.findOne({
     cafeId,
     date: { $gte: target, $lt: nextDay },
-  }).sort({ date: 1 });
+  }).select('+forecastCoverage.predictedItemNames').sort({ date: 1 });
   if (!forecast) return null;
 
   // Fetch actual transactions for that date
@@ -66,12 +67,19 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
     return forecast;
   }
 
-  // Sum actual quantities per item
+  // Sum actual quantities per item. A forecast made before the owner ignored a line predicted it, and is scored
+  // against it; one made after is not (BE-03-T11). The stored items are only the top 25, so the full list recorded at
+  // generation decides; forecasts made before it was recorded fall back to their stored items.
+  const predictedNames = new Set([
+    ...(forecast.forecastCoverage?.predictedItemNames || []),
+    ...(forecast.items || []).map((item) => item.itemName),
+  ]);
   const actualMap = new Map();
   let actualRevenue = 0;
   for (const tx of transactions) {
     actualRevenue += tx.total || 0;
     for (const item of tx.items || []) {
+      if (!isDemandLine(item) && !predictedNames.has(item.name)) continue;
       actualMap.set(item.name, (actualMap.get(item.name) || 0) + item.quantity);
     }
   }

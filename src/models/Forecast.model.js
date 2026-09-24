@@ -151,6 +151,9 @@ const forecastSchema = new mongoose.Schema(
       totalPredictedQty: { type: Number, default: 0 },
       includesAllRevenue: { type: Boolean, default: false },
       accuracyMethod: { type: String },
+      // Every item this forecast predicted, not only the stored top items: scoring a day after the owner ignored a line
+      // keeps counting it when the forecast predicted it (BE-03-T11). Kept out of API payloads; actuals select it.
+      predictedItemNames: { type: [String], select: false, default: undefined },
     },
     actualRevenue: {
       type: Number,

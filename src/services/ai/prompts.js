@@ -1,6 +1,7 @@
 // What the model reads: prompt text, the fenced-JSON helper, summary stats and the label helpers. Pure, no I/O.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const { zonedDateKey, zonedDayOfWeek, zonedDayStart, getZonedDateParts } = require('../../utils/timezone');
+const { demandLines } = require('../../utils/demand');
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 // Read at call time, as every site did; BE-05-T08 replaces the body with its model config.
@@ -68,7 +69,7 @@ const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
     dayOfWeekRevenue[dow] = (dayOfWeekRevenue[dow] || 0) + (tx.total || 0);
     dayOfWeekCount[dow] = (dayOfWeekCount[dow] || 0) + 1;
 
-    for (const item of tx.items || []) {
+    for (const item of demandLines(tx.items)) {
       itemCounts[item.name] = (itemCounts[item.name] || 0) + item.quantity;
     }
   }

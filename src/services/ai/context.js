@@ -8,6 +8,7 @@ const Item = require('../../models/Item.model');
 const Organization = require('../../models/Organization.model');
 const { safeTimezone, addZonedDays, zonedDayStart, zonedDateKey } = require('../../utils/timezone');
 const { roundMoney, zonedDateTimeLabel, dayNames, weekdayForKey, relativeDayLabel } = require('./prompts');
+const { demandLines, DEMAND_LINE_MATCH } = require('../../utils/demand');
 
 // The bar for "there is something to analyse". Below it we decline before the
 // provider call so nothing is billed: buildSummaryStats has nothing to report,
@@ -174,6 +175,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     Transaction.aggregate([
       { $match: { ...baseMatch, date: { $gte: ninetyDaysAgo } } },
       { $unwind: '$items' },
+      { $match: DEMAND_LINE_MATCH },
       {
         $group: {
           _id: '$items.name',
@@ -364,7 +366,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       total: tx.total,
       paymentMethod: tx.paymentMethod,
       source: tx.source,
-      items: (tx.items || []).slice(0, 40).map((item) => ({
+      items: demandLines(tx.items).slice(0, 40).map((item) => ({
         name: String(item.name || '').slice(0, 200),
         quantity: item.quantity,
         unitPrice: item.unitPrice,

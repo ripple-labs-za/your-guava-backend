@@ -1,6 +1,7 @@
 // The history window: required weeks, confidence, weekly grouping, weights, averages and historical prices.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
 const { zonedDayOrdinal } = require('../../utils/timezone');
+const { demandLines } = require('../../utils/demand');
 
 // How trustworthy a single item's number is, which is almost entirely a
 // function of how many units it moves. Backtested error by tier on real cafe
@@ -75,8 +76,9 @@ const groupByWeekAndItem = (transactions, targetDate, timezone, maxWeeks) => {
     if (!tx.items || tx.items.length === 0) continue;
     const bucket = getBucket(tx.date);
     if (bucket < 0 || bucket >= maxWeeks) continue;
+    // The cafe traded that day even if every line was ignored; only demand lines are item history (BE-03-T11).
     observedBuckets.add(bucket);
-    for (const item of tx.items) {
+    for (const item of demandLines(tx.items)) {
       if (!item.name) continue;
       if (!itemWeekMap.has(item.name)) {
         itemWeekMap.set(item.name, Array(maxWeeks).fill(null));
@@ -147,7 +149,7 @@ const buildHistoricalPriceMap = (transactions) => {
   const buckets = new Map();
 
   for (const tx of transactions) {
-    for (const item of tx.items || []) {
+    for (const item of demandLines(tx.items)) {
       if (!item.name || !Number.isFinite(item.unitPrice) || item.unitPrice <= 0) continue;
       const qty = Number.isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1;
       if (!buckets.has(item.name)) {

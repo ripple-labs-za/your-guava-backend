@@ -20,6 +20,7 @@ module.exports = {
   _test: {
     buildHistoryWeights: history.buildHistoryWeights,
     groupByWeekAndItem: history.groupByWeekAndItem,
+    buildHistoricalPriceMap: history.buildHistoricalPriceMap,
     weightedAverage: history.weightedAverage,
     getTradingAvailability: generate.getTradingAvailability,
     describeClosedDay: generate.describeClosedDay,

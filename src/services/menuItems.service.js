@@ -241,14 +241,14 @@ const reconcileTransactionItems = async (cafeId, items = [], options = {}) => {
   for (const [index, item] of items.entries()) {
     const rawName = String(item.name || '').trim();
     const menuItem = menuItems.get(lineNames[index]);
-    const priceCheck = priceCheckForItem(menuItem, item);
-    const menuItemStatus = priceCheck.isMismatch
-      ? 'price_mismatch'
-      : menuItem.reviewStatus === 'needs_review'
-        ? 'needs_review'
-        : menuItem.reviewStatus === 'ignored'
-          ? 'ignored'
-          : 'matched';
+    // Ignored is decided first: an ignored line is not a price observation either, and checked after the price it
+    // came back as price_mismatch at any other price and counted as demand again (BE-03-T11).
+    const ignored = menuItem.reviewStatus === 'ignored';
+    const priceCheck = ignored ? { expectedPrice: menuItem.expectedPrice ?? undefined } : priceCheckForItem(menuItem, item);
+    let menuItemStatus = 'matched';
+    if (ignored) menuItemStatus = 'ignored';
+    else if (priceCheck.isMismatch) menuItemStatus = 'price_mismatch';
+    else if (menuItem.reviewStatus === 'needs_review') menuItemStatus = 'needs_review';
 
     if (priceCheck.isMismatch) {
       mismatchUpdates.set(String(menuItem._id), menuItem);

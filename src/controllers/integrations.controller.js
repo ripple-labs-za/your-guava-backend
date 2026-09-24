@@ -9,6 +9,7 @@ const xeroService = require('../services/integrations/xero.service');
 const quickbooksService = require('../services/integrations/quickbooks.service');
 const sageService = require('../services/integrations/sage.service');
 const { activeCafeId } = require('../utils/tenancy');
+const { demandLines } = require('../utils/demand');
 
 const SERVICES = Object.freeze({
   xero: xeroService,
@@ -241,8 +242,9 @@ const sync = async (req, res, next) => {
       itemBreakdown: Object.create(null),
     };
 
+    // An ignored line (a delivery fee) is not an item sale; totalRevenue above still counts it as takings.
     for (const tx of txns) {
-      for (const item of tx.items || []) {
+      for (const item of demandLines(tx.items)) {
         summary.itemBreakdown[item.name] =
           (summary.itemBreakdown[item.name] || 0) + (item.unitPrice || 0) * item.quantity;
       }
