@@ -10,11 +10,11 @@ const startsWith = (buffer, prefix) =>
 const hasUtf16Bom = (buffer) => startsWith(buffer, UTF16LE_BOM) || startsWith(buffer, UTF16BE_BOM);
 
 let cp1252Table = null;
-/** Each byte's Windows-1252 character, built once. */
-const cp1252Char = (byte) => {
+/** Each byte's Windows-1252 character as UTF-8 bytes, built once. */
+const cp1252Bytes = (byte) => {
   if (!cp1252Table) {
     const all = new TextDecoder('windows-1252').decode(Uint8Array.from({ length: 256 }, (_, index) => index));
-    cp1252Table = [...all];
+    cp1252Table = [...all].map((ch) => Buffer.from(ch, 'utf8'));
   }
   return cp1252Table[byte];
 };
@@ -47,21 +47,26 @@ const hasUtf8Multibyte = (buffer) => {
   return false;
 };
 
-/** UTF-8 where the bytes form it, Windows-1252 for each byte that does not. Linear. */
+/**
+ * UTF-8 where the bytes form it, Windows-1252 for each byte that does not. Linear, written into one buffer (a
+ * Windows-1252 character is at most 3 UTF-8 bytes): a list of string pieces for 10 MB of stray bytes outgrew the heap.
+ */
 const decodeMixed = (buffer) => {
-  const parts = [];
+  const out = Buffer.allocUnsafe(buffer.length * 3);
+  let written = 0;
   let run = 0;
   let i = 0;
   while (i < buffer.length) {
     if (buffer[i] < 0x80) { i += 1; continue; }
     const length = utf8SequenceLength(buffer, i);
     if (length > 0) { i += length; continue; }
-    parts.push(buffer.toString('utf8', run, i), cp1252Char(buffer[i]));
+    written += buffer.copy(out, written, run, i);
+    written += cp1252Bytes(buffer[i]).copy(out, written);
     i += 1;
     run = i;
   }
-  parts.push(buffer.toString('utf8', run));
-  return Buffer.from(parts.join(''), 'utf8');
+  written += buffer.copy(out, written, run);
+  return Buffer.from(out.subarray(0, written));
 };
 
 /**

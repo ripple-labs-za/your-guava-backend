@@ -326,3 +326,93 @@ describe('review of BE-03-T08', () => {
     await expect(readCsv(buffer, { limit: 5, limits })).rejects.toMatchObject({ statusCode: 400, message: /100 row limit/ });
   });
 });
+
+// Second review of BE-03-T08 (WARN).
+describe('second review of BE-03-T08', () => {
+  const { prepareCsv } = require('../../src/services/parser/csvStructure');
+  const { decodeCsvBuffer } = require('../../src/services/parser/encoding');
+  const MAP4 = { receiptId: 'Receipt', date: 'Date', items: 'Items', total: 'Total' };
+  const rowsOf = (count, build) => Array.from({ length: count }, (_, index) => build(index));
+
+  it.each([
+    ['a ; file whose rows leave off the empty trailing Note column', ['Receipt;Date;Items;Total;Note', ...rowsOf(6, (i) => `R${i};2026-09-01;1 x Latte;38,00`)], ';'],
+    ['a ; file with a trailing ; on the header only', ['Receipt;Date;Items;Total;', ...rowsOf(6, (i) => `R${i};2026-09-01;1 x Latte;38,00`)], ';'],
+    ['a tab file with the trailing column left off and comma items', ['Receipt\tDate\tItems\tTotal\tNote', ...rowsOf(6, (i) => `R${i}\t2026-09-01\t1 x Latte, 1 x Muffin\t68.00`)], '\t'],
+  ])('imports %s', async (name, lines) => {
+    const result = await parse(Buffer.from(lines.join(LF)), MAP4);
+    expect(result.errors).toBe(0);
+    expect(result.rows).toHaveLength(6);
+  });
+
+  it('does not let a lone opening quote merge rows up to a quoted cell several lines later', async () => {
+    const result = await parse(Buffer.from([
+      'Receipt,Date,Time,Items,Total',
+      'U1,2026-09-01,12:00,"1 x Latte,38.00',
+      'U2,2026-09-01,12:05,1 x Latte,38.00',
+      'U3,2026-09-01,12:10,"1 x Latte, 1 x Muffin",68.00',
+    ].join(LF)));
+    expect(result.totalRows).toBe(3);
+    expect(result.rows.length + result.errors).toBe(3);
+    const byReceipt = Object.fromEntries(result.rows.map((row) => [row.receiptId, row.total]));
+    expect(byReceipt).toMatchObject({ U2: 38, U3: 68 });
+  });
+
+  it('imports a CR-only ("CSV (Macintosh)") ; file', async () => {
+    const CR = String.fromCharCode(13);
+    const lines = ['Receipt;Date;Items;Total', ...rowsOf(1500, (i) => `M${i};2026-09-01;1 x Latte;38,00`)];
+    const result = await parse(Buffer.from(lines.join(CR)), MAP4);
+    expect(result.errors).toBe(0);
+    expect(result.rows).toHaveLength(1500);
+  });
+
+  it('decodes 10 MB of stray bytes around one UTF-8 pair inside the heap guard', () => {
+    const file = Buffer.concat([Buffer.alloc(10 * 1024 * 1024, 0xe9), Buffer.from('é')]);
+    const heapBefore = process.memoryUsage().heapUsed;
+    const decoded = decodeCsvBuffer(file);
+    expect(process.memoryUsage().heapUsed - heapBefore).toBeLessThan(64 * 1024 * 1024);
+    expect(decoded.buffer.subarray(-4).toString('utf8')).toBe('éé');
+  });
+
+  it('keeps the heap guard on 10 MB of "a"b lines', () => {
+    const file = Buffer.from(`A,B${LF}${`"a"b${LF}`.repeat(2 * 1024 * 1024)}`);
+    const heapBefore = process.memoryUsage().heapUsed;
+    try { prepareCsv(file, parserLimits()); } catch (error) { expect(error).toMatchObject({ statusCode: 400 }); }
+    expect(process.memoryUsage().heapUsed - heapBefore).toBeLessThan(64 * 1024 * 1024);
+  });
+
+  it('keeps a wide workbook header over rows that fill only some of its columns', async () => {
+    const header = ['Receipt', 'Date', 'Item', 'Category', 'Payment', 'Status', 'Note', 'Staff', 'Table', 'Till', 'Shift',
+      'Customer', 'Channel', 'Voucher', 'Tip', 'Total'];
+    const sparse = (i) => [`R${i}`, '2026-09-01', 'Flat White', 'Coffee', 'Card', 'Approved', ...Array(9).fill(''), '38.00'];
+    const { headers, rows } = await readWorkbook(xlsxWith([header, sparse(0), sparse(1), sparse(2)]));
+    expect(headers).toEqual(header);
+    expect(rows).toHaveLength(3);
+  });
+
+  it('does not refuse a file where most names open with a quote but every line reads cleanly', async () => {
+    const lines = ['Receipt,Date,Time,Items,Total',
+      ...rowsOf(3000, (i) => (i % 5 < 3 ? `B${i},2026-09-01,09:00,"Big" Breakfast,85.00` : `B${i},2026-09-01,09:00,1 x Latte,38.00`))];
+    const result = await parse(Buffer.from(lines.join(LF)));
+    expect(result.totalRows).toBe(3000);
+    expect(result.rows).toHaveLength(3000);
+  });
+
+  it('holds a flood of empty lines to the row limit', async () => {
+    const { readCsv } = require('../../src/services/parser/csv');
+    const limits = { ...parserLimits(), maxRows: 100 };
+    const buffer = Buffer.from(`A,B${LF}${LF.repeat(1000)}1,2${LF}`);
+    await expect(readCsv(buffer, { limit: 5, limits })).rejects.toMatchObject({ statusCode: 400, message: /100 row limit/ });
+  });
+});
+
+describe('reading never changes the uploaded bytes', () => {
+  it('leaves a buffer with escaped quotes exactly as it was after preview and parse', async () => {
+    const text = ['Receipt,Date,Time,Items,Total', 'Q1,2026-09-01,12:00,"1 x 12"" Pizza",120.00', 'Q2,2026-09-01,12:05,1 x Latte,38.00'].join(LF);
+    const buffer = Buffer.from(text);
+    await previewBuffer(buffer, 'csv');
+    expect(buffer.toString()).toBe(text);
+    const result = await parse(buffer);
+    expect(buffer.toString()).toBe(text);
+    expect(result.rows[0].items[0].name).toBe('12" Pizza');
+  });
+});

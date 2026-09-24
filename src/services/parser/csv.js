@@ -6,7 +6,7 @@ const { SOURCE_ROW_NUMBERS, sourceRowNumber } = require('./rowErrors');
 const { headerDeduper, normaliseCell, UNNAMED_COLUMN_RE, normaliseRows } = require('./headers');
 const { decodeCsvBuffer } = require('./encoding');
 const {
-  csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvLayout, prepareCsv,
+  csvSeparatorDirective, stripCsvSeparatorDirective, detectNewline, detectCsvLayout, prepareCsv,
 } = require('./csvStructure');
 
 const csv = require('csv-parser');
@@ -42,6 +42,7 @@ const detectCsvSeparator = (buffer) => {
   const text = decodeCsvBuffer(buffer).buffer;
   return detectCsvLayout(text.toString('utf8', 0, Math.min(text.length, 65536)), {
     declaredSeparator: csvSeparatorDirective(text)?.separator,
+    newline: detectNewline(text),
   }).separator;
 };
 
@@ -55,7 +56,10 @@ const detectCsvSeparator = (buffer) => {
  */
 const readCsvStream = (body, separator, { limits = parserLimits() } = {}) => {
   const dedupeHeader = headerDeduper();
-  return Readable.from(body).pipe(csv({
+  // A copy: csv-parser unescapes "" by writing into the bytes it reads, and prepareCsv's body can be a view of the
+  // uploaded buffer, which preview reads before the same buffer is staged for the import (review of BE-03-T08: a
+  // "1 x 12"" Pizza" cell was stored as "12" Pizzaa").
+  return Readable.from(Buffer.from(body)).pipe(csv({
     separator,
     // csv-parser buffers a whole line before it splits it; without a cap one
     // line of separators became a row object with one key per separator.
@@ -95,6 +99,9 @@ const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
     }
     let rowNumber = prepared.headerRowNumber;
     let blankRows = 0;
+    let emptyLines = 0;
+    // Lines that are not data do not count toward the preview's limit, so a flood of them is held to the row limit.
+    const tooManyLines = () => emptyLines + blankRows + rows.length > limits.maxRows;
     const finish = (error) => {
       if (settled) return;
       settled = true;
@@ -135,15 +142,16 @@ const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
         }
         // An empty line: csv-parser emits {} for it, and normaliseCsvQuotes did not count it as a record either, so it
         // takes no part in the lost-record arithmetic (counting it in blankRows would hide a merged line per blank line).
-        if (width === 0) return;
+        if (width === 0) {
+          emptyLines += 1;
+          if (tooManyLines()) parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
+          return;
+        }
         const values = Object.values(row);
         // A separator-only line (",,"): a record in normaliseCsvQuotes' count, so it is counted here too.
         if (values.every((value) => String(value ?? '').trim() === '')) {
           blankRows += 1;
-          // Blank lines do not count toward the preview's limit, so a flood of them is held to the row limit instead.
-          if (blankRows + rows.length > limits.maxRows) {
-            parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
-          }
+          if (tooManyLines()) parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
           return;
         }
         if (rows.length >= limits.maxRows) {

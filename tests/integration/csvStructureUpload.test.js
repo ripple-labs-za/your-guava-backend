@@ -62,6 +62,16 @@ describe('till exports with real-world encodings and layouts import end to end',
     expect(done.body.stats).toMatchObject({ imported: 2, errors: 0, totalRows: 2 });
   });
 
+  it('imports an escaped quote exactly as written after preview has read the staged file', async () => {
+    const text = ['Receipt,Date,Time,Items,Total', 'Q1,2026-09-01,12:00,"1 x 12"" Pizza",120.00', 'Q2,2026-09-01,12:05,1 x Latte,38.00'].join('
+');
+    const staged = await stage(token, Buffer.from(text), 'escaped-quote.csv');
+    const done = await confirm(token, staged.body.uploadId, MAP);
+    expect(done.body.stats).toMatchObject({ imported: 2, errors: 0 });
+    const q1 = await Transaction.findOne({ uploadId: staged.body.uploadId, receiptId: 'Q1' }).lean();
+    expect(q1.items[0].name).toBe('12" Pizza');
+  });
+
   it('tells the owner to delete title lines when no heading row can be found', async () => {
     const staged = await stage(token, Buffer.from('Sales Report\nTotals only\n1234\n'), 'title-only.csv');
     expect(staged.status).toBe(400);
