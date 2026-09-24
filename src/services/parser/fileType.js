@@ -2,6 +2,7 @@
 // Moved from parser.service.js by BE-11-T01; behaviour unchanged.
 const { createClientInputError } = require('./limits');
 const { assertSafeXlsxArchive } = require('./xlsxArchive');
+const { hasUtf16Bom } = require('./encoding');
 
 // OLE2/CFBF signature: every Excel 97-2003 .xls begins with these eight bytes.
 const OLE2_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
@@ -53,7 +54,8 @@ const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
   }
 
   const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
-  if (sample.includes(0)) {
+  // UTF-16 is full of NUL bytes by construction; prepareCsv checks the decoded text instead (BE-03-T08).
+  if (!hasUtf16Bom(buffer) && sample.includes(0)) {
     throw createClientInputError('CSV file contains binary data');
   }
 };

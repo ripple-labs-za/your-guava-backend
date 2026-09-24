@@ -9,7 +9,8 @@ const { assertSupportedFileBuffer } = require('./fileType');
 const { groupLinePerRow } = require('./lineItems');
 const { inferDayMonthOrder, markMidnightOnlyFileDateOnly } = require('./dates');
 const { buildPackedRow } = require('./packedItems');
-const { repairOverflowColumns, readRows, detectCsvSeparator } = require('./csv');
+const { repairOverflowColumns, readCsv } = require('./csv');
+const { readWorkbookRows } = require('./xlsx');
 const { inferDecimalMark } = require('./numbers');
 
 const VALID_ITEMS_MODES = new Set(['packed', 'line-per-row']);
@@ -35,9 +36,14 @@ const parseBuffer = async (
   const normalizedExt = String(fileExt || 'csv').toLowerCase();
   assertSupportedFileBuffer(buffer, normalizedExt);
   validateMapping(columnMapping, itemsMode);
-  const rawRows = repairOverflowColumns(await readRows(buffer, normalizedExt), columnMapping);
+  const limits = parserLimits();
+  // CSV goes through prepareCsv (encoding, title lines, quotes; BE-03-T08); a workbook has none of those problems.
+  const read = normalizedExt === 'xlsx'
+    ? { rows: await readWorkbookRows(buffer), lostRecords: 0, headerRowNumber: 1, encoding: 'xlsx', separator: null }
+    : await readCsv(buffer, { limits });
+  const { rows: rawRows, ambiguousRows } = repairOverflowColumns(read.rows, columnMapping);
   // Settled once per file from its own values (BE-03-T06); later cards add to this object, none replaces it.
-  const csvSeparator = normalizedExt === 'csv' ? detectCsvSeparator(buffer) : null;
+  const csvSeparator = read.separator;
   const parseContext = {
     dateOrder: inferDayMonthOrder(rawRows.map((raw, index) => ({
       value: raw[columnMapping.date], rowNumber: sourceRowNumber(raw, index),
@@ -82,6 +88,17 @@ const parseBuffer = async (
     nettedRefundRows = packed.nettedRefundRows;
   }
 
+  for (const { rowNumber, overflow } of ambiguousRows) {
+    errors += 1;
+    addRowError(rowErrors, rowNumber, `Row has ${overflow} more cell${overflow === 1 ? '' : 's'} than there are column headings, `
+      + 'so its amounts cannot be trusted. Put the Items cell in quotes, or export the file again.', {});
+  }
+  if (read.lostRecords > 0) {
+    errors += read.lostRecords;
+    addRowError(rowErrors, read.headerRowNumber + 1, `${read.lostRecords} line${read.lostRecords === 1 ? ' was' : 's were'} merged `
+      + 'by an unbalanced quotation mark and could not be read.', {});
+  }
+
   if (!columnMapping.time) rows = markMidnightOnlyFileDateOnly(rows, resolvedTimezone);
 
   let firstDate = null;
@@ -104,8 +121,9 @@ const parseBuffer = async (
     rows,
     errors,
     rowErrors,
-    totalRows: rawRows.length,
+    totalRows: rawRows.length + ambiguousRows.length + read.lostRecords,
     nettedRefundRows,
+    encoding: read.encoding,
     dateRange: { firstDate, lastDate },
     timezone: resolvedTimezone,
   };

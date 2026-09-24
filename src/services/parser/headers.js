@@ -16,7 +16,9 @@ const requiredFieldsForMode = (itemsMode = 'packed') =>
     : REQUIRED_FIELDS;
 
 const normaliseHeader = (header, index = 0) => {
-  const value = String(header ?? '').replace(/^\uFEFF/, '').trim().slice(0, MAX_HEADER_CHARS);
+  // One pair of surrounding quotes goes too: a quoted first header behind a BOM reached here as "Receipt" (BE-03-T08).
+  const value = String(header ?? '').replace(/^\uFEFF/, '').trim().replace(/^"(.*)"$/s, '$1').trim()
+    .slice(0, MAX_HEADER_CHARS);
   return value || `Column ${index + 1}`;
 };
 

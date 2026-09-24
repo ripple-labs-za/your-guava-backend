@@ -114,7 +114,11 @@ const upload = async (req, res, next) => {
     const { headers, sampleRows } = preview;
     if (!headers || headers.length < MIN_HEADER_COUNT) {
       await cleanupLocalFile(filePath);
-      return res.status(400).json({ success: false, message: 'Could not parse file headers' });
+      return res.status(400).json({
+        success: false,
+        message: 'Could not find the column headings in this file. If it starts with a report title or a date range, '
+          + 'delete those lines so the first line holds the column names, then upload it again.',
+      });
     }
 
     // Stage to R2

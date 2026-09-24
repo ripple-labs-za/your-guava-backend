@@ -4,6 +4,7 @@ const { DEFAULT_TIMEZONE, zonedDateTimeToUtc } = require('../../utils/timezone')
 const { parserLimits, createClientInputError } = require('./limits');
 const { SOURCE_ROW_NUMBERS } = require('./rowErrors');
 const { headerDeduper, normaliseCell } = require('./headers');
+const { findHeaderRowIndex } = require('./csvStructure');
 const {
   loadReaderSteps, loadXmldom, assertXlsxPartSize, streamXlsxSharedStrings, streamXlsxSheetCells, xlsxUnreadableError,
   XLSX_MAX_SHEET_COST,
@@ -100,11 +101,12 @@ const readWorkbook = async (buffer) => {
   const limits = parserLimits();
   const matrix = await readFirstSheet(buffer);
   if (!matrix.length) return { headers: [], rows: [] };
-  if (matrix.length - 1 > limits.maxRows) {
+  // A report workbook opens with a title and a date range above its column names (BE-03-T08).
+  const headerIndex = findHeaderRowIndex(matrix.slice(0, 20).map((row) => row.map((cell) => (cell == null ? '' : String(cell)))));
+  const [headerRow, ...dataRows] = matrix.slice(headerIndex);
+  if (dataRows.length > limits.maxRows) {
     throw createClientInputError(`File exceeds the ${limits.maxRows} row limit`);
   }
-
-  const [headerRow, ...dataRows] = matrix;
   if (headerRow.length > limits.maxColumns) {
     throw createClientInputError(`File exceeds the ${limits.maxColumns} column limit`);
   }
@@ -112,7 +114,7 @@ const readWorkbook = async (buffer) => {
   const headers = headerRow.map((header, index) => dedupeHeader(header, index));
 
   const rows = dataRows
-    .map((row, index) => ({ row, rowNumber: index + 2 }))
+    .map((row, index) => ({ row, rowNumber: headerIndex + index + 2 }))
     .filter(({ row }) => row.some((value) => value != null && String(value).trim() !== ''))
     .map(({ row, rowNumber }) => {
       const mapped = {};

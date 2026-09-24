@@ -16,6 +16,8 @@ const {
 const { readWorkbook, readWorkbookRows } = require('./parser/xlsx');
 const { streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError } = require('./parser/xlsxStream');
 const { assertSupportedFileBuffer } = require('./parser/fileType');
+const { decodeCsvBuffer } = require('./parser/encoding');
+const { detectCsvLayout, prepareCsv } = require('./parser/csvStructure');
 const {
   csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
 } = require('./parser/csv');
@@ -33,7 +35,7 @@ module.exports = {
   COLUMN_MAPPING_FIELDS, pickColumnMapping,
   // Readers and file checks
   csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
-  readWorkbook, readWorkbookRows, assertSupportedFileBuffer,
+  readWorkbook, readWorkbookRows, assertSupportedFileBuffer, decodeCsvBuffer, detectCsvLayout, prepareCsv,
   streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError,
   // Limits
   parserLimits, boundedInteger, tooManyColumnsError,

@@ -1,10 +1,15 @@
-// CSV reading: separator detection and the sep= directive, the one bounded reader (readCsv) behind preview and import,
-// overflow-column repair, readRows. BE-11-T01 moved it here; BE-03-T01 made readCsv the only reader.
+// CSV reading: the one bounded reader (readCsv) behind preview and import, overflow-column repair, readRows.
+// BE-11-T01 moved it here; BE-03-T01 made readCsv the only reader; BE-03-T08 put prepareCsv (encoding, layout, quotes,
+// in csvStructure.js) in front of it.
 const { parserLimits, createClientInputError, tooManyColumnsError } = require('./limits');
-const { SOURCE_ROW_NUMBERS } = require('./rowErrors');
+const { SOURCE_ROW_NUMBERS, sourceRowNumber } = require('./rowErrors');
 const { headerDeduper, normaliseCell, UNNAMED_COLUMN_RE, normaliseRows } = require('./headers');
 const { assertSupportedFileBuffer } = require('./fileType');
 const { readWorkbookRows } = require('./xlsx');
+const { decodeCsvBuffer } = require('./encoding');
+const {
+  csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvLayout, prepareCsv,
+} = require('./csvStructure');
 
 const csv = require('csv-parser');
 const { Readable } = require('stream');
@@ -31,86 +36,15 @@ const csvReadError = (error, limits = parserLimits()) => {
   return tooLong;
 };
 
-// Ordered so ',' wins a tie, which is what an ambiguous file most often is.
-const CSV_SEPARATOR_CANDIDATES = [',', ';', '\t', '|'];
-const CSV_SEPARATOR_SAMPLE_LINES = 5;
-
 /**
- * Excel writes `sep=;` as the first line of a CSV whenever the machine's list
- * separator is not a comma, which is the default on South African and most
- * European Windows installs. It is a directive to Excel, not data.
- *
- * Read as data it becomes the header row: production upload 6a3289a4 has
- * `headers: ["sep=", ""]` and imported nothing, and its owner was told "no
- * valid transaction rows could be imported with this mapping" beside a mapping
- * screen listing one nonsensical column.
- *
- * It matters beyond that one file. The fix we hand someone with a legacy .xls
- * is "Save As CSV UTF-8", so this is the very next thing that same owner
- * produces. Without this they walk out of one dead end into another.
- *
- * Only the first line counts, and only when the directive is the whole of it,
- * so a genuine column named `sep=x` stays a column.
- */
-const SEP_DIRECTIVE_RE = /^﻿?sep=(\\t|.)[ \t]*$/i;
-
-const csvSeparatorDirective = (buffer) => {
-  if (!Buffer.isBuffer(buffer)) return null;
-  const head = buffer.toString('utf8', 0, Math.min(buffer.length, 64));
-  const firstLine = head.split(/\r?\n/)[0];
-  const match = SEP_DIRECTIVE_RE.exec(firstLine || '');
-  if (!match) return null;
-  // `sep=\t` is written literally, two characters, not a tab byte.
-  const separator = match[1] === '\\t' ? '\t' : match[1];
-  return { separator, byteLength: Buffer.byteLength(firstLine, 'utf8') };
-};
-
-/** The buffer with any `sep=` directive line removed, ready to be parsed. */
-const stripCsvSeparatorDirective = (buffer) => {
-  const directive = csvSeparatorDirective(buffer);
-  if (!directive) return buffer;
-  let offset = directive.byteLength;
-  if (buffer[offset] === 0x0d) offset += 1;
-  if (buffer[offset] === 0x0a) offset += 1;
-  return buffer.subarray(offset);
-};
-
-/**
- * Picks the delimiter a CSV is really using.
- *
- * Only ';' was ever weighed against ',', so a tab- or pipe-delimited export --
- * "Text (Tab delimited)" is a standard Excel save-as, and several tills write
- * it with a .csv extension -- collapsed its entire header row into one column.
- * The owner was shown one nonsensical column and had no way forward.
- *
- * The winner is the candidate that appears on EVERY sampled line, scored by its
- * smallest per-line count: a real delimiter separates every row, while a comma
- * inside one quoted item cell shows up on one line only.
+ * Picks the delimiter a CSV is really using: the separator under which a label-like header row fits the table below
+ * it (BE-03-T08). The minimum-count rule this replaces let a report's title line make ',' win for a ';' file.
  */
 const detectCsvSeparator = (buffer) => {
-  // The file declaring its own separator beats guessing from the shape of
-  // the rows, which a one-column-per-row export gives nothing to score.
-  const declared = csvSeparatorDirective(buffer);
-  if (declared) return declared.separator;
-
-  const lines = (Buffer.isBuffer(buffer)
-    ? buffer.toString('utf8', 0, Math.min(buffer.length, 4096))
-    : '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== '')
-    .slice(0, CSV_SEPARATOR_SAMPLE_LINES);
-  if (lines.length === 0) return ',';
-
-  let best = ',';
-  let bestScore = 0;
-  for (const candidate of CSV_SEPARATOR_CANDIDATES) {
-    const score = Math.min(...lines.map((line) => line.split(candidate).length - 1));
-    if (score > bestScore) {
-      bestScore = score;
-      best = candidate;
-    }
-  }
-  return best;
+  const text = decodeCsvBuffer(buffer).buffer;
+  return detectCsvLayout(text.toString('utf8', 0, Math.min(text.length, 65536)), {
+    declaredSeparator: csvSeparatorDirective(text)?.separator,
+  }).separator;
 };
 
 /**
@@ -121,12 +55,10 @@ const detectCsvSeparator = (buffer) => {
  * once, with one column's money, while the import read the other column.
  * Returns the csv-parser stream; the source is piped in already. Only readCsv calls it.
  */
-const readCsvStream = (buffer, { limits = parserLimits() } = {}) => {
+const readCsvStream = (body, separator, { limits = parserLimits() } = {}) => {
   const dedupeHeader = headerDeduper();
-  // Stripped before parsing; left in place the directive becomes the header
-  // row and every real column disappears behind it.
-  return Readable.from(stripCsvSeparatorDirective(buffer)).pipe(csv({
-    separator: detectCsvSeparator(buffer),
+  return Readable.from(body).pipe(csv({
+    separator,
     // csv-parser buffers a whole line before it splits it; without a cap one
     // line of separators became a row object with one key per separator.
     maxRowBytes: csvMaxRowBytes(limits),
@@ -141,27 +73,50 @@ const readCsvStream = (buffer, { limits = parserLimits() } = {}) => {
  * become "Total (2)", and the same column, row and row-size limits apply to both. Two readers that were
  * "the same" drifted once already and made a production file un-importable; do not add a second one.
  *
+ * BE-03-T08: prepareCsv decodes the file to UTF-8, finds the header row below any report title lines, and rewrites
+ * quotes so a stray inch mark cannot merge lines; blank records are skipped, and every line the quotes still merged
+ * is counted as lost, so the import can say so instead of looking complete.
+ *
  * @param {Buffer} buffer
  * @param {{ limit?: number, limits?: ReturnType<typeof parserLimits> }} [options]
- * @returns {Promise<{ headers: string[], rows: object[] }>}
+ * @returns {Promise<{ headers: string[], rows: object[], encoding: string, separator: string, headerRowNumber: number,
+ *   blankRows: number, lostRecords: number }>}
  */
 const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
   new Promise((resolve, reject) => {
     const rows = [];
     let headers = [];
-    let rowNumber = 1;
     let settled = false;
+    let prepared;
+    try {
+      prepared = prepareCsv(buffer, limits);
+    } catch (error) {
+      if (!error.statusCode) error.statusCode = 400;
+      reject(error);
+      return;
+    }
+    let rowNumber = prepared.headerRowNumber;
+    let blankRows = 0;
     const finish = (error) => {
       if (settled) return;
       settled = true;
       if (!error) {
-        resolve({ headers, rows: normaliseRows(rows) });
+        const complete = !Number.isFinite(limit);
+        resolve({
+          headers,
+          rows: normaliseRows(rows),
+          encoding: prepared.encoding,
+          separator: prepared.separator,
+          headerRowNumber: prepared.headerRowNumber,
+          blankRows,
+          lostRecords: complete ? Math.max(0, prepared.expectedRecords - rows.length - blankRows) : 0,
+        });
         return;
       }
       if (!error.statusCode) error.statusCode = 400;
       reject(error);
     };
-    const parserStream = readCsvStream(buffer, { limits });
+    const parserStream = readCsvStream(prepared.body, prepared.separator, { limits });
     parserStream
       .on('headers', (names) => {
         if (names.length > limits.maxColumns) {
@@ -172,15 +127,27 @@ const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
       })
       .on('data', (row) => {
         if (settled) return;
-        if (Object.keys(row).length > limits.maxColumns) {
+        rowNumber += 1;
+        // Width first, before anything walks the row: a line of nothing but separators is the BE-01 wide-row attack,
+        // not a blank line to skip.
+        const width = Object.keys(row).length;
+        if (width > limits.maxColumns) {
           parserStream.destroy(tooManyColumnsError(limits));
+          return;
+        }
+        // An empty line: csv-parser emits {} for it, and normaliseCsvQuotes did not count it as a record either, so it
+        // takes no part in the lost-record arithmetic (counting it in blankRows would hide a merged line per blank line).
+        if (width === 0) return;
+        const values = Object.values(row);
+        // A separator-only line (",,"): a record in normaliseCsvQuotes' count, so it is counted here too.
+        if (values.every((value) => String(value ?? '').trim() === '')) {
+          blankRows += 1;
           return;
         }
         if (rows.length >= limits.maxRows) {
           parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
           return;
         }
-        rowNumber += 1;
         Object.defineProperty(row, SOURCE_ROW_NUMBERS, { value: [rowNumber], enumerable: false, configurable: true });
         rows.push(row);
         if (rows.length >= limit) {
@@ -198,8 +165,17 @@ const extraColumnIndex = (key) => {
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 };
 
-const repairOverflowColumns = (rawRows, mapping) =>
-  rawRows.map((raw) => {
+// An item fragment has a quantity marker ("2 x Muffin") or starts with a letter ("Muffin"). A bare "38" is the tail of
+// an unquoted decimal comma or thousands separator: folding it into Items booked R50 for a R38.50 sale (BE-03-T08).
+const ITEM_FRAGMENT_RE = /^-?\d+(?:[.,]\d+)?\s*[x×]\s+\S|^[^\d\s].*\p{L}/iu;
+
+/**
+ * Folds cells beyond the header width back into Items when they look like the rest of an unquoted multi-item cell.
+ * A row whose extra cells do not look like items is not guessed at: it comes back in ambiguousRows for a row error.
+ */
+const repairOverflowColumns = (rawRows, mapping) => {
+  const ambiguousRows = [];
+  const rows = rawRows.map((raw) => {
     const keys = Object.keys(raw);
     const extraKeys = keys
       .filter((key) => UNNAMED_COLUMN_RE.test(key))
@@ -214,6 +190,11 @@ const repairOverflowColumns = (rawRows, mapping) =>
     const values = [...headers, ...extraKeys].map((key) => raw[key]);
     const overflow = values.length - headers.length;
     if (overflow <= 0) return raw;
+    const fragments = values.slice(itemIndex, itemIndex + overflow + 1).filter((value) => String(value || '').trim() !== '');
+    if (!fragments.every((fragment) => ITEM_FRAGMENT_RE.test(String(fragment).trim()))) {
+      ambiguousRows.push({ rowNumber: sourceRowNumber(raw), overflow });
+      return null;
+    }
 
     const repaired = {};
     for (let index = 0; index < headers.length; index++) {
@@ -240,6 +221,8 @@ const repairOverflowColumns = (rawRows, mapping) =>
 
     return repaired;
   });
+  return { rows: rows.filter(Boolean), ambiguousRows };
+};
 
 const readRows = async (buffer, fileExt) => {
   assertSupportedFileBuffer(buffer, fileExt);
