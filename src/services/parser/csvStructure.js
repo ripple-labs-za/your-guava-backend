@@ -132,6 +132,12 @@ const detectNewline = (buffer) => {
   return LF;
 };
 
+/** Whether rank `a` beats rank `b`: the first key that differs decides, higher wins; equal ranks keep the earlier. */
+const outranks = (a, b) => {
+  for (let key = 0; key < a.length; key += 1) if (a[key] !== b[key]) return a[key] > b[key];
+  return false;
+};
+
 /**
  * The separator is the one whose header row comes first in the file: the real header always sits above any data row
  * a wrong separator can mistake for one (review of BE-03-T08, third round: ranking by label share first let a comma
@@ -140,12 +146,6 @@ const detectNewline = (buffer) => {
  * one that fits the most rows below it within one column (tills leave empty trailing columns off, or add a trailing
  * separator to the header only), then the widest, then the candidate order (',' first).
  */
-/** Whether rank `a` beats rank `b`: the first key that differs decides, higher wins; equal ranks keep the earlier. */
-const outranks = (a, b) => {
-  for (let key = 0; key < a.length; key += 1) if (a[key] !== b[key]) return a[key] > b[key];
-  return false;
-};
-
 const detectCsvLayout = (text, { declaredSeparator, newline = LF } = {}) => {
   // csv-parser ends a record at its newline only (a CR before an LF belongs to the LF), so layout lines do too.
   const lines = text.split(newline === CR ? /\r/ : /\r?\n/, HEADER_SCAN_LINES + 5);
