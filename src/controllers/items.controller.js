@@ -5,13 +5,10 @@ const Organization = require('../models/Organization.model');
 const {
   normalizeItemName,
   buildAliasKeys,
-  markManualFields,
-  resolveMenuItem,
   findMatchCandidates,
   loadMatchCandidatePool,
-  updateTransactionMenuItemLinks,
-  rebuildItemsForCafe,
 } = require('../services/menuItems.service');
+const { resolveMenuItem, updateMenuItem } = require('../services/menuCorrections.service');
 const {
   MAX_AI_REVIEW_ITEMS,
   suggestMenuItemReviews,
@@ -40,7 +37,14 @@ const reconciliationFilter = (cafeId) => ({
   ],
 });
 
-const MANUAL_FIELDS = ['category', 'expectedPrice', 'aliases'];
+// A refusal the menu services word for the owner (MAP_TO_SELF, MAP_TO_INACTIVE_TARGET, ITEM_NAME_TAKEN) is answered here
+// with its code; anything else goes to the error middleware.
+const answerRefusal = (error, res, next) => {
+  if (error.publicCode && error.statusCode >= 400 && error.statusCode < 500) {
+    return res.status(error.statusCode).json({ success: false, code: error.publicCode, message: error.message });
+  }
+  return next(error);
+};
 
 const enrichReviewItems = async (cafeId, items) => {
   const enriched = [];
@@ -233,28 +237,22 @@ const update = async (req, res, next) => {
     if (validationError) {
       return res.status(400).json({ success: false, message: validationError });
     }
-    const item = await Item.findOne({ _id: req.params.id, cafeId: activeCafeId(req) });
-    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
-
     const payload = itemPayload(req.body);
     if (payload.name === '') {
       return res.status(400).json({ success: false, message: 'name cannot be empty' });
     }
 
-    Object.assign(item, payload);
-    // Whatever the owner just typed is theirs to keep. Without this the rebuild
-    // two lines below relearned it from sales and reverted the edit before the
-    // 200 was written -- the change looked saved and was gone on reload.
-    markManualFields(item, MANUAL_FIELDS.filter((field) => req.body[field] !== undefined));
-    await item.save();
-    await updateTransactionMenuItemLinks(activeCafeId(req), item, item);
-    await rebuildItemsForCafe(activeCafeId(req));
-    await scheduleForecastRefreshAfterMenuChange(activeCafeId(req));
-    clearApiCache();
+    // What the owner changed is marked theirs inside updateMenuItem, so the rebuild cannot revert it before the 200
+    // is written; only a change that alters sales, prices or categories refreshes the forecasts (BE-03-T10).
+    const { item, changed } = await updateMenuItem(activeCafeId(req), req.params.id, payload);
+    if (changed.identity || changed.price || changed.category) {
+      await scheduleForecastRefreshAfterMenuChange(activeCafeId(req));
+      clearApiCache();
+    }
 
     return res.status(200).json({ success: true, item });
   } catch (error) {
-    next(error);
+    return answerRefusal(error, res, next);
   }
 };
 
@@ -401,7 +399,7 @@ const resolve = async (req, res, next) => {
     clearApiCache();
     return res.status(200).json({ success: true, item });
   } catch (error) {
-    next(error);
+    return answerRefusal(error, res, next);
   }
 };
 

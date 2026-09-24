@@ -6,6 +6,10 @@ const { inferItemCategory } = require('../utils/itemCategory');
 const MAX_CANONICAL_NAME_CHARS = 200;
 const MAX_ALIASES = 50;
 const MATCH_CANDIDATE_POOL = 100;
+// How far the resolver follows merged items to their target. map_to only links to active items and re-points the
+// items already linked to the one it merges, so chains stay one hop; the bound keeps a hand-made cycle or a legacy
+// chain from stalling an import.
+const MAX_MERGE_HOPS = 5;
 const { prepareMatchPool, rankMatchCandidates } = require('./menuMatching');
 
 /**
@@ -98,6 +102,36 @@ const newMenuItemFields = (name, item = {}) => {
 };
 
 /**
+ * A merged item keeps its name (the unique index needs it), so a later import finds it by name and used to link the
+ * sale to the inactive item, split off where no screen shows it. mergedInto is the owner's decision about where those
+ * sales belong: load the targets and follow each chain to its root, at most MAX_MERGE_HOPS loads.
+ */
+const loadMergeTargets = async (cafeId, documents, session) => {
+  const byId = new Map(documents.map((document) => [String(document._id), document]));
+  const unloadedTarget = (document) => document.reviewStatus === 'merged' && document.mergedInto
+    && !byId.has(String(document.mergedInto));
+  let pending = documents.filter(unloadedTarget);
+  for (let hop = 0; hop < MAX_MERGE_HOPS && pending.length > 0; hop += 1) {
+    const targets = await withSession(Item.find({ cafeId, _id: { $in: pending.map((document) => document.mergedInto) } }), session);
+    targets.forEach((target) => byId.set(String(target._id), target));
+    pending = targets.filter(unloadedTarget);
+  }
+  const followMerge = (document) => {
+    let current = document;
+    const seen = new Set();
+    while (current.reviewStatus === 'merged' && current.mergedInto && !seen.has(String(current._id))) {
+      seen.add(String(current._id));
+      const next = byId.get(String(current.mergedInto));
+      if (!next) break;
+      current = next;
+    }
+    return current;
+  };
+  followMerge.remember = (document) => byId.set(String(document._id), document);
+  return followMerge;
+};
+
+/**
  * Resolves a whole basket of raw sales names against the cafe's menu in one
  * query, and remembers anything created along the way.
  *
@@ -113,11 +147,13 @@ const createMenuItemResolver = async (cafeId, names, session) => {
     clauses.push({ normalizedName: { $in: keys } }, { aliasKeys: { $in: keys } });
   }
   const documents = await withSession(Item.find({ cafeId, $or: clauses }), session);
+  const followMerge = await loadMergeTargets(cafeId, documents, session);
 
   const byName = new Map();
   const byKey = new Map();
   const byAliasKey = new Map();
   const register = (document) => {
+    followMerge.remember(document);
     if (!byName.has(document.name)) byName.set(document.name, document);
     if (document.normalizedName && !byKey.has(document.normalizedName)) {
       byKey.set(document.normalizedName, document);
@@ -133,9 +169,11 @@ const createMenuItemResolver = async (cafeId, names, session) => {
     // Exact name, then the normalised key, then an alias. The old single $or
     // left the winner to whichever index the planner happened to use, so an
     // item that carried another item's name as an alias could out-rank it.
+    // A merged item is then followed to where the owner linked it (BE-03-T10).
     resolve: (name) => {
       const key = normalizeItemName(name);
-      return byName.get(name) || byKey.get(key) || byAliasKey.get(key) || null;
+      const hit = byName.get(name) || byKey.get(key) || byAliasKey.get(key) || null;
+      return hit ? followMerge(hit) : null;
     },
   };
 };
@@ -420,6 +458,30 @@ const rebuiltItemFields = (combined, existing) => {
   return fields;
 };
 
+// Remap, upload delete and duplicate-skipping imports leave imported items with no sales. Nothing else removed them
+// and there is no delete route, so they sat in the review queue for ever (BE-03-T10). Only items no one has touched
+// go: imported, still needing review, no owner fields, no notes, and not the target of a merge.
+//
+// Only inside the caller's transaction: import, remap, upload delete and re-admission, gap-4's own triggers. There the
+// sales totals and the delete read one snapshot, and an import's own orphans roll back with it. A rebuild without one
+// (a Link, an edit, every Yoco webhook) could count a brand-new item's sales before its first sale was written, delete
+// the item, and leave that sale pointing at nothing.
+const deleteUntouchedOrphans = async (cafeObjectId, noSales, session) => {
+  if (!session) return;
+  const mergeTargets = await withSession(Item.distinct('mergedInto', { cafeId: cafeObjectId, mergedInto: { $ne: null } }), session);
+  await Item.deleteMany({
+    cafeId: cafeObjectId,
+    source: 'imported',
+    reviewStatus: 'needs_review',
+    _id: { $nin: mergeTargets },
+    $and: [
+      { $or: [{ manualFields: { $exists: false } }, { manualFields: { $size: 0 } }] },
+      { $or: [{ notes: { $exists: false } }, { notes: null }, { notes: '' }] },
+    ],
+    ...noSales,
+  }, { session });
+};
+
 const rebuildItemsForCafe = async (cafeId, options = {}) => {
   const { session } = options;
   const cafeObjectId = toObjectId(cafeId);
@@ -449,21 +511,20 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
     .filter((group) => !group.existing)
     .flatMap((group) => group.entries.map((entry) => entry._id.name));
 
+  const noSales = activeIds.length > 0 || activeNames.length > 0
+    ? {
+        $nor: [
+          ...(activeIds.length > 0 ? [{ _id: { $in: activeIds } }] : []),
+          ...(activeNames.length > 0 ? [{ name: { $in: activeNames } }] : []),
+        ],
+      }
+    : {};
   await Item.updateMany(
-    {
-      cafeId: cafeObjectId,
-      ...(activeIds.length > 0 || activeNames.length > 0
-        ? {
-            $nor: [
-              ...(activeIds.length > 0 ? [{ _id: { $in: activeIds } }] : []),
-              ...(activeNames.length > 0 ? [{ name: { $in: activeNames } }] : []),
-            ],
-          }
-        : {}),
-    },
+    { cafeId: cafeObjectId, ...noSales },
     { $set: { totalSold: 0, avgPrice: 0 } },
     session ? { session } : undefined
   );
+  await deleteUntouchedOrphans(cafeObjectId, noSales, session);
 
   const operations = groups.map(({ existing, entries }) => {
     const fields = rebuiltItemFields(combineStats(entries, existing), existing);
@@ -485,148 +546,55 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
   }
 };
 
-const updateTransactionMenuItemLinks = async (cafeId, item, targetItem = item) => {
+// A relinked line takes its item's review status: ignored always wins (BE-03-T11 relies on it), then needs_review.
+const lineStatusFor = (item) => {
+  if (item.reviewStatus === 'ignored') return 'ignored';
+  if (item.reviewStatus === 'needs_review') return 'needs_review';
+  return 'matched';
+};
+
+/**
+ * Points every sales line of `item` at `targetItem`. It used to set every line matched and drop its price variance,
+ * so a notes-only edit cleared the item's price mismatches (BE-03-T10). Status is written first and only on the
+ * lines being relinked, never on the target's own; a price_mismatch line keeps its flag unless the caller is
+ * resolving it (confirm, link, ignore, a new menu price) or the target is ignored.
+ */
+const updateTransactionMenuItemLinks = async (cafeId, item, targetItem = item, { clearPriceMismatch = false, session } = {}) => {
   const rawNames = uniqueStrings([item.name, ...(item.aliases || [])]);
-  const update = {
-    'items.$[matched].salesItemId': targetItem._id,
-    'items.$[matched].name': targetItem.name,
-    'items.$[matched].menuItemStatus': targetItem.reviewStatus === 'ignored' ? 'ignored' : 'matched',
+  const lineOf = (alias) => ({
+    $or: [
+      { [`${alias}.salesItemId`]: item._id },
+      // The name/rawName fallback only exists for lines written before
+      // they carried an id. Applied to linked lines it let an alias steal
+      // another menu item's sales outright: an alias equal to item B's
+      // name reassigned every one of B's lines to A on an ordinary PUT,
+      // and the next rebuild then zeroed B.
+      {
+        $and: [
+          { [`${alias}.salesItemId`]: null },
+          { $or: [{ [`${alias}.name`]: { $in: rawNames } }, { [`${alias}.rawName`]: { $in: rawNames } }] },
+        ],
+      },
+    ],
+  });
+  const filter = {
+    cafeId,
+    $or: [{ 'items.salesItemId': item._id }, { 'items.name': { $in: rawNames } }, { 'items.rawName': { $in: rawNames } }],
   };
-  if (String(item._id) !== String(targetItem._id)) {
-    update['items.$[matched].rawName'] = item.name;
-  }
-  if (targetItem.expectedPrice !== undefined) {
-    update['items.$[matched].expectedPrice'] = targetItem.expectedPrice;
-  }
-
-  await Transaction.updateMany(
-    {
-      cafeId,
-      $or: [
-        { 'items.salesItemId': item._id },
-        { 'items.name': { $in: rawNames } },
-        { 'items.rawName': { $in: rawNames } },
-      ],
-    },
-    {
-      $set: update,
-      $unset: { 'items.$[matched].priceVariancePct': '' },
-    },
-    {
-      arrayFilters: [
-        {
-          $or: [
-            { 'matched.salesItemId': item._id },
-            // The name/rawName fallback only exists for lines written before
-            // they carried an id. Applied to linked lines it let an alias steal
-            // another menu item's sales outright: an alias equal to item B's
-            // name reassigned every one of B's lines to A on an ordinary PUT,
-            // and the next rebuild then zeroed B.
-            {
-              $and: [
-                { 'matched.salesItemId': null },
-                {
-                  $or: [
-                    { 'matched.name': { $in: rawNames } },
-                    { 'matched.rawName': { $in: rawNames } },
-                  ],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    }
-  );
-};
-
-// Records that a value came from the owner rather than from sales, so the
-// rebuild leaves it alone.
-const markManualFields = (document, fields = []) => {
-  const manual = new Set(document.manualFields || []);
-  fields.forEach((field) => manual.add(field));
-  document.manualFields = [...manual];
-};
-
-const resolveMenuItem = async (cafeId, itemId, { action, targetItemId, expectedPrice, category, aliases, notes }) => {
-  const item = await Item.findOne({ _id: itemId, cafeId });
-  if (!item) {
-    const err = new Error('Item not found');
-    err.statusCode = 404;
-    throw err;
-  }
-
-  if (action === 'map_to') {
-    const target = await Item.findOne({ _id: targetItemId, cafeId });
-    if (!target) {
-      const err = new Error('Target item not found');
-      err.statusCode = 404;
-      throw err;
-    }
-
-    // The merged name goes first. uniqueStrings truncates at MAX_ALIASES, and
-    // with the target's own list leading, a target already holding 50 aliases
-    // silently dropped the one name the merge existed to record — so the same
-    // misspelling came back as a fresh review item after every upload, forever.
-    const mergedAliases = uniqueStrings([
-      item.name,
-      ...(aliases || []),
-      ...(item.aliases || []),
-      ...(target.aliases || []),
-    ]);
-    target.aliases = mergedAliases;
-    target.aliasKeys = buildAliasKeys(mergedAliases);
-    if (expectedPrice !== undefined) {
-      target.expectedPrice = Number(expectedPrice);
-      markManualFields(target, ['expectedPrice']);
-    }
-    if (category) {
-      target.category = category;
-      markManualFields(target, ['category']);
-    }
-    target.reviewStatus = 'matched';
-    await target.save();
-
-    item.reviewStatus = 'merged';
-    item.isActive = false;
-    item.mergedInto = target._id;
-    await item.save();
-    await updateTransactionMenuItemLinks(cafeId, item, target);
-    await rebuildItemsForCafe(cafeId);
-    return target;
-  }
-
-  if (action === 'ignore') {
-    item.reviewStatus = 'ignored';
-    item.isActive = false;
-    if (notes !== undefined) item.notes = notes;
-    await item.save();
-    await updateTransactionMenuItemLinks(cafeId, item, item);
-    await rebuildItemsForCafe(cafeId);
-    return item;
-  }
-
-  item.reviewStatus = 'matched';
-  item.isActive = true;
-  if (expectedPrice !== undefined) {
-    item.expectedPrice = Number(expectedPrice);
-    markManualFields(item, ['expectedPrice']);
-  }
-  if (category) {
-    item.category = category;
-    markManualFields(item, ['category']);
-  }
-  if (notes !== undefined) item.notes = notes;
-  if (aliases !== undefined) {
-    item.aliases = uniqueStrings(aliases);
-    item.aliasKeys = buildAliasKeys(item.aliases);
-    markManualFields(item, ['aliases']);
-  }
-  item.normalizedName = normalizeItemName(item.name);
-  await item.save();
-  await updateTransactionMenuItemLinks(cafeId, item, item);
-  await rebuildItemsForCafe(cafeId);
-  return item;
+  const options = session ? { session } : {};
+  const status = lineStatusFor(targetItem);
+  const keepMismatch = !clearPriceMismatch && status !== 'ignored';
+  await Transaction.updateMany(filter, {
+    $set: { 'items.$[line].menuItemStatus': status },
+    $unset: { 'items.$[line].priceVariancePct': '' },
+  }, {
+    arrayFilters: [keepMismatch ? { $and: [lineOf('line'), { 'line.menuItemStatus': { $ne: 'price_mismatch' } }] } : lineOf('line')],
+    ...options,
+  });
+  const link = { 'items.$[line].salesItemId': targetItem._id, 'items.$[line].name': targetItem.name };
+  if (String(item._id) !== String(targetItem._id)) link['items.$[line].rawName'] = item.name;
+  if (targetItem.expectedPrice !== undefined) link['items.$[line].expectedPrice'] = targetItem.expectedPrice;
+  await Transaction.updateMany(filter, { $set: link }, { arrayFilters: [lineOf('line')], ...options });
 };
 
 // The pool is the same for every review item on the page bar the self
@@ -674,13 +642,14 @@ const findMatchCandidates = async (cafeId, item, { limit = 3, pool = null } = {}
   return ranked;
 };
 
+// markManualFields and resolveMenuItem moved to menuCorrections.service.js (BE-03-T10).
 module.exports = {
   normalizeItemName,
+  uniqueStrings,
   buildAliasKeys,
-  markManualFields,
+  areSiblingVariants,
   reconcileTransactionItems,
   rebuildItemsForCafe,
-  resolveMenuItem,
   findMatchCandidates,
   loadMatchCandidatePool,
   updateTransactionMenuItemLinks,

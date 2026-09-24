@@ -835,8 +835,10 @@ describe('Uploads API', () => {
       const u = await Upload.findById(stage.body.uploadId).lean();
       expect(u.status).toBe('deleted');
 
+      // BE-03-T10 (gap-4): an imported item nobody touched, left with no sales, is removed rather than kept at 0 in the
+      // review queue; an item the owner edited survives (menuCorrections.test.js).
       const brownieAfter = await Item.findOne({ name: 'Brownie' }).lean();
-      expect(brownieAfter.totalSold).toBe(0);
+      expect(brownieAfter).toBeNull();
     });
 
     it('rolls back transaction deletion when the item rebuild fails', async () => {

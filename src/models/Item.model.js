@@ -66,10 +66,12 @@ const itemSchema = new mongoose.Schema(
     // sales -- and used to overwrite the owner's correction before the saving
     // request had even answered, so a wrong alias could not be removed and a
     // learned price could not be cleared. A field named here is off-limits to
-    // the rebuild.
+    // the rebuild. 'name' records a rename (BE-03-T10): the rebuild keeps a
+    // renamed item's name anyway, but the orphan clean-up must never delete an
+    // item the owner has named.
     manualFields: [{
       type: String,
-      enum: ['category', 'expectedPrice', 'aliases'],
+      enum: ['category', 'expectedPrice', 'aliases', 'name'],
     }],
     isActive: {
       type: Boolean,
