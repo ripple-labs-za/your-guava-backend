@@ -45,8 +45,8 @@ describe('refund edges the plan names (BE-03-T07 review focus)', () => {
     expect(result.nettedRefundRows).toBe(0);
     expect(result.rows.map((row) => [row.total, row.status])).toEqual([[100, 'partially refunded'], [-20, 'refunded']]);
     expect(result.rowErrors.map((error) => error.reason)).toEqual([
-      'Receipt R51 is marked Partially Refunded, but its refund row is dated another day, so it was not netted and its full '
-      + 'R100.00 was imported.',
+      'Receipt R51 is marked Partially Refunded, but the only refund row with its number is dated another day, so nothing was '
+      + 'netted and its full R100.00 was imported.',
     ]);
   });
 
@@ -125,6 +125,40 @@ describe('second review of BE-03-T07', () => {
     const reason = 'Receipt 0001 is marked Partially Refunded on more than one sale that day, so its refund rows could not be '
       + 'matched to one sale; each was imported at its full amount.';
     expect(result.rowErrors.map((error) => error.reason)).toEqual([reason, reason]);
+  });
+});
+
+describe('third review of BE-03-T07: refund rows labelled partially refunded', () => {
+  it('nets a partial-status refund row into its sale, as one transaction', async () => {
+    const result = await packed([
+      'R20,2026-09-14,09:00,Partially Refunded,"1 x Latte, 1 x Muffin",68.00',
+      'R20,2026-09-14,09:40,Partially Refunded,-1 x Muffin,-30.00',
+    ]);
+    expect(result.nettedRefundRows).toBe(1);
+    expect(result.rows.map((row) => row.total)).toEqual([38]);
+    expect(result.rowErrors).toEqual([]);
+  });
+
+  it('skips an unmatched partial-status refund row by status instead of importing a negative sale', async () => {
+    const result = await packed([
+      'R21,2026-09-14,09:00,Approved,"1 x Latte, 1 x Muffin",68.00',
+      'R21,2026-09-14,09:40,Partial Refund,-1 x Muffin,-30.00',
+    ]);
+    expect(result.nettedRefundRows).toBe(0);
+    expect(result.rows.map((row) => [row.total, row.status, row.statusRaw])).toEqual([
+      [68, 'approved', 'Approved'],
+      [-30, 'refunded', 'Partial Refund'],
+    ]);
+    expect(result.rowErrors).toEqual([]);
+  });
+
+  it('never nets into a partially refunded row whose own total is negative', async () => {
+    const result = await packed([
+      'R22,2026-09-14,09:00,Partially Refunded,-1 x Muffin,-30.00',
+      'R22,2026-09-14,09:40,Refunded,-1 x Latte,-20.00',
+    ]);
+    expect(result.nettedRefundRows).toBe(0);
+    expect(result.rows.map((row) => [row.total, row.status])).toEqual([[-30, 'refunded'], [-20, 'refunded']]);
   });
 });
 

@@ -4,7 +4,11 @@ const { normaliseTransactionStatus, isRefundStatus } = require('../../utils/tran
 
 const money = (value) => Number(value).toFixed(2);
 const saleKey = (row) => `${row.receiptId}|${row.dateKey}`;
-const isPartialRefund = (row) => Boolean(normaliseTransactionStatus(row.status).partialRefund);
+const hasPartialStatus = (row) => Boolean(normaliseTransactionStatus(row.status).partialRefund);
+// Some tills label the refund row itself "Partially Refunded": its negative total says it is the refund, not the sale.
+const isPartialSale = (row) => hasPartialStatus(row) && row.total > 0;
+const isRefundRow = (row) => isRefundStatus(row.status) || (hasPartialStatus(row) && row.total < 0);
+const asRefund = (row) => setSourceRowNumbers({ ...row, status: 'refunded' }, row[SOURCE_ROW_NUMBERS] || []);
 const notice = (rowErrors, row, reason) =>
   addRowError(rowErrors, sourceRowNumber(row), reason, row.receiptId ? { receiptId: row.receiptId } : {});
 
@@ -18,41 +22,42 @@ const netInto = (sale, refunds, refunded) => setSourceRowNumbers({
 }, [...(sale[SOURCE_ROW_NUMBERS] || []), ...refunds.flatMap((refund) => refund[SOURCE_ROW_NUMBERS] || [])]);
 
 /**
- * A packed export may mark a sale "Partially Refunded" and carry the refund as its own "Refunded" row with the same
- * receipt number on the same day. The refund is netted into the sale, which then carries what the cafe kept.
+ * A packed export may mark a sale "Partially Refunded" and carry the refund as its own row with the same receipt
+ * number on the same day. The refund is netted into the sale, which then carries what the cafe kept.
  *
  * Only an unambiguous pair is netted: exactly one partially refunded sale under that number that day, and refunds no
  * larger than the sale. Otherwise nothing is netted, the sale imports at its exported amount, its refund rows are
  * skipped by status as before, and a notice says why (a refund larger than its sale is D-021's revisit case: the till
- * may write the retained amount on the sale row, or the refund belongs to another receipt; -R12 is right in neither).
+ * may write the retained amount on the sale row, or the refund belongs to another receipt; a negative sale is right in
+ * neither). A refund row labelled "Partially Refunded" that matches no sale is skipped as the refund it is.
  */
 const netPartialRefunds = (rows, rowErrors) => {
   const partialCount = new Map();
-  for (const row of rows) {
-    if (row.receiptId && isPartialRefund(row)) partialCount.set(saleKey(row), (partialCount.get(saleKey(row)) || 0) + 1);
-  }
   const refundsByKey = new Map();
   const refundedReceipts = new Set();
   for (const row of rows) {
-    if (!row.receiptId || !isRefundStatus(row.status)) continue;
-    refundedReceipts.add(row.receiptId);
-    refundsByKey.set(saleKey(row), [...(refundsByKey.get(saleKey(row)) || []), row]);
+    if (!row.receiptId) continue;
+    if (isPartialSale(row)) partialCount.set(saleKey(row), (partialCount.get(saleKey(row)) || 0) + 1);
+    if (isRefundRow(row)) {
+      refundedReceipts.add(row.receiptId);
+      refundsByKey.set(saleKey(row), [...(refundsByKey.get(saleKey(row)) || []), row]);
+    }
   }
 
   const nettable = new Map(); // saleKey -> refunds to absorb
   for (const row of rows) {
-    if (!row.receiptId || !isPartialRefund(row) || partialCount.get(saleKey(row)) !== 1) continue;
+    if (!row.receiptId || !isPartialSale(row) || partialCount.get(saleKey(row)) !== 1) continue;
     const refunds = refundsByKey.get(saleKey(row)) || [];
     const refunded = refunds.reduce((sum, refund) => sum + Math.abs(refund.total), 0);
-    if (refunds.length > 0 && refunded <= Math.abs(row.total)) nettable.set(saleKey(row), { refunds, refunded });
+    if (refunds.length > 0 && refunded <= row.total) nettable.set(saleKey(row), { refunds, refunded });
   }
   const absorbed = new Set([...nettable.values()].flatMap(({ refunds }) => refunds));
 
   const result = [];
   for (const row of rows) {
     if (absorbed.has(row)) continue;
-    if (!isPartialRefund(row)) {
-      result.push(row);
+    if (!isPartialSale(row)) {
+      result.push(hasPartialStatus(row) && isRefundRow(row) ? asRefund(row) : row);
       continue;
     }
     const full = `R${money(row.total)}`;
@@ -76,8 +81,9 @@ const netPartialRefunds = (rows, rowErrors) => {
       notice(rowErrors, row, `Receipt ${row.receiptId} refunds R${money(refunded)}, more than its sale of ${full}, so the two were `
         + `not netted and the sale was imported at its full ${full}. Check the till for a refund recorded against the wrong receipt.`);
     } else if (refundedReceipts.has(row.receiptId)) {
-      notice(rowErrors, row, `Receipt ${row.receiptId} is marked Partially Refunded, but its refund row is dated another day, so it `
-        + `was not netted and its full ${full} was imported.`);
+      // Tills that restart their numbering each morning reuse the number, so the other day's row may be another sale's.
+      notice(rowErrors, row, `Receipt ${row.receiptId} is marked Partially Refunded, but the only refund row with its number is `
+        + `dated another day, so nothing was netted and its full ${full} was imported.`);
     } else {
       notice(rowErrors, row, `Receipt ${row.receiptId} is marked Partially Refunded, but the file has no refund row for it, so its `
         + `full ${full} was imported.`);
@@ -93,7 +99,7 @@ const netPartialRefunds = (rows, rowErrors) => {
  */
 const noteUnitemisedPartialRefunds = (rows, rowErrors) => {
   for (const row of rows) {
-    if (!isPartialRefund(row) || row.items.some((item) => item.quantity < 0)) continue;
+    if (!hasPartialStatus(row) || row.items.some((item) => item.quantity < 0)) continue;
     notice(rowErrors, row, `Receipt ${row.receiptId} is marked Partially Refunded, but the file has no refund line for it, so its `
       + `full R${money(row.total)} was imported.`);
   }
