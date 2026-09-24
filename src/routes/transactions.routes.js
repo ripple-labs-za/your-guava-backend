@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const authMiddleware = require('../middleware/auth.middleware');
+const { requireActiveCafe } = require('../middleware/requireCafe.middleware');
 const { uploadLimiter } = require('../middleware/rateLimit.middleware');
 const { apiCache } = require('../middleware/cache.middleware');
 const r2 = require('../services/r2.service');
@@ -38,7 +39,8 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (_req, file, cb) => {
-  const allowedExts = ['.csv', '.xlsx'];
+  // .xls is allowed through so the parser can answer with the Save-As-CSV advice (D-002); it is never imported.
+  const allowedExts = ['.csv', '.xlsx', '.xls'];
   const ext = path.extname(file.originalname).toLowerCase();
   if (allowedExts.includes(ext)) {
     cb(null, true);
@@ -68,6 +70,8 @@ const FORM_TOO_LARGE_CODES = new Set([
 const multerUpload = multer({
   storage,
   fileFilter,
+  // Browsers send the part's file name as UTF-8 bytes; multer's latin1 default stored "Продажи.csv" garbled.
+  defParamCharset: 'utf8',
   limits: { fileSize: uploadMaxBytes(), ...MULTIPART_LIMITS },
 });
 
@@ -100,8 +104,9 @@ const handleMulterUpload = (req, res, next) => {
   });
 };
 
-// All routes are protected
+// All routes are protected, and all read or write one cafe's data (BE-03-T12).
 router.use(authMiddleware);
+router.use(requireActiveCafe);
 
 // Uploads get their own budget, ahead of multer so a limited request never
 // touches disk. Deliberately NOT the AI limiter: a Yoco export or a cafe with a

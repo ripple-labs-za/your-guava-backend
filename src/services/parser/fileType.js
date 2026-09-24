@@ -27,6 +27,7 @@ const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
   if (buffer.length >= OLE2_MAGIC.length && buffer.subarray(0, OLE2_MAGIC.length).equals(OLE2_MAGIC)) {
     const err = createClientInputError(LEGACY_XLS_MESSAGE);
     err.code = 'LEGACY_XLS';
+    err.publicCode = 'LEGACY_XLS';
     throw err;
   }
 
@@ -46,6 +47,7 @@ const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
   if (ext === 'xls') {
     const err = createClientInputError(LEGACY_XLS_MESSAGE);
     err.code = 'LEGACY_XLS';
+    err.publicCode = 'LEGACY_XLS';
     throw err;
   }
 

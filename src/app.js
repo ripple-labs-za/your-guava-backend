@@ -2,6 +2,7 @@
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const { ensureRequestBody } = require('./middleware/requestBody.middleware');
 const helmet = require('helmet');
 const { globalLimiter } = require('./middleware/rateLimit.middleware');
 const { configureTrustProxy } = require('./config/proxy');
@@ -64,6 +65,7 @@ app.use(
   })
 );
 app.use(express.urlencoded({ extended: true }));
+app.use(ensureRequestBody);
 app.use(cookieParser());
 
 // Routes

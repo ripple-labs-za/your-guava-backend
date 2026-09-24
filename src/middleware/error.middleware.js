@@ -1,4 +1,8 @@
 const { isHardenedEnvironment } = require('../config/posture');
+
+// A code the product wrote for the client to branch on (SEVERE_PARTIAL_IMPORT, LEGACY_XLS, ...). err.code alone is
+// never exposed: it is also where Node, Mongo and libraries put theirs (ENOENT, 11000). Same rule as BE-09-T02.
+const PUBLIC_CODE_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
 const errorMiddleware = (err, req, res, next) => {
   let statusCode = err.statusCode || err.status || 500;
   let message = err.message || 'Internal Server Error';
@@ -51,10 +55,12 @@ const errorMiddleware = (err, req, res, next) => {
   }
 
   const exposeDetails = err.details && !(statusCode >= 500 && isHardenedEnvironment());
+  const publicCode = typeof err?.publicCode === 'string' && PUBLIC_CODE_RE.test(err.publicCode) ? err.publicCode : null;
 
   res.status(statusCode).json({
     success: false,
     message,
+    ...(publicCode ? { code: publicCode } : {}),
     ...(requestId ? { requestId } : {}),
     ...(exposeDetails ? { details: err.details } : {}),
   });

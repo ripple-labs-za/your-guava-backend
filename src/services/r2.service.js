@@ -169,7 +169,22 @@ const downloadFile = async (key) => {
  * @param {number} ttlSeconds default 900 (15 min)
  * @returns {Promise<string>}
  */
-const getSignedDownloadUrl = async (key, ttlSeconds = 900) => {
+/**
+ * An attachment, so a stored file never renders inline on the storage domain (uploads-catalogue-19). The quoted name
+ * keeps word characters, dots, dashes and spaces, shortened before its extension so a long name keeps ".csv"; the
+ * RFC 5987 filename* carries the real name, so "Продажи сентябрь.csv" is not saved as underscores (review).
+ */
+const attachmentDisposition = (fileName) => {
+  const name = String(fileName || 'upload');
+  const lastDot = path.extname(name);
+  const ext = lastDot.length <= 10 ? lastDot : ''; // "sales.from-the-september-till" has no extension to keep
+  const ascii = (value) => value.replace(/[^\w.\- ]/g, '_');
+  const safeName = `${ascii(name.slice(0, name.length - ext.length)).slice(0, 140)}${ascii(ext)}` || 'upload';
+  const encoded = encodeURIComponent(`${name.slice(0, name.length - ext.length).slice(0, 190)}${ext}`).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`;
+};
+
+const getSignedDownloadUrl = async (key, ttlSeconds = 900, { fileName } = {}) => {
   if (useLocalStorage()) {
     const boundedTtl = Math.max(1, Math.min(Number.parseInt(ttlSeconds, 10) || 900, 3600));
     localPathForKey(key);
@@ -179,7 +194,7 @@ const getSignedDownloadUrl = async (key, ttlSeconds = 900) => {
     return `${baseUrl}/api/uploads/local-download?key=${encodeURIComponent(key)}&expires=${expires}&sig=${sig}`;
   }
 
-  const cmd = new GetObjectCommand({ Bucket: bucket(), Key: key });
+  const cmd = new GetObjectCommand({ Bucket: bucket(), Key: key, ResponseContentDisposition: attachmentDisposition(fileName || path.basename(key)) });
   return getSignedUrl(getClient(), cmd, { expiresIn: ttlSeconds });
 };
 

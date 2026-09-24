@@ -170,4 +170,26 @@ describe('error middleware', () => {
       details: { code: 'INVALID_REQUEST' },
     });
   });
+
+  it('exposes a product-authored public code', () => {
+    const response = createResponse();
+    errorMiddleware(Object.assign(new Error('Fix the mapping.'), { statusCode: 422, publicCode: 'SEVERE_PARTIAL_IMPORT', details: { errors: 12 } }),
+      { id: 'r1', method: 'POST', path: '/api/uploads/x/confirm' }, response, jest.fn());
+    expect(response.status).toHaveBeenCalledWith(422);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'SEVERE_PARTIAL_IMPORT', details: { errors: 12 } }));
+  });
+
+  it('never exposes a library error code', () => {
+    const response = createResponse();
+    errorMiddleware(Object.assign(new Error('Stored upload not found'), { statusCode: 404, code: 'ENOENT' }),
+      { id: 'r2', method: 'GET', path: '/api/uploads/local-download' }, response, jest.fn());
+    expect(response.json.mock.calls[0][0]).not.toHaveProperty('code');
+  });
+
+  it('refuses a malformed public code', () => {
+    const response = createResponse();
+    errorMiddleware(Object.assign(new Error('x'), { statusCode: 400, publicCode: 'lower-case <script>' }),
+      { id: 'r3', method: 'GET', path: '/x' }, response, jest.fn());
+    expect(response.json.mock.calls[0][0]).not.toHaveProperty('code');
+  });
 });

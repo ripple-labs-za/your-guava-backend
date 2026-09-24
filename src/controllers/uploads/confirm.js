@@ -61,6 +61,13 @@ const confirm = async (req, res, next) => {
         { $inc: { 'confirmation.replayCount': 1 } },
         { new: true }
       );
+      // A remap or delete took the upload between the read and this replay; answering from null was a 500 (BE-03-T12).
+      if (!upload) {
+        return res.status(409).json({
+          success: false, code: 'UPLOAD_CHANGED',
+          message: 'This upload changed while it was being confirmed. Refresh the page and try again.',
+        });
+      }
       return res.status(200).json(confirmationResponse(upload, { replayed: true }));
     }
 

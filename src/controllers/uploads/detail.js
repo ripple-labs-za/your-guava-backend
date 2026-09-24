@@ -36,7 +36,7 @@ const detail = async (req, res, next) => {
         });
       });
     }
-    const downloadUrl = await r2.getSignedDownloadUrl(upload.r2Key, 900);
+    const downloadUrl = await r2.getSignedDownloadUrl(upload.r2Key, 900, { fileName: upload.fileName });
     return res.status(200).json({ success: true, upload, downloadUrl });
   } catch (error) {
     next(error);

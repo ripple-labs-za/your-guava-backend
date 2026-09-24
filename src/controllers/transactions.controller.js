@@ -10,6 +10,16 @@ const ingestion = require('../services/ingestion.service');
 const parser = require('../services/parser.service');
 const { addZonedDays, zonedDayEnd, zonedDayOrdinal, zonedDayStart, getCafeTimezone } = require('../utils/timezone');
 const { proposeColumnMapping } = require('../services/anthropic.service');
+
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+// The browser's claim is not evidence: a CSV sent as text/html was stored and later served as a web page
+// (uploads-catalogue-19, security-17). By this point the bytes were validated for their extension, so the extension
+// plus the magic bytes decide.
+const storedContentType = (buffer, ext) => (ext === 'xlsx' && buffer.length >= 4 && buffer.readUInt32LE(0) === 0x04034b50
+  ? XLSX_CONTENT_TYPE
+  : 'text/csv; charset=utf-8');
+// A code the product wrote for the client (LEGACY_XLS), carried on the upload's own 400 bodies (BE-03-T12).
+const publicCodeOf = (err) => (err?.publicCode ? { code: err.publicCode } : {});
 const { DEMAND_LINE_MATCH } = require('../utils/demand');
 const { canSpendCredits } = require('../middleware/rbac.middleware');
 const { activeCafeId } = require('../utils/tenancy');
@@ -95,7 +105,7 @@ const upload = async (req, res, next) => {
       parser.assertSupportedFileBuffer(buffer, ext);
     } catch (err) {
       await cleanupLocalFile(filePath);
-      return res.status(400).json({ success: false, message: err.message });
+      return res.status(400).json({ success: false, ...publicCodeOf(err), message: err.message });
     }
 
     // Preview headers + sample rows
@@ -106,6 +116,7 @@ const upload = async (req, res, next) => {
       await cleanupLocalFile(filePath);
       return res.status(400).json({
         success: false,
+        ...publicCodeOf(err),
         message: err.statusCode === 400
           ? err.message
           : 'Could not read this file. Please upload a valid CSV or XLSX export.',
@@ -125,7 +136,7 @@ const upload = async (req, res, next) => {
     // Stage to R2
     const r2Key = `uploads/${cafeId}/${Date.now()}-${crypto.randomBytes(6).toString('hex')}-${safeStorageName}`;
     try {
-      await r2.uploadFile(buffer, r2Key, req.file.mimetype || 'text/csv');
+      await r2.uploadFile(buffer, r2Key, storedContentType(buffer, ext));
       stagedR2Key = r2Key;
     } catch (err) {
       await cleanupLocalFile(filePath);

@@ -147,6 +147,9 @@ const assertParsedRowsImportable = (parsed, { allowSeverePartial = false } = {})
     );
     err.statusCode = 422;
     err.code = 'SEVERE_PARTIAL_IMPORT';
+    // The field the error middleware exposes (err.code alone never is), so the portal can tell this 422 from BE-01-T04's
+    // PARSE_LIMIT_EXCEEDED, which it used to take for a severe partial (BE-03-T12).
+    err.publicCode = 'SEVERE_PARTIAL_IMPORT';
     err.details = {
       errors: parsed.errors,
       totalRows: parsed.totalRows,

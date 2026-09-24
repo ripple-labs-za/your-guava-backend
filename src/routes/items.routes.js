@@ -4,8 +4,11 @@ const authMiddleware = require('../middleware/auth.middleware');
 const { requireCreditSpend } = require('../middleware/rbac.middleware');
 const { aiLimiter } = require('../middleware/rateLimit.middleware');
 const items = require('../controllers/items.controller');
+const { requireActiveCafe } = require('../middleware/requireCafe.middleware');
 
 router.use(authMiddleware);
+// A token with no cafe made ObjectId.createFromHexString(null) throw: a 500 instead of a clear 400 (BE-03-T12).
+router.use(requireActiveCafe);
 
 router.get('/', items.list);
 router.post('/', items.create);

@@ -116,4 +116,12 @@ describe('upload history and multipart limits', () => {
     const response = await request.post('/api/transactions/upload').set('Authorization', `Bearer ${token}`).attach('file', SMALL_CSV, 'small.csv');
     expect(response.status).toBe(200);
   });
+
+  // Review of BE-03-T12: multer read the part's file name as latin1, so a browser's UTF-8 name was stored garbled.
+  it('keeps a non-Latin file name as the browser sent it', async () => {
+    const response = await request.post('/api/transactions/upload').set('Authorization', `Bearer ${token}`).attach('file', SMALL_CSV, 'Продажи сентябрь.csv');
+    expect(response.status).toBe(200);
+    const stored = await Upload.findById(response.body.uploadId).select('fileName').lean();
+    expect(stored.fileName).toBe('Продажи сентябрь.csv');
+  });
 });

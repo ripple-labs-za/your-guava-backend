@@ -90,4 +90,26 @@ describe('r2 storage safety', () => {
     await expect(r2.uploadFile(Buffer.alloc(1025), 'cafe/large.csv'))
       .rejects.toMatchObject({ statusCode: 400 });
   });
+
+  it('presigns downloads as attachments so a stored file never renders inline', async () => {
+    Object.assign(process.env, { R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'AKIDEXAMPLE', R2_SECRET_ACCESS_KEY: 'secret', R2_BUCKET_NAME: 'bucket' });
+    r2._resetClient();
+    const url = new URL(await r2.getSignedDownloadUrl('uploads/c/1-sales.csv', 60, { fileName: 'Sales "Sept".csv' }));
+    expect(url.searchParams.get('response-content-disposition')).toMatch(/^attachment; filename="Sales _Sept_\.csv"/);
+  });
+
+  // Review of BE-03-T12: a long name kept its extension only in part, and a non-Latin name became underscores.
+  it('keeps the extension of a long name and the real name of a non-Latin one', async () => {
+    Object.assign(process.env, { R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'AKIDEXAMPLE', R2_SECRET_ACCESS_KEY: 'secret', R2_BUCKET_NAME: 'bucket' });
+    r2._resetClient();
+    const disposition = async (fileName) => new URL(await r2.getSignedDownloadUrl('uploads/c/1-x.csv', 60, { fileName }))
+      .searchParams.get('response-content-disposition');
+    const long = await disposition(`${'x'.repeat(300)}.csv`);
+    expect(long).toMatch(/filename="x{140}\.csv"; filename\*=UTF-8''x{190}\.csv$/);
+    const cyrillic = await disposition('Продажи сентябрь.csv');
+    expect(cyrillic).toContain("filename*=UTF-8''" + encodeURIComponent('Продажи сентябрь.csv'));
+    // Text after the last dot longer than an extension is part of the name, not cut through the middle.
+    const dotted = await disposition('sales.from-the-september-till');
+    expect(dotted).toBe(`attachment; filename="sales.from-the-september-till"; filename*=UTF-8''sales.from-the-september-till`);
+  });
 });
