@@ -63,8 +63,8 @@ describe('till exports with real-world encodings and layouts import end to end',
   });
 
   it('imports an escaped quote exactly as written after preview has read the staged file', async () => {
-    const text = ['Receipt,Date,Time,Items,Total', 'Q1,2026-09-01,12:00,"1 x 12"" Pizza",120.00', 'Q2,2026-09-01,12:05,1 x Latte,38.00'].join('
-');
+    const text = ['Receipt,Date,Time,Items,Total', 'Q1,2026-09-01,12:00,"1 x 12"" Pizza",120.00', 'Q2,2026-09-01,12:05,1 x Latte,38.00']
+      .join(String.fromCharCode(10));
     const staged = await stage(token, Buffer.from(text), 'escaped-quote.csv');
     const done = await confirm(token, staged.body.uploadId, MAP);
     expect(done.body.stats).toMatchObject({ imported: 2, errors: 0 });

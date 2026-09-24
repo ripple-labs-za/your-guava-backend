@@ -133,12 +133,19 @@ const detectNewline = (buffer) => {
 };
 
 /**
- * The separator is the one whose header row reads most like labels (a real header is all labels; under the wrong
- * separator the first sale of a ';' file splits into half-label pieces), then fits the most rows below it within one
- * column (tills leave empty trailing columns off, or add a trailing separator to the header only), then is widest,
- * then comes first in the candidate order (',' first). Review of BE-03-T08: counting only rows of exactly the header's
- * width let ',' win for a ';' file whose rows leave off a trailing Note column.
+ * The separator is the one whose header row comes first in the file: the real header always sits above any data row
+ * a wrong separator can mistake for one (review of BE-03-T08, third round: ranking by label share first let a comma
+ * file whose header has a "#" or "2025" cell lose to a data row with ';'-joined items). Then the header that reads
+ * most like labels (under the wrong separator the first sale of a ';' file splits into half-label pieces), then the
+ * one that fits the most rows below it within one column (tills leave empty trailing columns off, or add a trailing
+ * separator to the header only), then the widest, then the candidate order (',' first).
  */
+/** Whether rank `a` beats rank `b`: the first key that differs decides, higher wins; equal ranks keep the earlier. */
+const outranks = (a, b) => {
+  for (let key = 0; key < a.length; key += 1) if (a[key] !== b[key]) return a[key] > b[key];
+  return false;
+};
+
 const detectCsvLayout = (text, { declaredSeparator, newline = LF } = {}) => {
   // csv-parser ends a record at its newline only (a CR before an LF belongs to the LF), so layout lines do too.
   const lines = text.split(newline === CR ? /\r/ : /\r?\n/, HEADER_SCAN_LINES + 5);
@@ -153,11 +160,8 @@ const detectCsvLayout = (text, { declaredSeparator, newline = LF } = {}) => {
     for (let row = index + 1; row < rows.length; row += 1) {
       if (rows[row].length > 0 && Math.abs(rows[row].length - header.length) <= 1) fit += 1;
     }
-    const better = !best
-      || share > best.share
-      || (share === best.share && fit > best.fit)
-      || (share === best.share && fit === best.fit && header.length > best.width);
-    if (better) best = { separator, headerLineIndex: index, width: header.length, fit, share };
+    const rank = [-index, share, fit, header.length];
+    if (!best || outranks(rank, best.rank)) best = { separator, headerLineIndex: index, rank };
   }
   return best
     ? { separator: best.separator, headerLineIndex: best.headerLineIndex }

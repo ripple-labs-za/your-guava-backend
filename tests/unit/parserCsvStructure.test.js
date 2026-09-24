@@ -416,3 +416,35 @@ describe('reading never changes the uploaded bytes', () => {
     expect(result.rows[0].items[0].name).toBe('12" Pizza');
   });
 });
+
+// Third review of BE-03-T08: a data row that contains ';' or '|' must not beat the real header above it.
+describe('third review of BE-03-T08', () => {
+  const MAP4 = { receiptId: '#', date: 'Date', items: 'Items', total: 'Total' };
+  const plain = (from, count) => Array.from({ length: count }, (_, i) => `${from + i},2026-09-01,1 x Latte,38.00`);
+
+  it.each([
+    ['a comma file with a # heading and ;-joined items on its first row',
+      ['#,Date,Items,Total', '1,2026-09-01,1 x Latte; 1 x Muffin,76.00', ...plain(2, 5)]],
+    ['the same with the ; on data line 7',
+      ['#,Date,Items,Total', ...plain(1, 5), '6,2026-09-01,1 x Latte; 1 x Muffin,76.00']],
+    ['a comma file with |-joined items',
+      ['#,Date,Items,Total', '1,2026-09-01,1 x Latte| 1 x Muffin,76.00', ...plain(2, 5)]],
+    ['an item named with a ;', ['#,Date,Items,Total', '1,2026-09-01,1 x Latte; oat,38.00', ...plain(2, 5)]],
+  ])('keeps the header of %s', async (name, lines) => {
+    const result = await parse(Buffer.from(lines.join(LF)), MAP4);
+    expect(result.rows).toHaveLength(6);
+    expect(result.errors).toBe(0);
+  });
+
+  it('keeps the header of a comma file whose last heading is a year', async () => {
+    const lines = ['Receipt,Date,Items,Total,2025', '1,2026-09-01,1 x Latte; 1 x Muffin,76.00,', ...plain(2, 5).map((l) => `${l},`)];
+    expect((await previewBuffer(Buffer.from(lines.join(LF)), 'csv')).headers).toEqual(['Receipt', 'Date', 'Items', 'Total', '2025']);
+  });
+
+  it('keeps the header of a tab file with a # heading and comma items', async () => {
+    const TAB = String.fromCharCode(9);
+    const lines = [['#', 'Date', 'Items', 'Total'].join(TAB), ['1', '2026-09-01', '1 x Latte, 1 x Muffin', '76.00'].join(TAB),
+      ...Array.from({ length: 5 }, (_, i) => [`${i + 2}`, '2026-09-01', '1 x Latte', '38.00'].join(TAB))];
+    expect((await previewBuffer(Buffer.from(lines.join(LF)), 'csv')).headers).toEqual(['#', 'Date', 'Items', 'Total']);
+  });
+});
