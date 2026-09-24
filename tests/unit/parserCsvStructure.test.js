@@ -209,3 +209,31 @@ describe('overflow cells are folded into Items only when they look like items', 
     });
   });
 });
+
+describe('a file with no quotation marks at all', () => {
+  const { normaliseCsvQuotes } = require('../../src/services/parser/csvStructure');
+  const opts = { maxQuotedFieldBytes: 1024 };
+
+  it.each([
+    ['a,b\n1,2\n3,4\n', 3],
+    ['a,b\r\n1,2\r\n\r\n3,4', 3],
+    ['a,b\n\n\n1,2\n,,\n', 3],
+    ['a,b\r1,2\r3,4\r', 3],
+    ['', 0],
+    ['\n\n', 0],
+  ])('counts the records of %j exactly as the full scan does, and returns the bytes untouched', (text, records) => {
+    const buffer = Buffer.from(text);
+    const result = normaliseCsvQuotes(buffer, ',', opts);
+    expect(result).toEqual({ buffer, repairedFields: 0, records });
+    // The full scan, forced by a quoted cell prefixed to the first line, agrees (that prefix fills an empty first line).
+    const firstLineEmpty = text.split(/\r\n|\r|\n/)[0] === '';
+    expect(normaliseCsvQuotes(Buffer.from(`"x",${text}`), ',', opts).records).toBe(records + (firstLineEmpty ? 1 : 0));
+  });
+
+  it('scans 10 MB of one quote-free line quickly', () => {
+    const buffer = Buffer.alloc(10 * 1024 * 1024, 'a');
+    const started = performance.now();
+    expect(normaliseCsvQuotes(buffer, ',', opts).records).toBe(1);
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+});

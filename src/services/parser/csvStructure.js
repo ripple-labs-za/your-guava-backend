@@ -132,7 +132,30 @@ const unreadableQuotes = () => createClientInputError(
   + 'Export it again, or save it from Excel as "CSV UTF-8", and upload that.'
 );
 
+/**
+ * Records (non-empty lines, CRLF counted once) of a file with no quotation marks, found with native searches: nothing
+ * needs rewriting, and walking 10 MB byte by byte in JavaScript blocked the event loop for the whole file.
+ */
+const countQuoteFreeRecords = (buffer) => {
+  let records = 0;
+  let start = 0;
+  while (start < buffer.length) {
+    const lf = buffer.indexOf(LF, start);
+    const cr = buffer.indexOf(CR, start);
+    let end = lf === -1 ? buffer.length : lf;
+    let next = end + 1;
+    if (cr !== -1 && cr < end) { // a CR ends the line: CRLF counts once, a lone CR is a line end of its own
+      end = cr;
+      next = buffer[cr + 1] === LF ? cr + 2 : cr + 1;
+    }
+    if (end > start) records += 1;
+    start = next;
+  }
+  return records;
+};
+
 const normaliseCsvQuotes = (buffer, separator, { maxQuotedFieldBytes }) => {
+  if (buffer.indexOf(QUOTE) === -1) return { buffer, repairedFields: 0, records: countQuoteFreeRecords(buffer) };
   const SEP = separator.charCodeAt(0);
   const budget = buffer.length * 3 + 1024 * 1024;
   // Every repair inserts one quote byte, so only the positions are kept (ascending input indexes): a list of
