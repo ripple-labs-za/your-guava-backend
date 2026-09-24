@@ -27,7 +27,7 @@ const APPROVED = new Set([
 
 const DECLINED = new Set([
   'declined', 'decline',
-  'refunded', 'refund', 'partially refunded',
+  'refunded', 'refund',
   'failed', 'failure',
   'void', 'voided',
   'cancelled', 'canceled',
@@ -35,14 +35,25 @@ const DECLINED = new Set([
   'error', 'aborted', 'expired', 'pending',
 ]);
 
+// A partly refunded sale is still a sale: the customer kept part of it. Declining it dropped the revenue and the
+// items they kept. See DECISIONS D-021 (BE-03-T07).
+const PARTIALLY_REFUNDED = new Set(['partially refunded', 'partial refund', 'partially_refunded', 'part refunded', 'partly refunded']);
+const REFUND = new Set(['refunded', 'refund']);
+
 const SKIP_REASON_STATUS = 'status_not_approved';
 
 const normaliseTransactionStatus = (raw) => {
   const key = String(raw ?? '').trim().toLowerCase();
   if (key === '') return { status: 'approved', recognised: true };
   if (APPROVED.has(key)) return { status: 'approved', recognised: true };
+  if (PARTIALLY_REFUNDED.has(key)) return { status: 'approved', recognised: true, partialRefund: true };
   if (DECLINED.has(key)) return { status: 'declined', recognised: true };
   return { status: 'declined', recognised: false };
 };
 
-module.exports = { normaliseTransactionStatus, SKIP_REASON_STATUS, APPROVED, DECLINED };
+/** A row that is itself a refund (not a sale that was partly refunded). */
+const isRefundStatus = (raw) => REFUND.has(String(raw ?? '').trim().toLowerCase());
+
+module.exports = {
+  normaliseTransactionStatus, isRefundStatus, SKIP_REASON_STATUS, APPROVED, DECLINED, PARTIALLY_REFUNDED,
+};

@@ -146,6 +146,11 @@ const persistParsedRowsBulk = async (
   let declinedRows = 0;
   let duplicateRows = 0;
   const approved = [];
+  // Refund rows netted into the partially refunded sale they refund (BE-03-T07, D-021): counted, never imported alone.
+  if (parsed.nettedRefundRows > 0) {
+    skipped += parsed.nettedRefundRows;
+    skippedByReason.refund_netted = parsed.nettedRefundRows;
+  }
 
   for (const row of parsed.rows) {
     const { status, recognised } = normaliseTransactionStatus(row.status);
