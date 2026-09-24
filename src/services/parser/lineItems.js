@@ -271,10 +271,11 @@ const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
       items: row.items.map(({ lineTotal, ...item }) => (totalsAreLineAmounts
         ? {
           ...item,
-          // The line's own amount over its own quantity; the sign stays on the quantity. A refund or void line is a
-          // correction, not a price the till charged, so it is never learned as one.
-          unitPrice: parseFloat(Math.abs(lineTotal / item.quantity).toFixed(2)),
-          priceSource: item.quantity < 0 || lineTotal < 0 ? 'derived' : 'exact',
+          // The line's own amount over its own quantity, so Σ price × quantity is the receipt total: a refund line
+          // (-1, -30.00) prices at 30, and a discount line (1, -10.00) keeps its negative price. Neither, nor a comped
+          // 0.00 line, is a price the till charged, so none is ever learned as one.
+          unitPrice: parseFloat((lineTotal / item.quantity).toFixed(2)),
+          priceSource: item.quantity < 0 || lineTotal <= 0 ? 'derived' : 'exact',
         }
         : { ...item, unitPrice: averageUnitPrice, priceSource: receiptPriceSource })),
     }, row[SOURCE_ROW_NUMBERS] || []));
