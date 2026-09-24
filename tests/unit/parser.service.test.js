@@ -1828,3 +1828,73 @@ describe('dates and times as tills write them', () => {
     expect(source).not.toMatch(/new Date\((value|dateStr|dateValue|datePart|timeStr|timeValue|String\()/);
   });
 });
+
+describe('refund lines in line-per-row files', () => {
+  const LF = String.fromCharCode(10);
+  const ZONE = 'Africa/Johannesburg';
+  const mapping = { receiptId: 'Receipt', date: 'Date', items: 'Item', quantity: 'Qty', total: 'Line Total' };
+  const parse = (lines) => parseBuffer(Buffer.from(['Receipt,Date,Item,Qty,Line Total', ...lines].join(LF)), {
+    columnMapping: mapping, itemsMode: 'line-per-row', timezone: ZONE,
+  });
+  const lineValue = (row) => Number(row.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0).toFixed(2));
+
+  it('prices a refund line from its own amount and never as an exact observation', async () => {
+    // UAT-00 F11 line-per-row-refunds.csv, receipt R9: a sale and a refund on one receipt.
+    const result = await parse(['R9,2026-09-14,Latte,1,38.00', 'R9,2026-09-14,Muffin,-1,-30.00']);
+    const [r9] = result.rows;
+    expect(r9.total).toBe(8);
+    expect(r9.items).toEqual([
+      { name: 'Latte', quantity: 1, unitPrice: 38, priceSource: 'exact' },
+      { name: 'Muffin', quantity: -1, unitPrice: 30, priceSource: 'derived' },
+    ]);
+    expect(lineValue(r9)).toBe(8);
+  });
+
+  it('prices a pure refund receipt positively, with the sign on the quantity', async () => {
+    const result = await parse(['R10,2026-09-14,Muffin,-2,-60.00']);
+    expect(result.rows[0].items).toEqual([{ name: 'Muffin', quantity: -2, unitPrice: 30, priceSource: 'derived' }]);
+    expect(result.rows[0].total).toBe(-60);
+  });
+
+  it('divides a repeated receipt total by the magnitude of the quantities', async () => {
+    const result = await parseBuffer(
+      Buffer.from(['Receipt,Date,Item,Qty,Total', 'R11,2026-09-14,Latte,1,8.00', 'R11,2026-09-14,Muffin,-1,8.00'].join(LF)),
+      {
+        columnMapping: { receiptId: 'Receipt', date: 'Date', items: 'Item', quantity: 'Qty', total: 'Total' },
+        itemsMode: 'line-per-row',
+        timezone: ZONE,
+      }
+    );
+    expect(result.rows[0].items.map((item) => [item.unitPrice, item.priceSource])).toEqual([[4, 'derived'], [4, 'derived']]);
+  });
+});
+
+describe('decimal commas in a quantity column', () => {
+  const LF = String.fromCharCode(10);
+  const ZONE = 'Africa/Johannesburg';
+  const mapping = { receiptId: 'Receipt', date: 'Date', items: 'Item', quantity: 'Qty', total: 'Line Total' };
+  const quantities = async (lines, header = 'Receipt;Date;Item;Qty;Line Total') => (await parseBuffer(
+    Buffer.from([header, ...lines].join(LF)),
+    { columnMapping: mapping, itemsMode: 'line-per-row', timezone: ZONE }
+  )).rows.map((row) => row.items[0].quantity);
+
+  it('reads 0,350 as 0.35 in a column that uses decimal commas', async () => {
+    // UAT-00 F12 decimal-comma-quantities.csv: a deli weighing biltong, saved by Excel with ';'.
+    expect(await quantities(['B1;2026-09-14;Biltong;0,350;105,00', 'B2;2026-09-14;Biltong;1,250;375,00'])).toEqual([0.35, 1.25]);
+  });
+
+  it('reads 1,250 as 1.25 in a semicolon file even when no value settles it', async () => {
+    expect(await quantities(['B3;2026-09-14;Biltong;1,250;375,00', 'B4;2026-09-14;Biltong;2,500;750,00'])).toEqual([1.25, 2.5]);
+  });
+
+  it('keeps 1,250 as twelve hundred and fifty when the column uses decimal points', async () => {
+    expect(await quantities(
+      ['C1,2026-09-14,Sugar sachet,"1,250",125.00', 'C2,2026-09-14,Sugar sachet,"2,000.5",200.05'],
+      'Receipt,Date,Item,Qty,Line Total'
+    )).toEqual([1250, 2000.5]);
+  });
+
+  it('leaves whole quantities alone', async () => {
+    expect(await quantities(['W1;2026-09-14;Latte;2;76,00', 'W2;2026-09-14;Latte;3;114,00'])).toEqual([2, 3]);
+  });
+});

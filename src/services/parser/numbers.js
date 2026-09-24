@@ -2,7 +2,7 @@
 // Moved from parser.service.js by BE-11-T01; behaviour unchanged.
 const { parserLimits } = require('./limits');
 
-const parseCleanNumber = (raw) => {
+const parseCleanNumber = (raw, { decimalMark } = {}) => {
   if (raw == null || raw === '') return { valid: false, value: 0 };
   if (typeof raw === 'number') {
     return Number.isFinite(raw)
@@ -38,9 +38,11 @@ const parseCleanNumber = (raw) => {
   } else if (lastComma >= 0) {
     const commaCount = (value.match(/,/g) || []).length;
     const decimalDigits = value.length - lastComma - 1;
-    value = commaCount === 1 && decimalDigits > 0 && decimalDigits <= 2
-      ? value.replace(',', '.')
-      : value.replace(/,/g, '');
+    // "0,350" in a column the file shows uses decimal commas is 0.35, not 350 (BE-03-T07); without that evidence a
+    // comma before three digits stays a thousands separator.
+    const isDecimalComma = commaCount === 1 && decimalDigits > 0
+      && (decimalMark === ',' || (decimalMark !== '.' && decimalDigits <= 2));
+    value = isDecimalComma ? value.replace(',', '.') : value.replace(/,/g, '');
   }
 
   const parsed = parseFloat(value);
@@ -81,8 +83,8 @@ const parseOptionalAmount = (raw, label, limits) => {
   return { value: parsed.value };
 };
 
-const parseQuantity = (raw, limits = parserLimits()) => {
-  const parsed = parseCleanNumber(raw);
+const parseQuantity = (raw, limits = parserLimits(), options = {}) => {
+  const parsed = parseCleanNumber(raw, options);
   // Truncating discarded weight-based quantities entirely: 0.35 became 0 and the
   // row was rejected as invalid. Keep the value the till actually recorded.
   const quantity = parsed.value;
@@ -95,6 +97,26 @@ const parseQuantity = (raw, limits = parserLimits()) => {
     : null;
 };
 
+/**
+ * The decimal mark a quantity column uses, judged on the whole column, not one cell. "0,350" can only be a decimal comma
+ * (no thousands group starts with 0), "1,5" and "2,25" can only be decimal, "1.250,5" is European. A column of nothing
+ * but "1,250"-shaped values cannot tell; a ';'-separated file, the South African Excel default, settles it as commas.
+ */
+const inferDecimalMark = (values, { csvSeparator } = {}) => {
+  let comma = false;
+  let dot = false;
+  for (const raw of values) {
+    if (raw == null || typeof raw === 'number') continue;
+    const value = String(raw).trim().replace(/^[-+(]+|[)-]+$/g, '');
+    if (/^0,\d+$/.test(value) || /^\d+,(\d{1,2}|\d{4,})$/.test(value) || /^\d{1,3}(\.\d{3})+,\d+$/.test(value)) comma = true;
+    else if (/^0\.\d+$/.test(value) || /^\d+\.(\d{1,2}|\d{4,})$/.test(value) || /^\d{1,3}(,\d{3})+\.\d+$/.test(value)) dot = true;
+    if (comma && dot) return null; // a contradictory column keeps the per-cell rule
+  }
+  if (comma) return ',';
+  if (dot) return '.';
+  return csvSeparator === ';' ? ',' : null;
+};
+
 module.exports = {
-  parseBoundedAmount, parseOptionalAmount, parseQuantity,
+  parseBoundedAmount, parseOptionalAmount, parseQuantity, inferDecimalMark,
 };

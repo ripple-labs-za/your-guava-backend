@@ -121,7 +121,9 @@ const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
         );
         continue;
       }
-      const quantity = mapping.quantity ? parseQuantity(raw[mapping.quantity], limits) : 1;
+      const quantity = mapping.quantity
+        ? parseQuantity(raw[mapping.quantity], limits, { decimalMark: context.quantityDecimal })
+        : 1;
       if (!quantity) {
         errors++;
         addRowError(rowErrors, rowNumber, 'Invalid item quantity', raw);

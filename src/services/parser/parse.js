@@ -8,7 +8,8 @@ const { assertSupportedFileBuffer } = require('./fileType');
 const { groupLinePerRow } = require('./lineItems');
 const { inferDayMonthOrder, markMidnightOnlyFileDateOnly } = require('./dates');
 const { buildPackedRow } = require('./packedItems');
-const { repairOverflowColumns, readRows } = require('./csv');
+const { repairOverflowColumns, readRows, detectCsvSeparator } = require('./csv');
+const { inferDecimalMark } = require('./numbers');
 
 const VALID_ITEMS_MODES = new Set(['packed', 'line-per-row']);
 
@@ -35,10 +36,16 @@ const parseBuffer = async (
   validateMapping(columnMapping, itemsMode);
   const rawRows = repairOverflowColumns(await readRows(buffer, normalizedExt), columnMapping);
   // Settled once per file from its own values (BE-03-T06); later cards add to this object, none replaces it.
+  const csvSeparator = normalizedExt === 'csv' ? detectCsvSeparator(buffer) : null;
   const parseContext = {
     dateOrder: inferDayMonthOrder(rawRows.map((raw, index) => ({
       value: raw[columnMapping.date], rowNumber: sourceRowNumber(raw, index),
     }))),
+    csvSeparator,
+    // The quantity column's decimal mark (BE-03-T07): money columns keep the per-cell rule, which reads "105,00" already.
+    quantityDecimal: columnMapping.quantity
+      ? inferDecimalMark(rawRows.map((raw) => raw[columnMapping.quantity]), { csvSeparator })
+      : null,
   };
 
   let rows;
