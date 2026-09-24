@@ -218,7 +218,8 @@ describe('a file with no quotation marks at all', () => {
     ['a,b\n1,2\n3,4\n', 3],
     ['a,b\r\n1,2\r\n\r\n3,4', 3],
     ['a,b\n\n\n1,2\n,,\n', 3],
-    ['a,b\r1,2\r3,4\r', 3],
+    // csv-parser ends a record at LF only, so a CR-only file is one record to it and must be one here (review of BE-03-T08).
+    ['a,b\r1,2\r3,4\r', 1],
     ['', 0],
     ['\n\n', 0],
   ])('counts the records of %j exactly as the full scan does, and returns the bytes untouched', (text, records) => {
@@ -235,5 +236,93 @@ describe('a file with no quotation marks at all', () => {
     const started = performance.now();
     expect(normaliseCsvQuotes(buffer, ',', opts).records).toBe(1);
     expect(performance.now() - started).toBeLessThan(50);
+  });
+});
+
+// Review of BE-03-T08 (BLOCK): shapes the first tests and fixtures could not reach.
+describe('review of BE-03-T08', () => {
+  const { normaliseCsvQuotes, prepareCsv } = require('../../src/services/parser/csvStructure');
+  const { decodeCsvBuffer } = require('../../src/services/parser/encoding');
+  const MAP3 = { date: 'Date', items: 'Items', total: 'Total' };
+
+  it('counts the records of 2 MB of short LF-only lines in linear time', () => {
+    const buffer = Buffer.from('a,b\n'.repeat(512 * 1024));
+    const started = performance.now();
+    expect(normaliseCsvQuotes(buffer, ',', { maxQuotedFieldBytes: 1024 }).records).toBe(512 * 1024);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it.each([
+    ['a ; file whose first sale has two unquoted-comma items', ['Date;Items;Total', '2026-09-01;"1 x Latte, 1 x Muffin";76,00', '2026-09-02;1 x Latte;38,00']],
+    ['a tab file whose first sale has unquoted comma items', ['Date\tItems\tTotal', '2026-09-01\t1 x Latte, 1 x Muffin, 1 x Tea\t106.00', '2026-09-02\t1 x Latte\t38.00']],
+    ['a comma file whose items are joined with |', ['Date,Items,Total', '2026-09-01,1 x Latte|1 x Muffin|1 x Tea,106.00', '2026-09-02,1 x Latte,38.00']],
+  ])('keeps the header of %s', async (name, lines) => {
+    const buffer = Buffer.from(lines.join(LF));
+    expect((await previewBuffer(buffer, 'csv')).headers).toEqual(['Date', 'Items', 'Total']);
+  });
+
+  it('does not let a name that opens with a quote swallow the rows up to the next quoted cell', async () => {
+    const result = await parse(Buffer.from([
+      'Receipt,Date,Time,Items,Total',
+      'U1,2026-09-01,12:00,"Big" Breakfast,85.00',
+      'U2,2026-09-01,12:05,1 x Latte,38.00',
+      'U3,2026-09-01,12:10,1 x Latte,38.00',
+      'U4,2026-09-01,12:15,"1 x Latte, 1 x Muffin",68.00',
+      'U5,2026-09-01,12:20,1 x Latte,38.00',
+    ].join(LF)));
+    expect(result.totalRows).toBe(5);
+    expect(result.rows.map((row) => [row.receiptId, row.total])).toEqual([
+      ['U1', 85], ['U2', 38], ['U3', 38], ['U4', 68], ['U5', 38],
+    ]);
+  });
+
+  it('imports a 10,000-row file where 1 row in 100 names an item in quotes, instead of refusing it', async () => {
+    const lines = ['Receipt,Date,Time,Items,Total'];
+    for (let i = 0; i < 10000; i += 1) {
+      lines.push(i % 100 === 0 ? `S${i},2026-09-01,12:00,"Special" Latte,40.00` : `S${i},2026-09-01,12:00,1 x Latte,38.00`);
+    }
+    const result = await parse(Buffer.from(lines.join(LF)));
+    expect(result.totalRows).toBe(10000);
+    expect(result.rows).toHaveLength(10000);
+  });
+
+  it('decodes a UTF-8 file with one stray Windows-1252 byte as UTF-8, mapping only that byte', () => {
+    const file = Buffer.concat([Buffer.from('Items\n1 x Crème brûlée\n2 × Latte\n1 x Caf'), Buffer.from([0xe9]), Buffer.from('\n')]);
+    const decoded = decodeCsvBuffer(file);
+    expect(decoded.buffer.toString('utf8')).toBe('Items\n1 x Crème brûlée\n2 × Latte\n1 x Café\n');
+  });
+
+  it('refuses 10 MB of quotation marks inside the heap guard', () => {
+    const buffer = Buffer.alloc(10 * 1024 * 1024, '"');
+    const heapBefore = process.memoryUsage().heapUsed;
+    let thrown = null;
+    try { prepareCsv(Buffer.concat([Buffer.from('A,B\n'), buffer]), parserLimits()); } catch (error) { thrown = error; }
+    expect(thrown).toMatchObject({ statusCode: 400 });
+    expect(process.memoryUsage().heapUsed - heapBefore).toBeLessThan(64 * 1024 * 1024);
+  });
+
+  it('finds a workbook header whose first data row is sparse', async () => {
+    const { headers, rows } = await readWorkbook(xlsxWith([
+      ['Receipt', 'Date', 'Item', 'Category', 'Payment', 'Status'],
+      ['R0'],
+      ['R1', '2026-09-01', 'Flat White', 'Coffee', 'Card', 'Approved'],
+      ['R2', '2026-09-01', 'Latte', 'Coffee', 'Card', 'Approved'],
+    ]));
+    expect(headers).toEqual(['Receipt', 'Date', 'Item', 'Category', 'Payment', 'Status']);
+    expect(rows).toHaveLength(3);
+  });
+
+  it('does not report a merged line for a stray carriage return inside a cell', async () => {
+    const CR = String.fromCharCode(13);
+    const result = await parse(Buffer.from(['Date,Items,Total', `2026-09-01,1 x Latte${CR}x,38.00`, '2026-09-02,1 x Latte,38.00'].join(LF)), MAP3);
+    expect(result.errors).toBe(0);
+    expect(result.totalRows).toBe(2);
+  });
+
+  it('stops reading a flood of blank lines at the row limit', async () => {
+    const { readCsv } = require('../../src/services/parser/csv');
+    const limits = { ...parserLimits(), maxRows: 100 };
+    const buffer = Buffer.from(`A,B${LF}${`,${LF}`.repeat(1000)}1,2${LF}`);
+    await expect(readCsv(buffer, { limit: 5, limits })).rejects.toMatchObject({ statusCode: 400, message: /100 row limit/ });
   });
 });

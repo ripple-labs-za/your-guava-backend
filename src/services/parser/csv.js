@@ -1,11 +1,9 @@
-// CSV reading: the one bounded reader (readCsv) behind preview and import, overflow-column repair, readRows.
+// CSV reading: the one bounded reader (readCsv) behind preview and import, and overflow-column repair.
 // BE-11-T01 moved it here; BE-03-T01 made readCsv the only reader; BE-03-T08 put prepareCsv (encoding, layout, quotes,
 // in csvStructure.js) in front of it.
 const { parserLimits, createClientInputError, tooManyColumnsError } = require('./limits');
 const { SOURCE_ROW_NUMBERS, sourceRowNumber } = require('./rowErrors');
 const { headerDeduper, normaliseCell, UNNAMED_COLUMN_RE, normaliseRows } = require('./headers');
-const { assertSupportedFileBuffer } = require('./fileType');
-const { readWorkbookRows } = require('./xlsx');
 const { decodeCsvBuffer } = require('./encoding');
 const {
   csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvLayout, prepareCsv,
@@ -142,6 +140,10 @@ const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
         // A separator-only line (",,"): a record in normaliseCsvQuotes' count, so it is counted here too.
         if (values.every((value) => String(value ?? '').trim() === '')) {
           blankRows += 1;
+          // Blank lines do not count toward the preview's limit, so a flood of them is held to the row limit instead.
+          if (blankRows + rows.length > limits.maxRows) {
+            parserStream.destroy(createClientInputError(`File exceeds the ${limits.maxRows} row limit`));
+          }
           return;
         }
         if (rows.length >= limits.maxRows) {
@@ -224,13 +226,8 @@ const repairOverflowColumns = (rawRows, mapping) => {
   return { rows: rows.filter(Boolean), ambiguousRows };
 };
 
-const readRows = async (buffer, fileExt) => {
-  assertSupportedFileBuffer(buffer, fileExt);
-  if (fileExt === 'xlsx') return readWorkbookRows(buffer);
-  return (await readCsv(buffer)).rows;
-};
 
 module.exports = {
   csvMaxRowBytes, csvReadError, csvSeparatorDirective, stripCsvSeparatorDirective, detectCsvSeparator, readCsv,
-  repairOverflowColumns, readRows,
+  repairOverflowColumns,
 };
