@@ -91,6 +91,19 @@ describe('deleting or remapping an upload never drops rows another upload holds'
     expect((await Upload.findById(b.uploadId).lean()).stats.imported).toBe(64);
   });
 
+  // BE-03-T09: skipped is always the sum of its reasons, so re-admitted rows leave the duplicate count with it.
+  it('keeps skipped equal to the sum of its reasons after re-admitting rows', async () => {
+    const { token } = await createTestUser();
+    const a = await importFile(token, salesCsv('2026-01-01', '2026-01-31'), 'overlap-a.csv');
+    const b = await importFile(token, salesCsv('2026-01-15', '2026-02-15'), 'overlap-b.csv');
+    expect(b.stats).toMatchObject({ skipped: 34, skippedByReason: { duplicate: 34 } });
+
+    await request.delete(`/api/uploads/${a.uploadId}`).set('Authorization', `Bearer ${token}`);
+
+    const { stats } = await Upload.findById(b.uploadId).lean();
+    expect(stats).toMatchObject({ imported: 64, skipped: 0, skippedByReason: { duplicate: 0 } });
+  });
+
   it('lists the uploads that share days with the one about to be deleted', async () => {
     const { token } = await createTestUser();
     const a = await importFile(token, salesCsv('2026-01-01', '2026-01-31'), 'overlap-a.csv');

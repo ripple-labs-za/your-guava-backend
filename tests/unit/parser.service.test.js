@@ -1191,19 +1191,26 @@ describe('line-per-row totals mode is inferred from the data', () => {
     expect(line.totalsAreLineAmounts).toBe(true);
   });
 
-  it('falls back to the header heuristic when the data is ambiguous', async () => {
-    // Half the multi-row receipts repeat a total, half differ: neither
-    // reading reaches consensus, so the header decides as before.
+  // BE-03-T09 rewrote the old "ambiguous" test: half the receipts differing is line evidence (a receipt-total file
+  // cannot produce one differing receipt), and expecting a plain "Total" header to drop them was parsing-18 itself.
+  it('reads half-differing receipts as line amounts whatever the header says', async () => {
     const lines = [...repeatedTotalReceipts(3), ...lineAmountReceipts(3)];
+    for (const header of ['Total', 'Line Total']) {
+      const result = await parseWith(header, lines);
+      expect(result.rowErrors).toEqual([]);
+      expect(result.rows.map((row) => row.total)).toEqual([120, 122, 124, 95, 96, 97]);
+    }
+  });
 
+  it('falls back to the header heuristic when the data is genuinely ambiguous', async () => {
+    // 8 of 10 multi-row receipts repeat a total and 2 differ: under 90% one way, under 30% the other.
+    const lines = [...repeatedTotalReceipts(8), ...lineAmountReceipts(2)];
     const plain = await parseWith('Total', lines);
-    expect(plain.rows.map((row) => row.total)).toEqual([60, 61, 62]);
-    expect(plain.rowErrors).toHaveLength(3);
-    expect(plain.rowErrors.every((error) => /conflicting receipt totals/i.test(error.reason))).toBe(true);
-
+    expect(plain.rows.map((row) => row.total)).toEqual([60, 61, 62, 63, 64, 65, 66, 67]);
+    expect(plain.rowErrors).toHaveLength(2);
     const line = await parseWith('Line Total', lines);
     expect(line.rowErrors).toEqual([]);
-    expect(line.rows.map((row) => row.total)).toEqual([120, 122, 124, 95, 96, 97]);
+    expect(line.rows).toHaveLength(10);
   });
 });
 

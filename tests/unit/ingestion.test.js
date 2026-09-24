@@ -50,6 +50,31 @@ describe('ingestion service', () => {
       expect(count).toBe(4);
     });
 
+    // BE-03-T09: the row-at-a-time path keeps skipped equal to the sum of its reasons, as the upload path does.
+    it('gives every row skipped on re-import a reason', async () => {
+      const cafeId = new mongoose.Types.ObjectId();
+      const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
+      await parseYocoCSV(csvPath, cafeId);
+
+      const second = await parseYocoCSV(csvPath, cafeId);
+
+      expect(second.skippedByReason).toEqual({ duplicate: 4, status_not_approved: 1 });
+      expect(second.skipped).toBe(5);
+    });
+
+    it('names a sale repeated inside one file apart from one imported earlier', async () => {
+      const cafeId = new mongoose.Types.ObjectId();
+      const columnMapping = { receiptId: 'Receipt', date: 'Date', time: 'Time', items: 'Items', total: 'Total' };
+      const file = (lines) => Buffer.from(['Receipt,Date,Time,Items,Total', ...lines].join(String.fromCharCode(10)));
+      await ingestParsedRows(file(['E1,2026-09-01,09:00,1 x Latte,38.00']), { cafeId, columnMapping, itemsMode: 'packed' });
+
+      const result = await ingestParsedRows(file([
+        'E1,2026-09-01,09:00,1 x Latte,38.00', 'E2,2026-09-01,09:05,1 x Tea,25.00', 'E2,2026-09-01,09:05,1 x Tea,25.00',
+      ]), { cafeId, columnMapping, itemsMode: 'packed' });
+
+      expect(result).toMatchObject({ imported: 1, skipped: 2, skippedByReason: { duplicate: 1, in_file_duplicate: 1 } });
+    });
+
     it('creates Item records for unique item names', async () => {
       const cafeId = new mongoose.Types.ObjectId();
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');

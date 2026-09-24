@@ -40,7 +40,11 @@ const DECLINED = new Set([
 const PARTIALLY_REFUNDED = new Set(['partially refunded', 'partial refund', 'partially_refunded', 'part refunded', 'partly refunded']);
 const REFUND = new Set(['refunded', 'refund']);
 
+// Why a row was not imported, keyed into Upload.stats.skippedByReason. skipped must always equal their sum.
 const SKIP_REASON_STATUS = 'status_not_approved';
+const SKIP_REASON_DUPLICATE = 'duplicate'; // the cafe already holds this sale (another upload, or older data)
+const SKIP_REASON_IN_FILE_DUPLICATE = 'in_file_duplicate'; // the same sale appears earlier in this file
+const SKIP_REASON_REFUND_NETTED = 'refund_netted'; // a refund row netted into the sale it refunds (BE-03-T07)
 
 const normaliseTransactionStatus = (raw) => {
   const key = String(raw ?? '').trim().toLowerCase();
@@ -55,5 +59,6 @@ const normaliseTransactionStatus = (raw) => {
 const isRefundStatus = (raw) => REFUND.has(String(raw ?? '').trim().toLowerCase());
 
 module.exports = {
-  normaliseTransactionStatus, isRefundStatus, SKIP_REASON_STATUS, APPROVED, DECLINED, PARTIALLY_REFUNDED,
+  normaliseTransactionStatus, isRefundStatus, APPROVED, DECLINED, PARTIALLY_REFUNDED,
+  SKIP_REASON_STATUS, SKIP_REASON_DUPLICATE, SKIP_REASON_IN_FILE_DUPLICATE, SKIP_REASON_REFUND_NETTED,
 };

@@ -178,4 +178,18 @@ describe('inferItemCategory', () => {
       expect(inferItemCategory('Shakshuka Bowl')).toBe('food');
     });
   });
+
+  // Every list matched substrings: "Spiced" and "Sliced" contain "iced", so a chai latte became a cold drink and its
+  // cold-day adjustment flipped from +15% to -20%; "Mug Cappuccino" was merchandise because retail is tested first.
+  describe('names that contain a term but are not it', () => {
+    expectCategory(['Spiced Chai Latte', 'Large Mug Rooibos', 'Mug Cappuccino'], 'coffee');
+    expectCategory(['Sliced Banana Bread', 'Diced Chicken Salad', 'Cheesecake'], 'food');
+    expectCategory(['Travel Mug', 'Guava Keep Cup Mug'], 'retail');
+  });
+
+  // Word-start matching no longer finds a term at the end of a compound, so the common compounds are listed whole.
+  describe('compound names listed whole', () => {
+    expectCategory(['Teacake', 'Fishcake', 'Flatbread', 'Cheeseburger', 'Hamburger'], 'food');
+    expectCategory(['Coldbrew'], 'cold_drink');
+  });
 });

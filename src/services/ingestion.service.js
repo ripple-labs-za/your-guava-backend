@@ -10,11 +10,14 @@ const {
 } = require('./parser.service');
 const { zonedDateKey, safeTimezone } = require('../utils/timezone');
 const {
-  transactionIdentity, resolveIdentities, tallyDuplicatesByUpload,
+  transactionIdentity, identityComparisonKey, resolveIdentities, tallyDuplicatesByUpload,
 } = require('./transactionIdentity');
 const {
   normaliseTransactionStatus,
   SKIP_REASON_STATUS,
+  SKIP_REASON_DUPLICATE,
+  SKIP_REASON_IN_FILE_DUPLICATE,
+  SKIP_REASON_REFUND_NETTED,
 } = require('../utils/transactionStatus');
 const {
   rebuildItemsForCafe,
@@ -75,6 +78,19 @@ const previewBuffer = async (buffer, fileExt = 'csv') => {
 
 const cloneRowErrors = (rowErrors) =>
   Array.isArray(rowErrors) ? rowErrors.slice(0, MAX_ROW_ERRORS) : [];
+
+/**
+ * Every skipped row is counted under its reason and skipped is their sum, so it can never disagree with them. The
+ * history used to say "412 skipped" and explain three: duplicates were counted but given no reason (BE-03-T09).
+ */
+const createSkipTally = () => {
+  const byReason = {};
+  const skip = (reason, count = 1) => {
+    if (count > 0) byReason[reason] = (byReason[reason] || 0) + count;
+  };
+  const total = () => Object.values(byReason).reduce((sum, count) => sum + count, 0);
+  return { skip, byReason, total };
+};
 
 const addPersistenceRowError = (rowErrors, row, reason) => {
   if (rowErrors.length >= MAX_ROW_ERRORS) return;
@@ -138,8 +154,7 @@ const persistParsedRowsBulk = async (
     timezone,
   }
 ) => {
-  let skipped = 0;
-  const skippedByReason = {};
+  const skips = createSkipTally();
   let errors = parsed.errors;
   const rowErrors = cloneRowErrors(parsed.rowErrors);
   let approvedRows = 0;
@@ -147,17 +162,13 @@ const persistParsedRowsBulk = async (
   let duplicateRows = 0;
   const approved = [];
   // Refund rows netted into the partially refunded sale they refund (BE-03-T07, D-021): counted, never imported alone.
-  if (parsed.nettedRefundRows > 0) {
-    skipped += parsed.nettedRefundRows;
-    skippedByReason.refund_netted = parsed.nettedRefundRows;
-  }
+  skips.skip(SKIP_REASON_REFUND_NETTED, parsed.nettedRefundRows || 0);
 
   for (const row of parsed.rows) {
     const { status, recognised } = normaliseTransactionStatus(row.status);
     if (status !== 'approved') {
-      skipped++;
+      skips.skip(SKIP_REASON_STATUS);
       declinedRows++;
-      skippedByReason[SKIP_REASON_STATUS] = (skippedByReason[SKIP_REASON_STATUS] || 0) + 1;
       if (!recognised) {
         addPersistenceRowError(
           rowErrors,
@@ -195,7 +206,8 @@ const persistParsedRowsBulk = async (
   }
   const existingDuplicateRows = resolution.duplicates.length;
   const inFileDuplicateRows = resolution.inFileDuplicates;
-  skipped += existingDuplicateRows + inFileDuplicateRows;
+  skips.skip(SKIP_REASON_DUPLICATE, existingDuplicateRows);
+  skips.skip(SKIP_REASON_IN_FILE_DUPLICATE, inFileDuplicateRows);
   duplicateRows += existingDuplicateRows + inFileDuplicateRows;
 
   const documents = resolution.importable.map(({ row, identity }) =>
@@ -207,8 +219,8 @@ const persistParsedRowsBulk = async (
 
   return {
     imported: documents.length,
-    skipped,
-    skippedByReason,
+    skipped: skips.total(),
+    skippedByReason: skips.byReason,
     errors,
     rowErrors,
     totalRows: parsed.totalRows,
@@ -264,22 +276,23 @@ const persistParsedRows = async (
   }
 
   let imported = 0;
-  let skipped = 0;
-  const skippedByReason = {};
+  const skips = createSkipTally();
   let errors = parsed.errors;
   const rowErrors = cloneRowErrors(parsed.rowErrors);
   let approvedRows = 0;
   let declinedRows = 0;
   let duplicateRows = 0;
   const zone = safeTimezone(timezone);
+  // Identities already written by this call: a second sighting is a repeat inside the file, not an earlier upload.
+  const writtenHere = new Set();
+  skips.skip(SKIP_REASON_REFUND_NETTED, parsed.nettedRefundRows || 0);
 
   for (const row of parsed.rows) {
     try {
       const { status, recognised } = normaliseTransactionStatus(row.status);
       if (status !== 'approved') {
-        skipped++;
+        skips.skip(SKIP_REASON_STATUS);
         declinedRows++;
-        skippedByReason[SKIP_REASON_STATUS] = (skippedByReason[SKIP_REASON_STATUS] || 0) + 1;
         if (!recognised) {
           addPersistenceRowError(
             rowErrors,
@@ -310,7 +323,7 @@ const persistParsedRows = async (
         ? matches.some((match) => zonedDateKey(match.date, zone) === identity.dayKey)
         : matches.length > 0;
       if (existing) {
-        skipped++;
+        skips.skip(writtenHere.has(identityComparisonKey(identity)) ? SKIP_REASON_IN_FILE_DUPLICATE : SKIP_REASON_DUPLICATE);
         duplicateRows++;
         continue;
       }
@@ -338,10 +351,11 @@ const persistParsedRows = async (
       };
       if (session) await Transaction.create([document], { session });
       else await Transaction.create(document);
+      writtenHere.add(identityComparisonKey(identity));
       imported++;
     } catch (err) {
       if (err.code === 11000) {
-        skipped++;
+        skips.skip(SKIP_REASON_DUPLICATE);
         duplicateRows++;
       } else {
         if (failOnPersistenceError) throw err;
@@ -356,8 +370,8 @@ const persistParsedRows = async (
 
   return {
     imported,
-    skipped,
-    skippedByReason,
+    skipped: skips.total(),
+    skippedByReason: skips.byReason,
     errors,
     rowErrors,
     totalRows: parsed.totalRows,

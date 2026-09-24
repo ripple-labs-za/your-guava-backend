@@ -130,10 +130,15 @@ const applyReadmission = async ({ prepared, cafeId, session, timezone }) => {
       timezone,
     });
     if (result.imported === 0) continue;
+    // The rows came back because the upload that held them is gone: they were skipped as duplicates, so they leave
+    // that reason too, and skipped stays the sum of its reasons (BE-03-T09).
     await Upload.updateOne({ _id: upload._id, cafeId }, [{
       $set: {
         'stats.imported': { $add: [{ $ifNull: ['$stats.imported', 0] }, result.imported] },
         'stats.skipped': { $max: [0, { $subtract: [{ $ifNull: ['$stats.skipped', 0] }, result.imported] }] },
+        'stats.skippedByReason.duplicate': {
+          $max: [0, { $subtract: [{ $ifNull: ['$stats.skippedByReason.duplicate', 0] }, result.imported] }],
+        },
       },
     }], { session });
     applied.push({ uploadId: upload._id, fileName: upload.fileName, rows: result.imported });

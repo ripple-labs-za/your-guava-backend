@@ -13,13 +13,19 @@
  * coffee, and before food so "Lemonade" is not read as a lemon bake. Water is
  * split in two around them: a name that says "water" wins outright, while the
  * bare "sparkling"/"still" bottle markers are only consulted after the cold
- * drinks they would otherwise swallow.
+ * drinks they would otherwise swallow. A bare "mug" is weak merchandise and is
+ * tested last: "Mug Cappuccino" is a coffee served in a mug.
  *
  * A user can override the category in Menu Items, and re-ingesting never
  * overwrites a value they set -- see menuItems.service.
  */
 
-const matchesAny = (haystack, needles) => needles.some((needle) => haystack.includes(needle));
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// A term must start a word: "iced" matches "Iced Latte" but not "Spiced Chai" (BE-03-T09). The end stays open so
+// plurals ("muffins") and suffixed words ("toastie") still match; compounds that hide a term at the end are listed
+// whole ("cheesecake").
+const startsAWord = (terms) =>
+  new RegExp(`(?:^|[^\\p{L}\\p{N}])(?:${terms.map(escapeRegExp).join('|')})`, 'u');
 
 // Some terms are substrings of unrelated words -- "chocolate" contains "cola" --
 // so they are matched on a word boundary rather than anywhere in the name.
@@ -35,9 +41,11 @@ const matchesHotWord = (haystack) => HOT_WORD_MATCH.test(haystack);
 // are covered by the weight markers -- a bare "beans" marker made "Beans on
 // Toast" and "Baked Beans" merchandise, because retail is tested first.
 const RETAIL = [
-  '250g', '500g', '750g', '1kg', 'mug', 'tote', 'merch',
+  '250g', '500g', '750g', '1kg', 'tote', 'merch',
   't-shirt', 'tshirt', 'gift card', 'voucher', 'keep cup', 'reusable cup',
 ];
+// Merchandise only when nothing else in the name is a menu item.
+const WEAK_RETAIL = ['mug'];
 
 // Named water: the word is in the name, so nothing else can be meant.
 const WATER_NAMED = ['still water', 'sparkling water', 'mineral water', 'soda water', 'water'];
@@ -53,14 +61,14 @@ const WATER_BARE = ['sparkling', 'still'];
 const COLD_DRINK = [
   'iced', 'cold brew', 'frappe', 'frappé', 'lemonade', 'juice', 'smoothie',
   'milkshake', 'soda', 'coke', 'fanta', 'sprite', 'slush',
-  'cooler', 'kombucha', 'ginger beer', 'appletiser', 'grapetiser', 'tonic',
+  'cooler', 'kombucha', 'ginger beer', 'appletiser', 'grapetiser', 'tonic', 'coldbrew',
 ];
 
 const COFFEE = [
   'coffee', 'espresso', 'latte', 'cappuccino', 'cortado', 'americano', 'macchiato',
   'piccolo', 'doppio', 'ristretto', 'babyccino', 'flat white', 'long white',
   'mocha', 'hot choc', 'hot chocolate', 'pour over', 'filter', 'drip', 'brew',
-  'chai', 'matcha', 'rooibos', 'cortado', 'red espresso', 'black coffee',
+  'chai', 'matcha', 'rooibos', 'red espresso', 'black coffee',
 ];
 
 const FOOD = [
@@ -68,20 +76,30 @@ const FOOD = [
   'toastie', 'toast', 'quiche', 'scone', 'salad', 'rusks', 'bagel', 'pie', 'tart',
   'bun', 'panini', 'burger', 'omelette', 'breakfast', 'granola', 'yoghurt',
   'crunch', 'lemon', 'banana', 'simple square', 'poppyseed', 'bread', 'waffle',
-  'waffle', 'pancake', 'bowl', 'baked beans',
+  'pancake', 'bowl', 'baked beans', 'cheesecake', 'cupcake', 'shortbread', 'gingerbread',
+  'teacake', 'shortcake', 'fishcake', 'flatbread', 'cornbread', 'cheeseburger', 'hamburger',
 ];
+
+const RETAIL_RE = startsAWord(RETAIL);
+const WATER_NAMED_RE = startsAWord(WATER_NAMED);
+const COLD_DRINK_RE = startsAWord(COLD_DRINK);
+const WATER_BARE_RE = startsAWord(WATER_BARE);
+const COFFEE_RE = startsAWord(COFFEE);
+const FOOD_RE = startsAWord(FOOD);
+const WEAK_RETAIL_RE = startsAWord(WEAK_RETAIL);
 
 const inferItemCategory = (name = '') => {
   const n = String(name || '').toLowerCase();
   if (!n.trim()) return 'other';
 
-  if (matchesAny(n, RETAIL)) return 'retail';
+  if (RETAIL_RE.test(n)) return 'retail';
   // "Watermelon" contains "water" but is a drink, not bottled water.
-  if (!n.includes('watermelon') && matchesAny(n, WATER_NAMED)) return 'water';
-  if (matchesAny(n, COLD_DRINK) || matchesWord(n)) return 'cold_drink';
-  if (matchesAny(n, WATER_BARE)) return 'water';
-  if (matchesAny(n, COFFEE) || matchesHotWord(n)) return 'coffee';
-  if (matchesAny(n, FOOD)) return 'food';
+  if (!n.includes('watermelon') && WATER_NAMED_RE.test(n)) return 'water';
+  if (COLD_DRINK_RE.test(n) || matchesWord(n)) return 'cold_drink';
+  if (WATER_BARE_RE.test(n)) return 'water';
+  if (COFFEE_RE.test(n) || matchesHotWord(n)) return 'coffee';
+  if (FOOD_RE.test(n)) return 'food';
+  if (WEAK_RETAIL_RE.test(n)) return 'retail';
   return 'other';
 };
 
