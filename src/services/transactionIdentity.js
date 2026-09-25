@@ -1,7 +1,7 @@
 const Transaction = require('../models/Transaction.model');
 const { computeDedupKey } = require('../utils/dedupKey');
 const {
-  safeTimezone, zonedDateKey, getZonedDateParts, zonedDayStart, zonedDayEnd,
+  safeTimezone, zonedDateKey, getZonedDateParts, zonedDayStart, zonedDayEnd, addZonedDays,
 } = require('../utils/timezone');
 const { sha256Hex } = require('../utils/authPrimitives');
 
@@ -123,6 +123,20 @@ const minuteOf = (signature) => signature.split('|').slice(0, 2).join(' ');
 const dayOf = (signature) => signature.slice(0, signature.indexOf('|'));
 
 /**
+ * Stored rows that can collide with this file lie on the file's own cafe-local days. A day either side covers a
+ * sale near midnight on a host whose clock disagrees. Without the bound, receipts that restart daily matched every
+ * day of the cafe's history (219,000 rows for two years) inside the upload transaction (BE-03-T13).
+ */
+const identityDateWindow = (rows, timezone) => {
+  const keys = rows.map((row) => row.dateKey || zonedDateKey(row.date, timezone)).filter(Boolean).sort();
+  if (keys.length === 0) return null;
+  return {
+    $gte: addZonedDays(zonedDayStart(keys[0], timezone), -1, timezone),
+    $lte: zonedDayEnd(addZonedDays(zonedDayStart(keys[keys.length - 1], timezone), 1, timezone), timezone),
+  };
+};
+
+/**
  * A receipt number is unique within a trading day on most tills, but not on all: per-shift numbering and second
  * registers reuse "#0001" in one day (BE-03-T04). Two rows under one number are one sale only when their contents
  * match. Different contents at a different minute are two sales. Different contents at the same minute are a
@@ -131,9 +145,13 @@ const dayOf = (signature) => signature.slice(0, signature.indexOf('|'));
 const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUploadId }) => {
   const held = new Map();
   const hold = (key, entry) => held.set(key, [...(held.get(key) || []), entry]);
+  const window = identityDateWindow(rows, timezone);
   for (const chunk of chunksOf([...new Set(rows.map((row) => row.receiptId))])) {
     const stored = await withSession(
-      Transaction.find({ cafeId, receiptId: { $in: chunk }, ...excluding(excludeUploadId) })
+      // $type: 'string' lets the planner use the partial unique {cafeId, receiptId, date} index.
+      Transaction.find({
+        cafeId, receiptId: { $in: chunk, $type: 'string' }, ...(window ? { date: window } : {}), ...excluding(excludeUploadId),
+      })
         .select('receiptId date total tip discount items.salesItemId items.name items.quantity uploadId'),
       session
     ).lean();
@@ -255,6 +273,7 @@ module.exports = {
   contentSignature,
   contentKey,
   receiptSignature,
+  identityDateWindow,
   resolveIdentities,
   tallyDuplicatesByUpload,
 };
