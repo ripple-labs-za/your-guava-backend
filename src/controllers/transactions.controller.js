@@ -101,14 +101,9 @@ const upload = async (req, res, next) => {
       await cleanupLocalFile(filePath);
       return res.status(400).json({ success: false, message: `File exceeds ${maxBytes} bytes` });
     }
-    try {
-      parser.assertSupportedFileBuffer(buffer, ext);
-    } catch (err) {
-      await cleanupLocalFile(filePath);
-      return res.status(400).json({ success: false, ...publicCodeOf(err), message: err.message });
-    }
 
-    // Preview headers + sample rows
+    // Preview headers + sample rows. previewBuffer validates the file first (empty, legacy .xls, archive safety), and
+    // its 400s carry their message and code; validating here as well inflated a workbook twice more (BE-03-T13).
     let preview;
     try {
       preview = await ingestion.previewBuffer(buffer, ext);

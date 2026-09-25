@@ -13,7 +13,7 @@ const LEGACY_XLS_MESSAGE =
   'This is a legacy .xls file. In Excel choose File -> Save As -> "CSV UTF-8 (Comma delimited)" '
   + 'and upload that .csv.';
 
-const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
+const assertSupportedFileBufferUncached = (buffer, fileExt = 'csv') => {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw createClientInputError('Uploaded file is empty');
   }
@@ -60,6 +60,19 @@ const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
   if (!hasUtf16Bom(buffer) && sample.includes(0)) {
     throw createClientInputError('CSV file contains binary data');
   }
+};
+
+// parseBuffer asserted the file and then readRows asserted it again; the upload asserted it three times. Each pass
+// inflated every entry of an archive of up to 50 MB and scanned its sheets (BE-03-T13). A Buffer is validated once per
+// extension for as long as it is alive; one that failed is never remembered, so it fails every time.
+const VALIDATED = new WeakMap();
+
+const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
+  const ext = String(fileExt || '').toLowerCase();
+  if (Buffer.isBuffer(buffer) && VALIDATED.get(buffer)?.has(ext)) return;
+  assertSupportedFileBufferUncached(buffer, ext);
+  if (!VALIDATED.has(buffer)) VALIDATED.set(buffer, new Set());
+  VALIDATED.get(buffer).add(ext);
 };
 
 module.exports = {
