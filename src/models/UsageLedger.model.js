@@ -6,22 +6,18 @@ const usageLedgerSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Organization',
       required: true,
-      index: true,
     },
     cafeId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Cafe',
-      index: true,
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
     },
     featureKey: {
       type: String,
       required: true,
-      index: true,
     },
     label: {
       type: String,
@@ -48,7 +44,6 @@ const usageLedgerSchema = new mongoose.Schema(
       type: String,
       enum: ['reserved', 'recovering', 'committed', 'refunded', 'failed'],
       default: 'committed',
-      index: true,
     },
     provider: {
       type: String,

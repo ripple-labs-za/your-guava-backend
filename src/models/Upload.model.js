@@ -31,7 +31,6 @@ const uploadSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Cafe',
       required: true,
-      index: true,
     },
     uploadedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -44,7 +43,6 @@ const uploadSchema = new mongoose.Schema(
     fileFingerprint: {
       type: String,
       match: /^[a-f0-9]{64}$/,
-      index: true,
     },
     posType: {
       type: String,
@@ -68,7 +66,6 @@ const uploadSchema = new mongoose.Schema(
       type: String,
       enum: ['pending_mapping', 'parsing', 'completed', 'failed', 'deleted'],
       default: 'pending_mapping',
-      index: true,
     },
     stats: {
       imported: { type: Number, default: 0 },
@@ -137,8 +134,12 @@ const uploadSchema = new mongoose.Schema(
 );
 
 uploadSchema.index({ cafeId: 1, createdAt: -1 });
-uploadSchema.index({ cafeId: 1, fileFingerprint: 1, createdAt: -1 });
 // Serves the overlap query of re-admission (BE-03-T02).
 uploadSchema.index({ cafeId: 1, status: 1, 'dateRange.firstDate': 1 });
+// The sweepers run hourly across every tenant; each reads only the few uploads it can act on (BE-03-T13). No query
+// filters on fileFingerprint, so its two indexes went.
+uploadSchema.index({ status: 1, updatedAt: 1 }); // pending_mapping expiry, stale parsing, failed expiry (BE-03-T12)
+uploadSchema.index({ status: 1, errorMessage: 1, updatedAt: 1 }); // tombstones still owing storage cleanup; claimed parsing
+uploadSchema.index({ 'maintenance.status': 1, updatedAt: 1 }, { partialFilterExpression: { status: 'completed' } });
 
 module.exports = mongoose.model('Upload', uploadSchema);

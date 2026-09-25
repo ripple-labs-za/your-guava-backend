@@ -239,6 +239,9 @@ const recoverPendingUploadMaintenance = async ({
   );
   const candidates = await Upload.find({
     status: 'completed',
+    // Implied by the $or below; stated so the planner can use the partial maintenance index rather than read every
+    // completed upload of every tenant (BE-03-T13).
+    'maintenance.status': { $in: ['queued', 'running', 'partial_failure'] },
     $and: [
       {
         $or: [

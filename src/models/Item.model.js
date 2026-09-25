@@ -15,7 +15,6 @@ const itemSchema = new mongoose.Schema(
     },
     normalizedName: {
       type: String,
-      index: true,
     },
     aliases: [{ type: String, maxlength: 200 }],
     aliasKeys: [{ type: String, maxlength: 200 }],
@@ -39,7 +38,6 @@ const itemSchema = new mongoose.Schema(
       type: String,
       enum: ['matched', 'needs_review', 'ignored', 'merged'],
       default: 'needs_review',
-      index: true,
     },
     source: {
       type: String,

@@ -6,16 +6,14 @@ const transactionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Cafe',
       required: true,
-      index: true,
     },
     uploadId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Upload',
-      index: true,
     },
     receiptId: { type: String },
     dedupKey: { type: String },
-    date: { type: Date, required: true, index: true },
+    date: { type: Date, required: true },
     hour: { type: Number },
     // False when the export had dates but no times: `hour` is then null, and hour-of-day views leave the sale out.
     hourKnown: { type: Boolean, default: true },
@@ -77,7 +75,10 @@ transactionSchema.index(
   { cafeId: 1, dedupKey: 1 },
   { unique: true, partialFilterExpression: { dedupKey: { $type: 'string' } } }
 );
+// Every query leads with cafeId, so single-field cafeId, uploadId and date indexes cost ~20,000 index writes per
+// 10,000-row import and served nothing (gap-6, BE-03-T13); align-import-indexes drops them from existing databases.
 transactionSchema.index({ cafeId: 1, date: -1 });
+transactionSchema.index({ cafeId: 1, uploadId: 1, date: -1 }); // the upload Rows view: its page, newest first, without a sort
 transactionSchema.index({ cafeId: 1, status: 1, date: -1 });
 transactionSchema.index({ cafeId: 1, status: 1, dayOfWeek: 1, date: -1 });
 transactionSchema.index({ cafeId: 1, status: 1, dayOfWeek: 1, hour: 1, date: -1 });
