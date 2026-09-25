@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 /**
- * BE-03-T13. Mongoose builds the indexes a schema declares but never drops one it stopped declaring, so each database
+ * BE-03-T13 (and BE-03-T14's Item list index). Mongoose builds the indexes a schema declares but never drops one it stopped declaring, so each database
  * that ran an earlier build keeps paying for these on every import. Drops only when the index that covers it exists.
  *
  *   node src/migrations/align-import-indexes.js          # dry run: lists what would be dropped
@@ -18,7 +18,9 @@ const LEGACY_INDEXES = [
   { model: 'Upload', key: { fileFingerprint: 1 }, coveredBy: null },
   { model: 'Upload', key: { cafeId: 1, fileFingerprint: 1, createdAt: -1 }, coveredBy: null },
   { model: 'Item', key: { normalizedName: 1 }, coveredBy: { cafeId: 1, normalizedName: 1 } },
-  { model: 'Item', key: { reviewStatus: 1 }, coveredBy: { cafeId: 1, reviewStatus: 1, totalSold: -1 } },
+  { model: 'Item', key: { reviewStatus: 1 }, coveredBy: { cafeId: 1, reviewStatus: -1, totalSold: -1, name: 1 } },
+  // BE-03-T14: the list's sort reads the reversed compound; the old one served neither direction.
+  { model: 'Item', key: { cafeId: 1, reviewStatus: 1, totalSold: -1 }, coveredBy: { cafeId: 1, reviewStatus: -1, totalSold: -1, name: 1 } },
   { model: 'UsageLedger', key: { orgId: 1 }, coveredBy: { orgId: 1, createdAt: -1 } },
   { model: 'UsageLedger', key: { cafeId: 1 }, coveredBy: null },
   { model: 'UsageLedger', key: { userId: 1 }, coveredBy: null },
@@ -49,7 +51,7 @@ const inspect = async ({ countDeclared = false } = {}) => {
 
 module.exports = {
   name: 'align-import-indexes',
-  description: 'Create the import query indexes and drop the single-field indexes they replace (BE-03-T13).',
+  description: 'Create the declared import and item-list indexes and drop the legacy indexes they replace (BE-03-T13, BE-03-T14).',
   kind: 'contract',
   mode: 'auto',
   LEGACY_INDEXES,

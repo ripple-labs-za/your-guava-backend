@@ -86,9 +86,9 @@ const itemSchema = new mongoose.Schema(
 itemSchema.index({ cafeId: 1, name: 1 }, { unique: true });
 itemSchema.index({ cafeId: 1, normalizedName: 1 });
 itemSchema.index({ cafeId: 1, aliasKeys: 1 });
-// The reconciliation queue's candidate pool: matched items, most-sold first.
-// Without it the sort was an in-memory blocking sort of the cafe's whole menu,
-// run once per review item on the page.
-itemSchema.index({ cafeId: 1, reviewStatus: 1, totalSold: -1 });
+// The Menu Items list (review status desc, then sales desc, then name) and the reconciliation candidate pool (matched
+// items, most-sold first) both read from here. The old { reviewStatus: 1, totalSold: -1 } matched neither direction of
+// the list's sort, so every page load sorted the cafe's whole menu in memory (BE-03-T14).
+itemSchema.index({ cafeId: 1, reviewStatus: -1, totalSold: -1, name: 1 });
 
 module.exports = mongoose.model('Item', itemSchema);

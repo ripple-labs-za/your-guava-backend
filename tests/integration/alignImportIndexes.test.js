@@ -30,6 +30,7 @@ it('drops exactly the legacy indexes and keeps every declared one', async () => 
   for (const { model, key } of migration.LEGACY_INDEXES) expect(await hasKey(model, key)).toBe(false);
   expect(await hasKey('Transaction', { cafeId: 1, uploadId: 1, date: -1 })).toBe(true);
   expect(await hasKey('Transaction', { cafeId: 1, receiptId: 1, date: 1 })).toBe(true);
+  expect(await hasKey('Item', { cafeId: 1, reviewStatus: -1, totalSold: -1, name: 1 })).toBe(true);
   expect((await migration.check()).pending).toBe(false);
 });
 

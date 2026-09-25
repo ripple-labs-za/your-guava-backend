@@ -17,6 +17,7 @@ const { scheduleForecastRefreshAfterMenuChange } = require('../services/forecast
 const { clearApiCache } = require('../middleware/cache.middleware');
 const { creditSnapshot } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
+const { boundedInteger } = require('../services/parser.service');
 
 const VALID_REVIEW_STATUSES = new Set(['matched', 'needs_review', 'ignored', 'merged']);
 const MAX_RECONCILIATION_ITEMS = 100;
@@ -26,6 +27,47 @@ const MAX_ALIAS_CHARS = 200;
 const MAX_NOTES_CHARS = 2000;
 const MAX_EXPECTED_PRICE = 1000000;
 const MAX_QUERY_CHARS = 100;
+const DEFAULT_ITEMS_PAGE_SIZE = 50;
+const MAX_ITEMS_PAGE_SIZE = 200;
+const MAX_ITEMS_PAGE = 10000;
+// A total order (names are unique per cafe), served by { cafeId, reviewStatus: -1, totalSold: -1, name: 1 } (BE-03-T14).
+const ITEM_LIST_SORT = { reviewStatus: -1, totalSold: -1, name: 1 };
+const ITEM_LIST_PROJECTION = '-aliasKeys -manualFields -__v';
+const REVIEW_STATUSES = [...VALID_REVIEW_STATUSES];
+const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
+
+const pageCount = (total, limit) => Math.max(1, Math.ceil(total / limit));
+
+// One pass over the cafe's items for every number the Menu Items header shows. The page used to count the arrays it
+// received, so 300 unmatched items read "Need a match 50" (WS-10-T01); needsReview and priceMismatches are the same
+// definitions /items/reconciliation counts.
+const itemCounts = async (cafeId) => {
+  const isActive = { $ne: ['$isActive', false] };
+  const [row] = await Item.aggregate([
+    { $match: { cafeId: new mongoose.Types.ObjectId(String(cafeId)) } },
+    {
+      $group: {
+        _id: null,
+        ...Object.fromEntries(REVIEW_STATUSES.map((status) => [status, { $sum: { $cond: [{ $eq: ['$reviewStatus', status] }, 1, 0] } }])),
+        needsReview: { $sum: { $cond: [{ $and: [isActive, { $eq: ['$reviewStatus', 'needs_review'] }] }, 1, 0] } },
+        priceMismatches: {
+          $sum: {
+            $cond: [{
+              $and: [isActive, {
+                $or: [
+                  { $gt: [{ $ifNull: ['$priceMismatchCount', 0] }, 0] },
+                  { $ne: [{ $ifNull: ['$lastPriceMismatchAt', null] }, null] },
+                ],
+              }],
+            }, 1, 0],
+          },
+        },
+      },
+    },
+  ]);
+  const counts = Object.fromEntries(REVIEW_STATUSES.map((status) => [status, row?.[status] || 0]));
+  return { counts, needsReview: row?.needsReview || 0, priceMismatches: row?.priceMismatches || 0 };
+};
 
 const reconciliationFilter = (cafeId) => ({
   cafeId,
@@ -154,7 +196,7 @@ const itemPayload = (body, { creating = false } = {}) => {
 const list = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { q, reviewStatus, active } = req.query;
+    const { q, reviewStatus, active, ids } = req.query;
     const filter = { cafeId };
 
     if (q && String(q).length > MAX_QUERY_CHARS) {
@@ -170,6 +212,14 @@ const list = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'active must be true or false' });
     }
 
+    // Named rows, for the page to re-read edits made on other pages before they are saved (BE-03-T14 review).
+    if (ids !== undefined) {
+      const wanted = String(ids).split(',').filter(Boolean);
+      if (wanted.length === 0 || wanted.length > MAX_ITEMS_PAGE_SIZE || !wanted.every((id) => OBJECT_ID_RE.test(id))) {
+        return res.status(400).json({ success: false, message: `ids must be 1 to ${MAX_ITEMS_PAGE_SIZE} item ids` });
+      }
+      filter._id = { $in: wanted };
+    }
     if (reviewStatus) filter.reviewStatus = reviewStatus;
     if (active === 'true') filter.isActive = { $ne: false };
     if (active === 'false') filter.isActive = false;
@@ -178,22 +228,22 @@ const list = async (req, res, next) => {
       filter.$or = [{ name: regex }, { aliases: regex }];
     }
 
-    const [items, counts] = await Promise.all([
-      Item.find(filter)
-        .sort({ reviewStatus: -1, totalSold: -1, name: 1 })
-        .lean(),
-      Item.aggregate([
-        { $match: { cafeId: mongoose.Types.ObjectId.createFromHexString(cafeId) } },
-        { $group: { _id: '$reviewStatus', count: { $sum: 1 } } },
-      ]),
+    // One page at a time: a cafe with modifier variants and till notes has thousands of items, and the whole menu was
+    // returned unprojected and sorted in memory on every Menu Items load (uploads-catalogue-26).
+    const limit = boundedInteger(req.query.limit, DEFAULT_ITEMS_PAGE_SIZE, 1, MAX_ITEMS_PAGE_SIZE);
+    const page = boundedInteger(req.query.page, 1, 1, MAX_ITEMS_PAGE);
+    // The whole-cafe counts are a pass over every item; a caller paging through link targets sends counts=false.
+    const wantsCounts = req.query.counts !== 'false';
+    const [items, total, summary] = await Promise.all([
+      Item.find(filter).sort(ITEM_LIST_SORT).skip((page - 1) * limit).limit(limit).select(ITEM_LIST_PROJECTION).lean(),
+      Item.countDocuments(filter),
+      wantsCounts ? itemCounts(cafeId) : {},
     ]);
 
     return res.status(200).json({
       success: true,
       items,
-      meta: {
-        counts: counts.reduce((acc, entry) => ({ ...acc, [entry._id || 'unknown']: entry.count }), {}),
-      },
+      meta: { total, page, limit, pages: pageCount(total, limit), ...summary },
     });
   } catch (error) {
     next(error);
@@ -259,17 +309,21 @@ const update = async (req, res, next) => {
 const reconciliation = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 50, MAX_RECONCILIATION_ITEMS));
+    const limit = boundedInteger(req.query.limit, DEFAULT_ITEMS_PAGE_SIZE, 1, MAX_RECONCILIATION_ITEMS);
+    const page = boundedInteger(req.query.page, 1, 1, MAX_ITEMS_PAGE);
     const filter = reconciliationFilter(cafeId);
     // Counted against the collection, not against the page. Derived from the
     // truncated page, "needs review: 50" was the limit rather than the backlog:
     // an owner cleared all 50, reloaded, saw 50 again and had no way to tell
     // whether they were making progress.
-    const [items, needsReview, priceMismatches] = await Promise.all([
+    // name is the last tie-break, so pages of the queue never overlap or skip an item (BE-03-T14).
+    const [items, total, needsReview, priceMismatches] = await Promise.all([
       Item.find(filter)
-        .sort({ reviewStatus: -1, lastPriceMismatchAt: -1, totalSold: -1 })
+        .sort({ reviewStatus: -1, lastPriceMismatchAt: -1, totalSold: -1, name: 1 })
+        .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
+      Item.countDocuments(filter),
       Item.countDocuments({ ...filter, reviewStatus: 'needs_review' }),
       Item.countDocuments({
         cafeId,
@@ -296,6 +350,9 @@ const reconciliation = async (req, res, next) => {
         returned: enriched.length,
         limit,
         paidAiUsed: false,
+        total,
+        page,
+        pages: pageCount(total, limit),
       },
     });
   } catch (error) {
