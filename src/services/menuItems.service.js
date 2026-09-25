@@ -11,7 +11,9 @@ const MATCH_CANDIDATE_POOL = 100;
 // items already linked to the one it merges, so chains stay one hop; the bound keeps a hand-made cycle or a legacy
 // chain from stalling an import.
 const MAX_MERGE_HOPS = 5;
+const RESOLVER_CHUNK_SIZE = 500;
 const { prepareMatchPool, rankMatchCandidates } = require('./menuMatching');
+const { chunksOf } = require('./transactionIdentity');
 
 /**
  * The key that decides menu-item identity: two names with the same key are
@@ -154,8 +156,8 @@ const loadMergeTargets = async (cafeId, documents, session) => {
 };
 
 /**
- * Resolves a whole basket of raw sales names against the cafe's menu in one
- * query, and remembers anything created along the way.
+ * Resolves raw sales names against the cafe's menu, one query per 500 names,
+ * and remembers anything created along the way.
  *
  * Every line used to run its own findOne with a three-branch $or, awaited in
  * turn inside the ingest transaction, so a 50k-row import was tens of thousands
@@ -163,12 +165,16 @@ const loadMergeTargets = async (cafeId, documents, session) => {
  * transaction that then rolled the whole import back.
  */
 const createMenuItemResolver = async (cafeId, names, session) => {
-  const keys = [...new Set(names.map(normalizeItemName).filter(Boolean))];
-  const clauses = [{ name: { $in: names } }];
-  if (keys.length > 0) {
-    clauses.push({ normalizedName: { $in: keys } }, { aliasKeys: { $in: keys } });
+  const documents = [];
+  // One find per 500 names, so a file's whole menu is a handful of queries and no $in grows without bound (BE-03-T13).
+  for (const chunk of chunksOf([...new Set(names)], RESOLVER_CHUNK_SIZE)) {
+    const keys = [...new Set(chunk.map(normalizeItemName).filter(Boolean))];
+    const clauses = [{ name: { $in: chunk } }];
+    if (keys.length > 0) {
+      clauses.push({ normalizedName: { $in: keys } }, { aliasKeys: { $in: keys } });
+    }
+    documents.push(...await withSession(Item.find({ cafeId, $or: clauses }), session));
   }
-  const documents = await withSession(Item.find({ cafeId, $or: clauses }), session);
   const followMerge = await loadMergeTargets(cafeId, documents, session);
 
   const byName = new Map();
@@ -200,27 +206,6 @@ const createMenuItemResolver = async (cafeId, names, session) => {
   };
 };
 
-const createMenuItem = async (cafeId, name, item, session) => {
-  // A read-then-create loses to a second writer — another upload confirm for
-  // the same cafe, or the Yoco sync running alongside one — on the unique
-  // {cafeId, name} index. The bulk import path rethrows that E11000 and aborts
-  // the entire upload; the row-at-a-time path used to file it as a duplicate
-  // transaction and drop a real sale silently. An upsert lets the loser read
-  // the winner's document instead of raising at all.
-  try {
-    return await withSession(Item.findOneAndUpdate(
-      { cafeId, name },
-      { $setOnInsert: newMenuItemFields(name, item) },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    ), session);
-  } catch (error) {
-    if (error?.code !== 11000) throw error;
-    const winner = await withSession(Item.findOne({ cafeId, name }), session);
-    if (winner) return winner;
-    throw error;
-  }
-};
-
 const priceCheckForItem = (menuItem, item = {}) => {
   const expectedPrice = Number(menuItem.expectedPrice);
   const observedPrice = Number(item.unitPrice);
@@ -240,64 +225,88 @@ const priceCheckForItem = (menuItem, item = {}) => {
   return { expectedPrice, priceVariancePct, isMismatch };
 };
 
-const reconcileTransactionItems = async (cafeId, items = [], options = {}) => {
-  const { session } = options;
-  const reconciled = [];
-  const mismatchUpdates = new Map();
+/** A sales line linked to its menu item, with its price check and status. Pure: `resolve` never misses. */
+const reconcileLines = (items, resolve) => items.map((item) => {
+  const rawName = String(item.name || '').trim();
+  const menuItem = resolve(rawName || 'Unknown Item');
+  // Ignored is decided first: an ignored line is not a price observation either, and checked after the price it
+  // came back as price_mismatch at any other price and counted as demand again (BE-03-T11).
+  const ignored = menuItem.reviewStatus === 'ignored';
+  const priceCheck = ignored ? { expectedPrice: menuItem.expectedPrice ?? undefined } : priceCheckForItem(menuItem, item);
+  let menuItemStatus = 'matched';
+  if (ignored) menuItemStatus = 'ignored';
+  else if (priceCheck.isMismatch) menuItemStatus = 'price_mismatch';
+  else if (menuItem.reviewStatus === 'needs_review') menuItemStatus = 'needs_review';
+  return {
+    ...item,
+    salesItemId: menuItem._id,
+    rawName: rawName !== menuItem.name ? rawName : item.rawName,
+    name: menuItem.name,
+    expectedPrice: priceCheck.expectedPrice,
+    priceVariancePct: priceCheck.priceVariancePct,
+    menuItemStatus,
+  };
+});
 
-  const lineNames = items.map((item) => String(item.name || '').trim() || 'Unknown Item');
-  const resolver = await createMenuItemResolver(cafeId, [...new Set(lineNames)], session);
-  const menuItems = new Map();
-  for (const [index, name] of lineNames.entries()) {
-    if (menuItems.has(name)) continue;
-    let menuItem = resolver.resolve(name);
-    if (!menuItem) {
-      menuItem = await createMenuItem(cafeId, name, items[index], session);
-      // So a second line in the same basket whose name differs only in
-      // punctuation resolves to the row we just wrote rather than a twin.
-      resolver.register(menuItem);
+/**
+ * Every distinct name in the rows resolved with one query per 500 names; the missing ones created with one bulkWrite.
+ * Reconciling basket by basket was an awaited find, upsert and $inc per receipt inside the import transaction
+ * (parsing-12, uploads-catalogue-13).
+ */
+const menuItemResolverForRows = async (cafeId, rows, session) => {
+  const firstLineByName = new Map();
+  for (const row of rows) {
+    for (const item of row.items || []) {
+      const name = String(item.name || '').trim() || 'Unknown Item';
+      if (!firstLineByName.has(name)) firstLineByName.set(name, item);
     }
-    menuItems.set(name, menuItem);
   }
-
-  for (const [index, item] of items.entries()) {
-    const rawName = String(item.name || '').trim();
-    const menuItem = menuItems.get(lineNames[index]);
-    // Ignored is decided first: an ignored line is not a price observation either, and checked after the price it
-    // came back as price_mismatch at any other price and counted as demand again (BE-03-T11).
-    const ignored = menuItem.reviewStatus === 'ignored';
-    const priceCheck = ignored ? { expectedPrice: menuItem.expectedPrice ?? undefined } : priceCheckForItem(menuItem, item);
-    let menuItemStatus = 'matched';
-    if (ignored) menuItemStatus = 'ignored';
-    else if (priceCheck.isMismatch) menuItemStatus = 'price_mismatch';
-    else if (menuItem.reviewStatus === 'needs_review') menuItemStatus = 'needs_review';
-
-    if (priceCheck.isMismatch) {
-      mismatchUpdates.set(String(menuItem._id), menuItem);
+  const names = [...firstLineByName.keys()];
+  const resolver = await createMenuItemResolver(cafeId, names, session);
+  const planned = new Map(); // normalised key -> first spelling, so twins in one file share one item
+  for (const name of names) {
+    if (resolver.resolve(name)) continue;
+    // A name with no Latin letters or digits ("拿铁", "***") has an empty key, and empty keys are not twins of each other.
+    const key = normalizeItemName(name) || `\u0000name:${name}`;
+    if (!planned.has(key)) planned.set(key, name);
+  }
+  if (planned.size > 0) {
+    const toCreate = [...planned.values()];
+    try {
+      // An upsert, not an insert: another import of this cafe waits on the menu lock, but the Yoco sync runs without it,
+      // and a read-then-create would lose to it on the unique {cafeId, name} index.
+      await Item.bulkWrite(toCreate.map((name) => ({
+        updateOne: {
+          filter: { cafeId, name },
+          update: { $setOnInsert: newMenuItemFields(name, firstLineByName.get(name)) },
+          upsert: true,
+          setDefaultsOnInsert: true,
+        },
+      })), { ordered: false, ...(session ? { session } : {}) });
+    } catch (error) {
+      // Outside a transaction (Yoco sync) a concurrent writer can win an upsert; re-reading below finds its row.
+      if (error?.code !== 11000 && !error?.writeErrors?.every((writeError) => writeError.code === 11000)) throw error;
     }
-
-    reconciled.push({
-      ...item,
-      salesItemId: menuItem._id,
-      rawName: rawName !== menuItem.name ? rawName : item.rawName,
-      name: menuItem.name,
-      expectedPrice: priceCheck.expectedPrice,
-      priceVariancePct: priceCheck.priceVariancePct,
-      menuItemStatus,
-    });
+    for (const chunk of chunksOf(toCreate, RESOLVER_CHUNK_SIZE)) {
+      (await withSession(Item.find({ cafeId, name: { $in: chunk } }), session)).forEach(resolver.register);
+    }
   }
+  return (name) => resolver.resolve(name);
+};
 
-  for (const menuItem of mismatchUpdates.values()) {
+const reconcileTransactionItems = async (cafeId, items = [], { session } = {}) => {
+  const reconciled = reconcileLines(items, await menuItemResolverForRows(cafeId, [{ items }], session));
+  // The Yoco sync records a mismatch as it sees one; an import's rebuild recomputes these from the stored lines.
+  const mismatched = new Set(reconciled
+    .filter((line) => line.menuItemStatus === 'price_mismatch')
+    .map((line) => String(line.salesItemId)));
+  for (const id of mismatched) {
     await Item.updateOne(
-      { _id: menuItem._id },
-      {
-        $set: { lastPriceMismatchAt: new Date() },
-        $inc: { priceMismatchCount: 1 },
-      },
+      { _id: id },
+      { $set: { lastPriceMismatchAt: new Date() }, $inc: { priceMismatchCount: 1 } },
       session ? { session } : undefined
     );
   }
-
   return reconciled;
 };
 
@@ -674,6 +683,8 @@ module.exports = {
   buildAliasKeys,
   areSiblingVariants,
   reconcileTransactionItems,
+  reconcileLines,
+  menuItemResolverForRows,
   rebuildItemsForCafe,
   lockCafeMenu,
   runMenuMutation,

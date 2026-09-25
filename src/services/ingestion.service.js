@@ -22,6 +22,8 @@ const {
 const {
   rebuildItemsForCafe,
   reconcileTransactionItems,
+  reconcileLines,
+  menuItemResolverForRows,
 } = require('./menuItems.service');
 
 const YOCO_HEADERS = [
@@ -133,20 +135,14 @@ const transactionDocument = (row, { cafeId, uploadId, identity }) => ({
 // menu name, so the till's own spelling was lost (review of BE-03-T12).
 const parsedItemsOf = new WeakMap();
 
+// Every distinct name in the file is resolved in one batch (BE-03-T13): caching per basket missed on almost every
+// receipt, because the key held its unitPrice, so each ran its own find, upsert and $inc inside the transaction. The
+// mismatch $inc is not repeated here: the import's rebuild recomputes priceMismatchCount from the stored lines.
 const reconcileParsedRows = async (parsed, { cafeId, session }) => {
-  const reconciledCache = new Map();
-  for (const row of parsed.rows) {
-    if (normaliseTransactionStatus(row.status).status !== 'approved') continue;
-    if (!parsedItemsOf.has(row)) parsedItemsOf.set(row, row.items);
-    const sourceItems = parsedItemsOf.get(row);
-    const cacheKey = JSON.stringify(sourceItems || []);
-    let reconciled = reconciledCache.get(cacheKey);
-    if (!reconciled) {
-      reconciled = await reconcileTransactionItems(cafeId, sourceItems, { session });
-      reconciledCache.set(cacheKey, reconciled);
-    }
-    row.items = reconciled.map((item) => ({ ...item }));
-  }
+  const approved = parsed.rows.filter((row) => normaliseTransactionStatus(row.status).status === 'approved');
+  for (const row of approved) if (!parsedItemsOf.has(row)) parsedItemsOf.set(row, row.items || []);
+  const resolve = await menuItemResolverForRows(cafeId, approved.map((row) => ({ items: parsedItemsOf.get(row) })), session);
+  for (const row of approved) row.items = reconcileLines(parsedItemsOf.get(row), resolve);
   return parsed;
 };
 
