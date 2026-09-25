@@ -91,7 +91,7 @@ const decideTotalsMode = ({ identical, differing }, mapping) => {
 const readReceiptKey = (raw, mapping, timezone, context, limits) => {
   const { date, timeKnown } = parseDateTime(raw[mapping.date], mapping.time && raw[mapping.time], timezone, context);
   if (!date) return { error: 'Could not parse date or time' };
-  const dateError = transactionDateError(date, timezone);
+  const dateError = transactionDateError(date, timezone, context.dateBounds);
   if (dateError) return { error: dateError };
   const receiptId = String(raw[mapping.receiptId] || '').trim();
   if (!receiptId) return { error: 'Missing receipt ID' };
@@ -299,7 +299,8 @@ const finishReceipts = (receipts, lineAmounts, { limits, timezone, refuse }) => 
 };
 
 const groupLinePerRow = (rawRows, mapping, timezone, context = {}) => {
-  const limits = parserLimits();
+  // parseBuffer settles the limits and date bounds once per file (BE-03-T13); a direct caller gets them per call.
+  const limits = context.limits || parserLimits();
   const receipts = new Map();
   const rowErrors = [];
   let errors = 0;

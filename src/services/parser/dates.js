@@ -280,13 +280,18 @@ const markMidnightOnlyFileDateOnly = (rows, timezone) => {
     : row));
 };
 
-const transactionDateError = (date, timezone) => {
-  const limits = parserLimits();
-  const earliest = zonedDayStart(`${limits.minYear}-01-01`, timezone);
-  const latest = addZonedDays(new Date(), limits.maxFutureDays, timezone);
+// Once per parse: the earliest and latest acceptable dates do not change from row to row (BE-03-T13).
+const transactionDateBounds = (timezone, limits = parserLimits(), now = new Date()) => ({
+  earliest: zonedDayStart(`${limits.minYear}-01-01`, timezone),
+  latest: addZonedDays(now, limits.maxFutureDays, timezone),
+  minYear: limits.minYear,
+  maxFutureDays: limits.maxFutureDays,
+});
+
+const transactionDateError = (date, timezone, bounds = transactionDateBounds(timezone)) => {
   if (!date || Number.isNaN(date.getTime())) return 'Could not parse date or time';
-  if (date < earliest) return `Transaction date is before ${limits.minYear}`;
-  if (date > latest) return `Transaction date is more than ${limits.maxFutureDays} days in the future`;
+  if (date < bounds.earliest) return `Transaction date is before ${bounds.minYear}`;
+  if (date > bounds.latest) return `Transaction date is more than ${bounds.maxFutureDays} days in the future`;
   return null;
 };
 
@@ -304,5 +309,6 @@ const temporalFields = (date, timezone, { timeKnown = true } = {}) => {
 };
 
 module.exports = {
-  parseDate, parseDateTime, inferDayMonthOrder, markMidnightOnlyFileDateOnly, transactionDateError, temporalFields,
+  parseDate, parseDateTime, inferDayMonthOrder, markMidnightOnlyFileDateOnly, transactionDateBounds, transactionDateError,
+  temporalFields,
 };

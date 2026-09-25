@@ -109,7 +109,7 @@ const readCsv = (buffer, { limit = Infinity, limits = parserLimits() } = {}) =>
         const complete = !Number.isFinite(limit);
         resolve({
           headers,
-          rows: normaliseRows(rows),
+          rows: normaliseRows(rows, limits),
           encoding: prepared.encoding,
           separator: prepared.separator,
           headerRowNumber: prepared.headerRowNumber,

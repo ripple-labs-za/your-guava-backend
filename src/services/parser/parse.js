@@ -7,7 +7,7 @@ const { netPartialRefunds, noteUnitemisedPartialRefunds } = require('./refunds')
 const { validateMapping } = require('./headers');
 const { assertSupportedFileBuffer } = require('./fileType');
 const { groupLinePerRow } = require('./lineItems');
-const { inferDayMonthOrder, markMidnightOnlyFileDateOnly } = require('./dates');
+const { inferDayMonthOrder, markMidnightOnlyFileDateOnly, transactionDateBounds } = require('./dates');
 const { buildPackedRow } = require('./packedItems');
 const { repairOverflowColumns, readCsv } = require('./csv');
 const { readWorkbookRows } = require('./xlsx');
@@ -135,7 +135,7 @@ const parseBuffer = async (
   const limits = parserLimits();
   // CSV goes through prepareCsv (encoding, title lines, quotes; BE-03-T08); a workbook has none of those problems.
   const read = normalizedExt === 'xlsx'
-    ? { rows: await readWorkbookRows(buffer), lostRecords: 0, headerRowNumber: 1, encoding: 'xlsx', separator: null }
+    ? { rows: await readWorkbookRows(buffer, { limits }), lostRecords: 0, headerRowNumber: 1, encoding: 'xlsx', separator: null }
     : await readCsv(buffer, { limits });
   const { rows: rawRows, ambiguousRows } = repairOverflowColumns(read.rows, columnMapping);
   // Settled once per file from its own values (BE-03-T06); later cards add to this object, none replaces it.
@@ -149,6 +149,9 @@ const parseBuffer = async (
     quantityDecimal: columnMapping.quantity
       ? inferDecimalMark(rawRows.map((raw) => raw[columnMapping.quantity]), { csvSeparator })
       : null,
+    // One snapshot of the env limits and the acceptable date range per parse, not per row or per cell (BE-03-T13).
+    limits,
+    dateBounds: transactionDateBounds(resolvedTimezone, limits),
   };
 
   let rows;

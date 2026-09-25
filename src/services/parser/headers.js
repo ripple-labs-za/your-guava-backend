@@ -57,11 +57,11 @@ const normaliseCell = (value, limits = parserLimits()) => {
   return trimmed.length > limits.maxCellChars ? trimmed.slice(0, limits.maxCellChars) : trimmed;
 };
 
-const normaliseRow = (row) => {
+const normaliseRow = (row, limits = parserLimits()) => {
   const normalised = {};
   Object.entries(row || {}).forEach(([key, value], index) => {
     const normalisedKey = UNNAMED_COLUMN_RE.test(key) ? key : normaliseHeader(key, index);
-    normalised[normalisedKey] = normaliseCell(value);
+    normalised[normalisedKey] = normaliseCell(value, limits);
   });
   if (row?.[SOURCE_ROW_NUMBERS]) {
     Object.defineProperty(normalised, SOURCE_ROW_NUMBERS, {
@@ -73,7 +73,7 @@ const normaliseRow = (row) => {
   return normalised;
 };
 
-const normaliseRows = (rows) => rows.map(normaliseRow);
+const normaliseRows = (rows, limits = parserLimits()) => rows.map((row) => normaliseRow(row, limits));
 
 /** The ten fields a column mapping may name, in one place (the uploads code and the saved mapping use it). */
 const COLUMN_MAPPING_FIELDS = Object.freeze([

@@ -34,12 +34,11 @@ const excelSerialDateToDate = (serial, timezone = DEFAULT_TIMEZONE) => {
  * A1:1000000000 has no column letters, and the reader still builds a billion
  * empty rows for it.
  */
-const readFirstSheet = async (buffer) => {
+const readFirstSheet = async (buffer, limits = parserLimits()) => {
   const {
     unpackXlsxFile, xml: readerXml, parseFilePaths, parseStyles, parseSpreadsheetInfo, convertCellsToData2dArray,
   } = loadReaderSteps();
   loadXmldom();
-  const limits = parserLimits();
   // Everything the reader does to a workbook that reached this point is about
   // the file's shape (a missing part, a sheet it cannot parse, an unescaped
   // "<" in an attribute, an undeclared namespace prefix). The reader reports
@@ -97,9 +96,8 @@ const readFirstSheet = async (buffer) => {
  * columns. Deriving them from `rows[0]` made an empty export look like a file
  * with unreadable headers, which is what the operator was then told.
  */
-const readWorkbook = async (buffer) => {
-  const limits = parserLimits();
-  const matrix = await readFirstSheet(buffer);
+const readWorkbook = async (buffer, { limits = parserLimits() } = {}) => {
+  const matrix = await readFirstSheet(buffer, limits);
   if (!matrix.length) return { headers: [], rows: [] };
   // A report workbook opens with a title and a date range above its column names (BE-03-T08).
   const headerIndex = findHeaderRowIndex(matrix.slice(0, 20).map((row) => row.map((cell) => (cell == null ? '' : String(cell)))));
@@ -119,7 +117,7 @@ const readWorkbook = async (buffer) => {
     .map(({ row, rowNumber }) => {
       const mapped = {};
       headers.forEach((header, index) => {
-        mapped[header] = normaliseCell(row[index] ?? '');
+        mapped[header] = normaliseCell(row[index] ?? '', limits);
       });
       Object.defineProperty(mapped, SOURCE_ROW_NUMBERS, {
         value: [rowNumber],
@@ -132,7 +130,7 @@ const readWorkbook = async (buffer) => {
   return { headers, rows };
 };
 
-const readWorkbookRows = async (buffer) => (await readWorkbook(buffer)).rows;
+const readWorkbookRows = async (buffer, options) => (await readWorkbook(buffer, options)).rows;
 
 module.exports = {
   excelSerialDateToDate, readWorkbook, readWorkbookRows,

@@ -4,27 +4,38 @@
 const DEFAULT_TIMEZONE = 'Africa/Johannesburg';
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
+// One formatter per zone, built the first time the zone is validated and reused for every row after. Building one
+// is ICU work measured in tens of microseconds; the parse used to build ~18 per row (BE-03-T13).
+const FORMATTERS = new Map();
+const INVALID_ZONES = new Set();
+const MAX_CACHED_ZONES = 1000; // a stored cafe setting names the zone, so both caches are bounded
+
+const buildZonedPartsFormatter = (zone) => new Intl.DateTimeFormat('en-ZA', {
+  timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+});
+
 const safeTimezone = (timezone) => {
   const candidate = String(timezone || DEFAULT_TIMEZONE);
+  if (FORMATTERS.has(candidate)) return candidate;
+  if (INVALID_ZONES.has(candidate)) return DEFAULT_TIMEZONE;
   try {
-    Intl.DateTimeFormat('en-ZA', { timeZone: candidate }).format(new Date());
+    const formatter = buildZonedPartsFormatter(candidate); // throws RangeError for an unknown zone
+    if (FORMATTERS.size < MAX_CACHED_ZONES) FORMATTERS.set(candidate, formatter);
     return candidate;
   } catch {
+    if (INVALID_ZONES.size < MAX_CACHED_ZONES) INVALID_ZONES.add(candidate);
     return DEFAULT_TIMEZONE;
   }
 };
 
+const zonedPartsFormatter = (timezone) => {
+  const zone = safeTimezone(timezone);
+  return FORMATTERS.get(zone) || buildZonedPartsFormatter(zone); // uncached only past the cap
+};
+
 const getTimeZoneOffsetMs = (date, timezone) => {
-  const parts = new Intl.DateTimeFormat('en-ZA', {
-    timeZone: safeTimezone(timezone),
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(date);
+  const parts = zonedPartsFormatter(timezone).formatToParts(date);
   const values = Object.fromEntries(
     parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)])
   );
@@ -53,16 +64,7 @@ const zonedDateTimeToUtc = (
 const getZonedDateParts = (date, timezone) => {
   const parsed = new Date(date);
   if (Number.isNaN(parsed.getTime())) return null;
-  const parts = new Intl.DateTimeFormat('en-ZA', {
-    timeZone: safeTimezone(timezone),
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(parsed);
+  const parts = zonedPartsFormatter(timezone).formatToParts(parsed);
   const values = Object.fromEntries(
     parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)])
   );
@@ -187,7 +189,7 @@ const getCafeTimezone = async (cafeId) => {
 };
 
 module.exports = {
-  DEFAULT_TIMEZONE, DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, zonedDateTimeToUtc, getZonedDateParts, zonedDayStart,
-  zonedDayEnd, addZonedDays, zonedDayOrdinal, zonedDateKey, zonedDayOfWeek, processLocalCalendarDate,
+  DEFAULT_TIMEZONE, DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, zonedPartsFormatter, zonedDateTimeToUtc, getZonedDateParts,
+  zonedDayStart, zonedDayEnd, addZonedDays, zonedDayOrdinal, zonedDateKey, zonedDayOfWeek, processLocalCalendarDate,
   parseDateOnly, formatDateOnly, inclusiveDateOnlyDays, cafeLocalToday, getCafeTimezone,
 };

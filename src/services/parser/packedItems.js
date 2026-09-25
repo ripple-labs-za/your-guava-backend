@@ -176,10 +176,11 @@ const parsePackedItems = (str) => {
 };
 
 const buildPackedRow = (raw, mapping, rowNumber, timezone, context = {}) => {
-  const limits = parserLimits();
+  // parseBuffer settles the limits and date bounds once per file (BE-03-T13); a direct caller gets them per row.
+  const limits = context.limits || parserLimits();
   const { date, timeKnown } = parseDateTime(raw[mapping.date], mapping.time && raw[mapping.time], timezone, context);
   if (!date) return { error: 'Could not parse date or time' };
-  const dateError = transactionDateError(date, timezone);
+  const dateError = transactionDateError(date, timezone, context.dateBounds);
   if (dateError) return { error: dateError };
   const items = parsePackedItems(raw[mapping.items] || '');
   if (items.length === 0) return { error: 'Missing or invalid items' };
