@@ -188,7 +188,7 @@ const createMeteredReservation = async ({ idempotencyKey, credits, ...payload })
   };
 };
 
-const finishUsage = (ledger, status, { resultPayload, providerDiagnostics } = {}) =>
+const finishUsage = (ledger, status, { resultPayload, providerDiagnostics, recoveryReason } = {}) =>
   UsageLedger.findOneAndUpdate(
     { _id: ledger._id, status: 'reserved' },
     {
@@ -197,6 +197,7 @@ const finishUsage = (ledger, status, { resultPayload, providerDiagnostics } = {}
         completedAt: new Date(),
         ...(resultPayload !== undefined ? { resultPayload } : {}),
         ...(providerDiagnostics !== undefined ? { providerDiagnostics } : {}),
+        ...(recoveryReason ? { recoveryReason } : {}),
       },
     },
     { new: true }
@@ -260,6 +261,7 @@ const refundAndFinishUsage = async ({
   credits,
   creditWindowResetAt,
   creditAllocation,
+  providerDiagnostics,
 }) => {
   const session = await mongoose.startSession();
   try {
@@ -279,6 +281,7 @@ const refundAndFinishUsage = async ({
         { new: true, session }
       );
 
+      const consumed = Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
       const finished = await UsageLedger.updateOne(
         { _id: ledger._id, status: 'reserved' },
         {
@@ -286,7 +289,9 @@ const refundAndFinishUsage = async ({
             status: 'refunded',
             recoveryReason: 'operation_failed',
             completedAt: new Date(),
+            ...(consumed ? { providerDiagnostics } : {}),
           },
+          ...(consumed ? { $inc: { providerConsumedRuns: 1 } } : {}),
         },
         { session }
       );

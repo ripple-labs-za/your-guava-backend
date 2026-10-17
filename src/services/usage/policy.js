@@ -140,14 +140,27 @@ const dailyAiCredits = (scope, since, session) => UsageLedger.aggregate([
     $match: {
       ...scope,
       featureKey: { $in: [...AI_FEATURE_KEYS] },
-      status: { $in: ['reserved', 'recovering', 'committed'] },
+      status: { $in: ['reserved', 'recovering', 'committed', 'refunded'] },
       $or: [
         { reservedAt: { $gte: since } },
         { reservedAt: null, createdAt: { $gte: since } },
       ],
     },
   },
-  { $group: { _id: null, credits: { $sum: '$credits' } } },
+  { $match: { $or: [{ status: { $ne: 'refunded' } }, { providerConsumedRuns: { $gt: 0 } }] } },
+  {
+    $group: {
+      _id: null,
+      credits: {
+        $sum: {
+          $add: [
+            { $cond: [{ $in: ['$status', ['reserved', 'recovering', 'committed']] }, '$credits', 0] },
+            { $multiply: ['$credits', { $ifNull: ['$providerConsumedRuns', 0] }] },
+          ],
+        },
+      },
+    },
+  },
 ]).session(session);
 
 const enforceAiUsagePolicy = async ({ orgId, userId, featureKey, credits }, session) => {

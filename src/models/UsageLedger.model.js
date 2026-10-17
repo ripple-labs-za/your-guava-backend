@@ -78,6 +78,12 @@ const usageLedgerSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    // Provider-consuming refunded attempts still count against AI safety caps (D-015).
+    providerConsumedRuns: {
+      type: Number,
+      min: 0,
+      default: undefined,
+    },
     recoveryReason: {
       type: String,
       maxlength: 120,

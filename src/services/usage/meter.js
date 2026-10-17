@@ -1,6 +1,7 @@
 // Metering: feature costs, the diagnostics field, meterGuavaCredits and consumeGuavaCredits.
 // Moved from usage.service.js by BE-11-T04; behaviour unchanged.
 const Organization = require('../../models/Organization.model');
+const UsageLedger = require('../../models/UsageLedger.model');
 const { billingAccessForOrganization, billingRequiredError } = require('./policy');
 const { normalizeCreditAmount, refreshCreditWindow, creditSnapshot } = require('./credits');
 const { createMeteredReservation, finishUsage, commitAfterLeaseBreach, refundAndFinishUsage } = require('./ledger');
@@ -14,6 +15,30 @@ const FEATURE_COSTS = {
 };
 
 const USAGE_DIAGNOSTICS_FIELD = '__usageDiagnostics';
+
+const isInFlightConflict = (error) =>
+  error?.statusCode === 409 &&
+  error.details?.code === 'USAGE_IDEMPOTENCY_CONFLICT' &&
+  ['reserved', 'recovering'].includes(error.details?.status);
+
+const throwIfCancelled = (signal) => {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error ? signal.reason : new Error('Operation aborted');
+  error.name = 'AbortError';
+  throw error;
+};
+
+const waitForSettledUsage = async ({ orgId, idempotencyKey, deadline, signal }) => {
+  const key = String(idempotencyKey || '').trim().slice(0, 160);
+  if (!key) return;
+  while (Date.now() < deadline) {
+    throwIfCancelled(signal);
+    const row = await UsageLedger.findOne({ orgId, idempotencyKey: key }).select('status').lean();
+    if (!row || !['reserved', 'recovering'].includes(row.status)) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throwIfCancelled(signal);
+};
 
 const splitMeteredRunResult = (rawResult) => {
   if (
@@ -54,6 +79,7 @@ const meterGuavaCredits = async ({
   metadata,
   idempotencyKey,
   signal,
+  awaitInFlightMs = 0,
   run,
 }) => {
   const config = FEATURE_COSTS[featureKey] || {};
@@ -81,7 +107,7 @@ const meterGuavaCredits = async ({
     return { result, guavaCredits: org ? creditSnapshot(org) : null, usage: null };
   }
 
-  const reservation = await createMeteredReservation({
+  const reservationRequest = {
     orgId,
     cafeId,
     userId,
@@ -92,7 +118,16 @@ const meterGuavaCredits = async ({
     relatedEntity,
     metadata,
     idempotencyKey,
-  });
+  };
+  let reservation;
+  try {
+    reservation = await createMeteredReservation(reservationRequest);
+  } catch (error) {
+    if (!(awaitInFlightMs > 0 && isInFlightConflict(error))) throw error;
+    await waitForSettledUsage({ orgId, idempotencyKey, deadline: Date.now() + awaitInFlightMs, signal });
+    throwIfCancelled(signal);
+    reservation = await createMeteredReservation(reservationRequest);
+  }
   const {
     ledger,
     creditWindowResetAt,
@@ -110,15 +145,24 @@ const meterGuavaCredits = async ({
     };
   }
 
+  let delivered = false;
+  let providerSoFar;
+  let partialResult;
+  const meter = Object.freeze({
+    markDelivered: () => { delivered = true; },
+    isDelivered: () => delivered,
+    recordProviderDiagnostics: (diagnostics) => { providerSoFar = diagnostics; },
+    recordPartialResult: (result) => { partialResult = result; },
+  });
   let runCompleted = false;
   let completedResult;
   let completedProviderDiagnostics;
   try {
-    const rawResult = await run();
+    const rawResult = await run(meter);
     const { result, providerDiagnostics } = splitMeteredRunResult(rawResult);
     completedResult = result;
     completedProviderDiagnostics = providerDiagnostics;
-    if (signal?.aborted) {
+    if (signal?.aborted && !delivered) {
       const abortError = signal.reason instanceof Error
         ? signal.reason
         : new Error('Operation aborted');
@@ -142,19 +186,33 @@ const meterGuavaCredits = async ({
       replayed: false,
     };
   } catch (error) {
-    if (!runCompleted) {
-      await refundAndFinishUsage({
+    if (!runCompleted && delivered) {
+      const resultPayload = partialResult ?? { answer: '', interrupted: true };
+      const diagnostics = providerSoFar ?? error?.providerDiagnostics;
+      const settled = await finishUsage(ledger, 'committed', {
+        resultPayload,
+        providerDiagnostics: diagnostics,
+        recoveryReason: 'delivered_then_interrupted',
+      })
+        .then((row) => row || commitAfterLeaseBreach(ledger, orgId, { resultPayload, providerDiagnostics: diagnostics }))
+        .catch(() => null);
+      error.guavaCharge = { status: settled ? 'committed' : 'unknown', credits: amount };
+      error.guavaResult = resultPayload;
+    } else if (!runCompleted) {
+      const refunded = await refundAndFinishUsage({
         ledger,
         orgId,
         credits: amount,
         creditWindowResetAt,
         creditAllocation,
-      }).catch(() => null);
+        providerDiagnostics: providerSoFar ?? error?.providerDiagnostics ?? completedProviderDiagnostics,
+      }).then(() => true).catch(() => false);
+      error.guavaCharge = { status: refunded ? 'refunded' : 'unknown', credits: 0 };
     } else {
       // Preserve the delivered provider result during commit recovery. A
       // status-only recovery would charge successfully but make a retry
       // impossible to replay, recreating the paid-without-an-answer failure.
-      await finishUsage(ledger, 'committed', {
+      const settled = await finishUsage(ledger, 'committed', {
         resultPayload: completedResult,
         providerDiagnostics: completedProviderDiagnostics,
       })
@@ -163,6 +221,7 @@ const meterGuavaCredits = async ({
           providerDiagnostics: completedProviderDiagnostics,
         }))
         .catch(() => null);
+      error.guavaCharge = { status: settled ? 'committed' : 'unknown', credits: amount };
     }
     throw error;
   }

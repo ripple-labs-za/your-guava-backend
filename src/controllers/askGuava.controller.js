@@ -7,6 +7,8 @@ const { getCachedInsights, refreshInsights, generateBusinessChatResponse, stream
 const { meterGuavaCredits } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
 
+const CHAT_IN_FLIGHT_WAIT_MS = 60_000;
+
 const getInsights = async (req, res, next) => {
   try {
     const result = await getCachedInsights(activeCafeId(req));
@@ -80,7 +82,7 @@ const persistChatExchange = async ({
   // produces one complete user/assistant exchange without duplicate retries.
   for (let attempt = 0; attempt < 4; attempt++) {
     const existing = await InsightChat.findOne(scope)
-      .select('messages updatedAt +messages.requestKey')
+      .select('updatedAt messages.role messages.content +messages.requestKey')
       .lean();
     if (!existing) return false;
     if (existing.messages?.some((message) => message.requestKey === idempotencyKey)) {
@@ -206,6 +208,7 @@ const chatInsights = async (req, res, next) => {
       cafeId,
       userId: req.user.id,
       featureKey: 'ask_guava_chat',
+      awaitInFlightMs: CHAT_IN_FLIGHT_WAIT_MS,
       relatedEntity: mongoose.Types.ObjectId.isValid(chatId)
         ? { kind: 'insight_chat', id: String(chatId) }
         : undefined,
@@ -322,6 +325,7 @@ const streamChatInsights = async (req, res, next) => {
       cafeId,
       userId: req.user.id,
       featureKey: 'ask_guava_chat',
+      awaitInFlightMs: CHAT_IN_FLIGHT_WAIT_MS,
       relatedEntity: mongoose.Types.ObjectId.isValid(chatId)
         ? { kind: 'insight_chat', id: String(chatId) }
         : undefined,
@@ -332,7 +336,7 @@ const streamChatInsights = async (req, res, next) => {
       },
       idempotencyKey,
       signal: requestAbort.signal,
-      run: () => {
+      run: (meter) => {
         openSse(res);
 
         return streamBusinessChatResponse({
@@ -340,12 +344,23 @@ const streamChatInsights = async (req, res, next) => {
           orgId,
           authorizedCafeIds,
           messages: conversation,
-          onDelta: (text) => writeStreamEvent(res, 'delta', { text }),
+          onDelta: (text) => {
+            if (!text || res.destroyed || res.writableEnded) return;
+            writeStreamEvent(res, 'delta', { text });
+            meter.markDelivered();
+          },
           signal: requestAbort.signal,
+          meter,
         });
       },
     });
 
+    if (res.destroyed) {
+      await persistChatExchangeWithoutBlockingDelivery({
+        chatId, cafeId, orgId, userId: req.user.id, idempotencyKey, conversation, result,
+      });
+      return;
+    }
     openSse(res);
     if (replayed && result?.answer) {
       writeStreamEvent(res, 'delta', { text: result.answer });
@@ -368,11 +383,27 @@ const streamChatInsights = async (req, res, next) => {
     });
     res.end();
   } catch (error) {
+    const charged = error.guavaCharge?.status === 'committed';
+    if (charged && error.guavaResult) {
+      await persistChatExchangeWithoutBlockingDelivery({
+        chatId: req.body.chatId,
+        cafeId: activeCafeId(req),
+        orgId: req.user.orgId,
+        userId: req.user.id,
+        idempotencyKey: String(req.get('Idempotency-Key') || '').trim(),
+        conversation: req.body.messages || [{ role: 'user', content: req.body.question }],
+        result: error.guavaResult,
+      });
+    }
     if (requestAbort.signal.aborted || res.destroyed) return;
     if (res.headersSent) {
       writeStreamEvent(res, 'error', {
-        code: error.code || 'AI_CHAT_FAILED',
-        message: 'The AI analyst could not complete this request. Please retry.',
+        code: charged ? 'AI_STREAM_INTERRUPTED' : (error.code || 'AI_CHAT_FAILED'),
+        charged,
+        credits: charged ? error.guavaCharge.credits : 0,
+        message: charged
+          ? 'The AI service stopped this answer part-way. It had started, so it was charged.'
+          : 'The AI analyst could not complete this request. Nothing was charged. Please retry.',
       });
       return res.end();
     }

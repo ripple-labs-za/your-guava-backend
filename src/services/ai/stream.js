@@ -39,6 +39,9 @@ const waitWithAbort = (durationMs, signal) =>
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
+const PROVIDER_INTERRUPTED_MARKER =
+  '\n\n_The AI service stopped this answer part-way through. Because it had started, it was charged. Ask again for a complete answer._';
+
 const streamBusinessChatResponse = async ({
   cafeId,
   orgId,
@@ -46,6 +49,7 @@ const streamBusinessChatResponse = async ({
   messages,
   onDelta,
   signal,
+  meter,
 }) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     const fallback = missingChatKeyResponse();
@@ -63,28 +67,63 @@ const streamBusinessChatResponse = async ({
   });
   const client = createAnthropicClient();
   const startedAt = Date.now();
-  const stream = await withAnthropicErrors(
-    () => client.messages.create({ ...request, stream: true }, { signal }),
-    'streamBusinessChatResponse'
-  );
-  let answer = '';
-  const streamResponse = { usage: {} };
+  // The provider call has its own controller. Before anything reaches the customer, their disconnect cancels it and the
+  // run is refunded. After the first delta it is drained to the end, so the charged answer is complete for the
+  // same-key replay and the saved chat (D-015).
+  const upstream = new AbortController();
+  const onClientAbort = () => {
+    if (meter?.isDelivered?.()) return;
+    upstream.abort(signal?.reason);
+  };
+  if (signal?.aborted) onClientAbort();
+  signal?.addEventListener('abort', onClientAbort, { once: true });
 
-  for await (const event of stream) {
-    if (event.type === 'message_start') {
-      streamResponse.id = event.message?.id;
-      streamResponse.model = event.message?.model;
-      streamResponse.usage.input_tokens = Number(event.message?.usage?.input_tokens) || 0;
+  let answer = '';
+  let sawMessageStop = false;
+  const streamResponse = { usage: {} };
+  const recordUsage = () =>
+    meter?.recordProviderDiagnostics?.(providerDiagnostics(streamResponse, startedAt, 'ask_guava_chat'));
+
+  try {
+    const stream = await withAnthropicErrors(
+      () => client.messages.create({ ...request, stream: true }, { signal: upstream.signal }),
+      'streamBusinessChatResponse'
+    );
+    for await (const event of stream) {
+      if (event.type === 'message_start') {
+        streamResponse.id = event.message?.id;
+        streamResponse.model = event.message?.model;
+        streamResponse.usage.input_tokens = Number(event.message?.usage?.input_tokens) || 0;
+        recordUsage();
+      }
+      if (event.type === 'message_delta') {
+        streamResponse.stop_reason = event.delta?.stop_reason;
+        streamResponse.usage.output_tokens = Number(event.usage?.output_tokens) || 0;
+        recordUsage();
+      }
+      if (event.type === 'message_stop') sawMessageStop = true;
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        const text = event.delta.text || '';
+        answer += text;
+        onDelta(text);
+      }
     }
-    if (event.type === 'message_delta') {
-      streamResponse.stop_reason = event.delta?.stop_reason;
-      streamResponse.usage.output_tokens = Number(event.usage?.output_tokens) || 0;
+    // SDK 0.30.1 ends the iterator quietly when its request is aborted (streaming.js swallows AbortError), so an
+    // aborted stream can look finished here.
+    if (upstream.signal.aborted && !sawMessageStop) throwIfAborted(upstream.signal);
+  } catch (error) {
+    if (meter?.isDelivered?.()) {
+      meter.recordPartialResult({
+        answer: `${answer}${PROVIDER_INTERRUPTED_MARKER}`,
+        generatedAt: new Date(),
+        contextStats,
+        interrupted: true,
+        ...(truncatedInput ? { truncatedInput: true } : {}),
+      });
     }
-    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-      const text = event.delta.text || '';
-      answer += text;
-      onDelta(text);
-    }
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', onClientAbort);
   }
 
   if (!answer.trim()) {
