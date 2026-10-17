@@ -28,12 +28,18 @@ const noTrend = (reason, effective = null, comparison = null) => ({ effective, c
  * @param {{ startDate: string, endDate: string, today: string, firstDataDate: string|null, lastDataDate: string|null }} input
  *   lastDataDate must be the last day with an approved row in [startDate, lastCompleteDay({ endDate, today })].
  */
-const trendWindows = ({ startDate, endDate, today, firstDataDate, lastDataDate }) => {
+const trendWindows = ({ startDate, endDate, today, firstDataDate, lastDataDate, tradingHours = [] }) => {
   const completeEnd = lastCompleteDay({ endDate, today });
   if (completeEnd < startDate) return noTrend('window_not_complete');
   if (!lastDataDate) return noTrend('no_data_in_window');
 
-  const dataEnds = lastDataDate < completeEnd;
+  const closed = new Set(tradingHours.filter((day) => day.isOpen === false).map((day) => day.dayOfWeek));
+  // A scheduled closure is a measured zero, not evidence that uploads ended.
+  let lastExpectedDay = completeEnd;
+  for (let i = 0; i < 7 && lastExpectedDay > startDate && closed.has(weekdayOf(lastExpectedDay)); i += 1) {
+    lastExpectedDay = shiftDay(lastExpectedDay, -1);
+  }
+  const dataEnds = lastDataDate < lastExpectedDay;
   const effectiveEnd = dataEnds ? lastDataDate : completeEnd;
   const days = daysInclusive(startDate, effectiveEnd);
   let endReason = 'requested';
@@ -42,7 +48,11 @@ const trendWindows = ({ startDate, endDate, today, firstDataDate, lastDataDate }
 
   const effective = { startDate, endDate: effectiveEnd, days, endReason };
   const comparison = { startDate: shiftDay(startDate, -days), endDate: shiftDay(startDate, -1), days };
-  if (!firstDataDate || firstDataDate > comparison.startDate) {
+  let firstExpectedDay = comparison.startDate;
+  for (let i = 0; i < 7 && firstExpectedDay < comparison.endDate && closed.has(weekdayOf(firstExpectedDay)); i += 1) {
+    firstExpectedDay = shiftDay(firstExpectedDay, 1);
+  }
+  if (!firstDataDate || firstDataDate > firstExpectedDay) {
     return noTrend('insufficient_history', effective, comparison);
   }
   return { effective, comparison, comparable: true, reason: null };

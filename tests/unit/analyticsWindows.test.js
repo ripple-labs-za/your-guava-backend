@@ -16,6 +16,15 @@ describe('analytics day-key arithmetic', () => {
 });
 
 describe('trendWindows', () => {
+  it('accepts history beginning on the first open comparison day after a closed boundary', () => {
+    const result = trendWindows({
+      startDate: '2026-03-21', endDate: '2026-03-26', today: '2026-04-01',
+      firstDataDate: '2026-03-16', lastDataDate: '2026-03-26',
+      tradingHours: [{ dayOfWeek: 0, isOpen: false }],
+    });
+    expect(result.comparison.startDate).toBe('2026-03-15');
+    expect(result.comparable).toBe(true);
+  });
   it('ends the current window at the last complete day when the range reaches today', () => {
     expect(trendWindows({
       startDate: '2026-09-16', endDate: '2026-09-22', today: '2026-09-22',

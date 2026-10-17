@@ -81,7 +81,6 @@ const analyticsRangeMeta = (query, dateMatch, timezone) => {
   };
 };
 
-
 const dateToString = (format, timezone) => ({
   $dateToString: {
     format,

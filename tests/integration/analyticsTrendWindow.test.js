@@ -154,6 +154,32 @@ describe('GET /api/analytics/revenue trend window', () => {
     expect(res.body.meta.timezone).toBe('America/New_York');
   });
 
+  it.each([7, 30, 90])('keeps a scheduled closed yesterday in the complete %i-day comparison', async (days) => {
+    const Cafe = require('../../src/models/Cafe.model');
+    const closedDay = weekday(shift(today, -1));
+    await Cafe.findByIdAndUpdate(cafeId, { tradingHours: Array.from({ length: 7 }, (_, dayOfWeek) => ({
+      dayOfWeek, isOpen: dayOfWeek !== closedDay, openTime: '07:00', closeTime: '17:00',
+    })) });
+    const docs = [];
+    for (let ago = 200; ago >= 1; ago -= 1) {
+      const day = shift(today, -ago);
+      if (weekday(day) !== closedDay) docs.push(flatDay(cafeId, day));
+    }
+    await Transaction.insertMany(docs);
+    const res = await revenueFor(days);
+    const currentStart = shift(today, -(days - 1));
+    const previousStart = shift(today, -(2 * days - 2));
+    const previousEnd = shift(today, -days);
+    const current = docs.filter((doc) => localKey(doc.date) >= currentStart).reduce((sum, doc) => sum + doc.total, 0);
+    const previous = docs.filter((doc) => localKey(doc.date) >= previousStart && localKey(doc.date) <= previousEnd)
+      .reduce((sum, doc) => sum + doc.total, 0);
+    // Equal calendar spans retain real weekday mix effects: the 29-day spans can have 24 vs 25 open days.
+    expect(res.body.summary.trend).toBe(Number((((current - previous) / previous) * 100).toFixed(1)) || 0);
+    if (days === 7 || days === 90) expect(res.body.summary.trend).toBe(0);
+    expect(res.body.meta.effectiveWindow.endDate).toBe(shift(today, -1));
+    expect(res.body.meta.effectiveWindow.endReason).toBe('today_incomplete');
+  });
+
   it.each([0, -5000])('declines to calculate a percentage from previous net revenue %i', async (previous) => {
     await Transaction.insertMany([
       flatDay(cafeId, '2026-01-01', previous),
@@ -166,5 +192,18 @@ describe('GET /api/analytics/revenue trend window', () => {
     expect(res.body.summary.trend).toBeNull();
     expect(res.body.meta.trendReason).toBe('no_previous_revenue');
     expect(res.body.meta.comparisonWindow.revenue).toBe(previous);
+  });
+
+  it('clamps a timed effective start so its revenue agrees with the requested total', async () => {
+    const docs = [flatDay(cafeId, '2026-01-01', 1000)];
+    for (let day = 6; day <= 13; day += 1) docs.push(flatDay(cafeId, `2026-02-${String(day).padStart(2, '0')}`, 1000));
+    docs.push({ ...flatDay(cafeId, '2026-02-10', 1000), date: at('2026-02-10', '14:00') });
+    await Transaction.insertMany(docs);
+    const res = await request.get('/api/analytics/revenue').set('Authorization', `Bearer ${token}`)
+      .query({ startDate: '2026-02-10T12:00:00+02:00', endDate: '2026-02-13' });
+    expect(res.body.meta.effectiveWindow.start).toBe('2026-02-10T10:00:00.000Z');
+    expect(res.body.meta.effectiveWindow.revenue).toBe(4000);
+    expect(res.body.summary.totalRevenue).toBe(4000);
+    expect(res.body.summary.trend).toBe(0);
   });
 });

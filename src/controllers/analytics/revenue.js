@@ -1,5 +1,5 @@
 // GET /analytics/revenue.
-// Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
+// Split by BE-11-T04; summaries and complete-span trends corrected by BE-04.
 const mongoose = require('mongoose');
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone } = require('../../utils/timezone');
