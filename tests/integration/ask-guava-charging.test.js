@@ -301,4 +301,16 @@ describe('Ask Guava streaming charges (D-015)', () => {
     });
     expect(savedStopped.messages[1].content).toBe(stoppedRow.resultPayload.answer);
   });
+  it('refunds a whitespace-only answer without marking visible delivery', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    mockAnthropicMessageCreate.mockImplementation(scriptedStream([messageStart, textDelta('  '), ...messageEnd]));
+    const stream = await openStream({ token: owner.token, idempotencyKey: 'whitespace-only', messages: QUESTION });
+    const text = await stream.until(/event: error\ndata: .*\n/);
+    expect(eventData(text, 'error').charged).toBe(false);
+    const row = await settledRow('whitespace-only');
+    expect(row.status).toBe('refunded');
+    expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(0);
+  });
+
 });

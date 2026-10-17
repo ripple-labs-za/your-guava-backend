@@ -120,13 +120,15 @@ const meterGuavaCredits = async ({
     idempotencyKey,
   };
   let reservation;
-  try {
-    reservation = await createMeteredReservation(reservationRequest);
-  } catch (error) {
-    if (!(awaitInFlightMs > 0 && isInFlightConflict(error))) throw error;
-    await waitForSettledUsage({ orgId, idempotencyKey, deadline: Date.now() + awaitInFlightMs, signal });
-    throwIfCancelled(signal);
-    reservation = await createMeteredReservation(reservationRequest);
+  const deadline = Date.now() + awaitInFlightMs;
+  while (!reservation) {
+    try {
+      reservation = await createMeteredReservation(reservationRequest);
+    } catch (error) {
+      if (!(Date.now() < deadline && isInFlightConflict(error))) throw error;
+      await waitForSettledUsage({ orgId, idempotencyKey, deadline, signal });
+      throwIfCancelled(signal);
+    }
   }
   const {
     ledger,

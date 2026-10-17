@@ -263,6 +263,15 @@ const refundAndFinishUsage = async ({
   creditAllocation,
   providerDiagnostics,
 }) => {
+  const consumed = Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
+  // A reconciler may already have released this hold. Count its provider usage without refunding twice.
+  if (consumed) {
+    const recovered = await UsageLedger.updateOne(
+      { _id: ledger._id, status: 'refunded', recoveryReason: 'stale_reservation' },
+      { $set: { providerDiagnostics, recoveryReason: 'operation_failed' }, $inc: { providerConsumedRuns: 1 } }
+    );
+    if (recovered.matchedCount === 1) return;
+  }
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {

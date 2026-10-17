@@ -335,3 +335,22 @@ describe('same-key answer settlement waits', () => {
     }));
   });
 });
+
+describe('provider usage after stale reservation recovery', () => {
+  it('counts provider consumption when the sweeper refunded before the failure', async () => {
+    const owner = await createTestUser();
+    let rejectRun;
+    const result = meterGuavaCredits({
+      orgId: owner.user.orgId, userId: owner.user.id, featureKey: 'ask_guava_chat', idempotencyKey: 'stale-consumed',
+      run: (meter) => {
+        meter.recordProviderDiagnostics({ inputTokens: 900 });
+        return new Promise((_, reject) => { rejectRun = reject; });
+      },
+    }).catch((error) => error);
+    await waitFor(() => rejectRun);
+    await reconcileStaleUsageReservations({ now: new Date(Date.now() + 10 * 60_000) });
+    rejectRun(new Error('late failure'));
+    await result;
+    expect((await UsageLedger.findOne({ idempotencyKey: 'stale-consumed' })).providerConsumedRuns).toBe(1);
+  });
+});

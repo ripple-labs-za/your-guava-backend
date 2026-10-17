@@ -337,7 +337,7 @@ const streamChatInsights = async (req, res, next) => {
           onDelta: (text) => {
             if (!text || res.destroyed || res.writableEnded) return;
             writeStreamEvent(res, 'delta', { text });
-            meter.markDelivered();
+            if (text.trim()) meter.markDelivered();
           },
           signal: requestAbort.signal,
           meter,
@@ -373,7 +373,8 @@ const streamChatInsights = async (req, res, next) => {
     });
     res.end();
   } catch (error) {
-    const charged = error.guavaCharge?.status === 'committed';
+    const charged = error.guavaCharge?.status === 'committed' ? true
+      : error.guavaCharge?.status === 'refunded' ? false : null;
     if (charged && error.guavaResult) {
       await persistChatExchangeWithoutBlockingDelivery({
         chatId: req.body.chatId,
@@ -393,7 +394,8 @@ const streamChatInsights = async (req, res, next) => {
         credits: charged ? error.guavaCharge.credits : 0,
         message: charged
           ? 'The AI service stopped this answer part-way. It had started, so it was charged.'
-          : 'The AI analyst could not complete this request. Nothing was charged. Please retry.',
+          : charged === false ? 'The AI analyst could not complete this request. Nothing was charged. Please retry.'
+            : 'The charge could not be confirmed. Retry this request with the same key.',
       });
       return res.end();
     }

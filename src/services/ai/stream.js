@@ -40,7 +40,7 @@ const waitWithAbort = (durationMs, signal) =>
   });
 
 const PROVIDER_INTERRUPTED_MARKER =
-  '\n\n_The AI service stopped this answer part-way through. Because it had started, it was charged. Ask again for a complete answer._';
+  '\n\nThe AI service stopped this answer part-way through. Because it had started, it was charged. Ask again for a complete answer.';
 
 const streamBusinessChatResponse = async ({
   cafeId,
@@ -111,6 +111,13 @@ const streamBusinessChatResponse = async ({
     // SDK 0.30.1 ends the iterator quietly when its request is aborted (streaming.js swallows AbortError), so an
     // aborted stream can look finished here.
     if (upstream.signal.aborted && !sawMessageStop) throwIfAborted(upstream.signal);
+  if (!answer.trim()) {
+    const error = new Error('AI chat provider returned an empty response');
+    error.statusCode = 502;
+    error.code = 'AI_INVALID_RESPONSE';
+    throw error;
+  }
+
   } catch (error) {
     if (meter?.isDelivered?.()) {
       meter.recordPartialResult({
@@ -124,13 +131,6 @@ const streamBusinessChatResponse = async ({
     throw error;
   } finally {
     signal?.removeEventListener('abort', onClientAbort);
-  }
-
-  if (!answer.trim()) {
-    const error = new Error('AI chat provider returned an empty response');
-    error.statusCode = 502;
-    error.code = 'AI_INVALID_RESPONSE';
-    throw error;
   }
 
   // Push the marker down the same stream the answer went down, so what the
