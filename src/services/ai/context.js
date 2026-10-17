@@ -1,3 +1,4 @@
+const { saleCount, netRevenue, grossSales } = require('../analytics/semantics');
 // Mongo reads that become model input: the business context and the thin-dataset check.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const Transaction = require('../../models/Transaction.model');
@@ -118,8 +119,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
                 },
               },
             },
-            revenue: { $sum: '$total' },
-            transactions: { $sum: 1 },
+            revenue: netRevenue,
+            transactions: saleCount,
           },
         },
       ]);
@@ -152,11 +153,11 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: null,
-          transactions: { $sum: 1 },
-          revenue: { $sum: '$total' },
+          transactions: saleCount,
+          revenue: netRevenue,
           firstDate: { $min: '$date' },
           lastDate: { $max: '$date' },
-          avgBasket: { $avg: '$total' },
+          grossSales,
         },
       },
     ]),
@@ -165,8 +166,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: '$cafeId',
-          transactions: { $sum: 1 },
-          revenue: { $sum: '$total' },
+          transactions: saleCount,
+          revenue: netRevenue,
         },
       },
       { $sort: { revenue: -1 } },
@@ -193,8 +194,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: '$dayOfWeek',
-          revenue: { $sum: '$total' },
-          transactions: { $sum: 1 },
+          revenue: netRevenue,
+          transactions: saleCount,
         },
       },
       { $sort: { _id: 1 } },
@@ -204,8 +205,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: '$hour',
-          revenue: { $sum: '$total' },
-          transactions: { $sum: 1 },
+          revenue: netRevenue,
+          transactions: saleCount,
         },
       },
       { $sort: { _id: 1 } },
@@ -215,8 +216,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: { $ifNull: ['$paymentMethod', 'unknown'] },
-          transactions: { $sum: 1 },
-          revenue: { $sum: '$total' },
+          transactions: saleCount,
+          revenue: netRevenue,
         },
       },
       { $sort: { transactions: -1 } },
@@ -283,7 +284,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     dataset: {
       transactionCount: total.transactions || 0,
       totalRevenue: roundMoney(total.revenue),
-      avgBasket: roundMoney(total.avgBasket),
+      avgBasket: roundMoney(total.transactions > 0 ? total.grossSales / total.transactions : 0),
       firstDate: total.firstDate ? zonedDateTimeLabel(total.firstDate, activeTimezone) : null,
       lastDate: total.lastDate ? zonedDateTimeLabel(total.lastDate, activeTimezone) : null,
       contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters — if a question was longer than that, say so rather than answering as if you had seen all of it.'

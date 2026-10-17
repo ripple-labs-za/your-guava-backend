@@ -1,6 +1,7 @@
 // GET /analytics/heatmap.
 // Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
 const mongoose = require('mongoose');
+const { saleCount } = require('../../services/analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
 const { isWeekdayHourOpen } = require('../../utils/tradingHours');
@@ -64,7 +65,7 @@ const getHeatmap = async (req, res, next) => {
             hour: '$hour',
           },
           totalRevenue: { $sum: '$total' },
-          totalTransactions: { $sum: 1 },
+          totalTransactions: saleCount,
         },
       },
       {

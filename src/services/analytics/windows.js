@@ -48,4 +48,35 @@ const trendWindows = ({ startDate, endDate, today, firstDataDate, lastDataDate }
   return { effective, comparison, comparable: true, reason: null };
 };
 
-module.exports = { shiftDay, daysInclusive, weekdayOf, lastCompleteDay, trendWindows };
+/**
+ * The days in [fromDate, toDate] the cafe was open: its trading hours mark the weekday open, or it recorded a sale that day
+ * (a cafe that trades on a day its settings call closed was open). Zero-sale open days are included on purpose.
+ */
+const openDaysBetween = ({ fromDate, toDate, tradingHours, saleDays }) => {
+  const openWeekdays = new Set(tradingHours.filter((row) => row.isOpen).map((row) => row.dayOfWeek));
+  const days = [];
+  for (let day = fromDate; day <= toDate; day = shiftDay(day, 1)) {
+    if (openWeekdays.has(weekdayOf(day)) || saleDays.has(day)) days.push(day);
+  }
+  return days;
+};
+
+const round2 = (value) => parseFloat(value.toFixed(2));
+
+/**
+ * Per-day summary over the observed span (first to last day with an approved row). `daily` is a
+ * `{ _id: 'YYYY-MM-DD', revenue: <net>, transactions: <sales> }` group sorted by `_id`.
+ */
+const dailySummary = ({ daily, tradingHours }) => {
+  if (daily.length === 0) return { openDays: 0, bestDay: null, worstDay: null };
+  const revenueByDay = new Map(daily.map((row) => [row._id, row.revenue]));
+  const saleDays = new Set(daily.filter((row) => row.transactions > 0).map((row) => row._id));
+  const open = openDaysBetween({ fromDate: daily[0]._id, toDate: daily[daily.length - 1]._id, tradingHours, saleDays });
+  if (open.length === 0) return { openDays: 0, bestDay: null, worstDay: null };
+  const days = open.map((date) => ({ date, revenue: round2(revenueByDay.get(date) || 0) }));
+  const bestDay = days.reduce((best, day) => (day.revenue > best.revenue ? day : best), days[0]);
+  const worstDay = days.reduce((worst, day) => (day.revenue < worst.revenue ? day : worst), days[0]);
+  return { openDays: open.length, bestDay, worstDay };
+};
+
+module.exports = { shiftDay, daysInclusive, weekdayOf, lastCompleteDay, trendWindows, openDaysBetween, dailySummary };

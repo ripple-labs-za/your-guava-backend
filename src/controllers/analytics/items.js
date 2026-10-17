@@ -1,8 +1,13 @@
 // GET /analytics/items.
 // Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
 const mongoose = require('mongoose');
+const Cafe = require('../../models/Cafe.model');
+const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
+const { getCafeTradingHours } = require('../../utils/tradingHours');
+const { saleCount } = require('../../services/analytics/semantics');
+const { openDaysBetween, shiftDay } = require('../../services/analytics/windows');
 const Transaction = require('../../models/Transaction.model');
-const { getCafeTimezone, buildDateMatch, analyticsRangeMeta, inclusiveLocalDayCount, localDayBoundaryUtc } = require('./range');
+const { buildDateMatch, analyticsRangeMeta, dateToString } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
 const { DEMAND_LINE_MATCH } = require('../../utils/demand');
 
@@ -14,46 +19,37 @@ const getItems = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
     const cafeObjectId = mongoose.Types.ObjectId.createFromHexString(cafeId);
-    const timezone = await getCafeTimezone(cafeId);
+    const cafe = await Cafe.findById(cafeId).select('timezone tradingHours').lean();
+    const timezone = safeTimezone(cafe?.timezone);
 
     const dateMatch = buildDateMatch(req.query, timezone);
     const matchStage = {
       cafeId: cafeObjectId,
       status: 'approved',
-      ...(Object.keys(dateMatch).length > 0 && { date: dateMatch }),
+      date: dateMatch,
     };
 
-    // Get the date range for the dataset
-    const rangeResult = await Transaction.aggregate([
+    const presence = await Transaction.aggregate([
       { $match: matchStage },
-      {
-        $group: {
-          _id: null,
-          minDate: { $min: '$date' },
-          maxDate: { $max: '$date' },
-        },
-      },
+      { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
+      { $sort: { _id: 1 } },
     ]);
-
-    if (rangeResult.length === 0) {
+    if (presence.length === 0) {
+      // Keep the existing empty response (lines 338-351 at b1d532c) exactly, with `timezone` passed to analyticsRangeMeta:
       return res.status(200).json({
-        success: true,
-        items: [],
-        data: [],
-        risingItems: [],
-        decliningItems: [],
-        meta: {
-          ...analyticsRangeMeta(req.query, dateMatch, timezone),
-          risingItems: [],
-          decliningItems: [],
-        },
+        success: true, items: [], data: [], risingItems: [], decliningItems: [],
+        meta: { ...analyticsRangeMeta(req.query, dateMatch, timezone), risingItems: [], decliningItems: [] },
       });
     }
-
-    const { minDate, maxDate } = rangeResult[0];
-    const rangeStart = dateMatch.$gte || minDate;
-    const rangeEnd = dateMatch.$lte || maxDate;
-    const totalDays = inclusiveLocalDayCount(rangeStart, rangeEnd, timezone);
+    const firstDay = presence[0]._id;
+    const lastDay = presence[presence.length - 1]._id;
+    const openDays = openDaysBetween({
+      fromDate: firstDay,
+      toDate: lastDay,
+      tradingHours: getCafeTradingHours(cafe),
+      saleDays: new Set(presence.filter((day) => day.transactions > 0).map((day) => day._id)),
+    }).length;
+    const perDayDivisor = Math.max(openDays, 1);
 
     // Top 20 items overall
     const itemsPipeline = [
@@ -77,7 +73,7 @@ const getItems = async (req, res, next) => {
           name: '$_id',
           totalQty: 1,
           totalRevenue: { $round: ['$totalRevenue', 2] },
-          avgPerDay: { $round: [{ $divide: ['$totalQty', totalDays] }, 1] },
+          avgPerDay: { $round: [{ $divide: ['$totalQty', perDayDivisor] }, 1] },
         },
       },
     ];
@@ -85,9 +81,10 @@ const getItems = async (req, res, next) => {
     const items = await Transaction.aggregate(itemsPipeline);
 
     // Trend: latest 7 local trading days in the selected data vs previous 7 days.
-    const trendEnd = localDayBoundaryUtc(maxDate, timezone, 'end');
-    const currentStart = localDayBoundaryUtc(maxDate, timezone, 'start', -6);
-    const previousStart = localDayBoundaryUtc(maxDate, timezone, 'start', -13);
+    const trendEnd = zonedDayEnd(lastDay, timezone);
+    const currentStart = zonedDayStart(shiftDay(lastDay, -6), timezone);
+    const previousStart = zonedDayStart(shiftDay(lastDay, -13), timezone);
+
 
     const trendPipeline = [
       {
@@ -169,6 +166,7 @@ const getItems = async (req, res, next) => {
       data: itemsWithTrend,
       meta: {
         ...analyticsRangeMeta(req.query, dateMatch, timezone),
+        observedSpan: { startDate: firstDay, endDate: lastDay, openDays },
         risingItems,
         decliningItems,
       },

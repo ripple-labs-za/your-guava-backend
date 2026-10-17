@@ -1,3 +1,4 @@
+const { isSaleRow } = require('../analytics/semantics');
 // What the model reads: prompt text, the fenced-JSON helper, summary stats and the label helpers. Pure, no I/O.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const { zonedDateKey, zonedDayOfWeek, zonedDayStart, getZonedDateParts } = require('../../utils/timezone');
@@ -67,7 +68,7 @@ const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
 
     const dow = zonedDayOfWeek(tx.date, timezone);
     dayOfWeekRevenue[dow] = (dayOfWeekRevenue[dow] || 0) + (tx.total || 0);
-    dayOfWeekCount[dow] = (dayOfWeekCount[dow] || 0) + 1;
+    if (isSaleRow(tx)) dayOfWeekCount[dow] = (dayOfWeekCount[dow] || 0) + 1;
 
     for (const item of demandLines(tx.items)) {
       itemCounts[item.name] = (itemCounts[item.name] || 0) + item.quantity;
@@ -104,7 +105,7 @@ const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
   const avgDailyRevenue = revenues.length > 0 ? totalRevenue / revenues.length : 0;
 
   return {
-    totalTransactions: transactions.length,
+    totalTransactions: transactions.filter(isSaleRow).length,
     totalRevenue: parseFloat(totalRevenue.toFixed(2)),
     avgDailyRevenue: parseFloat(avgDailyRevenue.toFixed(2)),
     dailyRevenue,
