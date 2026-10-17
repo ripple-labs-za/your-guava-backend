@@ -112,8 +112,8 @@ router.use(requireActiveCafe);
 // touches disk. Deliberately NOT the AI limiter: a Yoco export or a cafe with a
 // saved mapping never calls Claude, so charging every upload against the AI
 // budget stopped an owner importing a backlog and blamed "AI requests" for it.
-// The AI mapper is bounded where it is actually used, by the daily-credit and
-// concurrency policy in aiUsage.service, and it costs credits.
+// The controller admits the AI mapper through admitAiRequest (the shared AI limiter),
+// and meterGuavaCredits reserves its credits before the provider call.
 // requireCreditSpend is deliberately absent: members without credit permission
 // must still upload preset formats (allowPaidAi=false falls back to a free mapping).
 router.post('/upload', uploadLimiter, handleMulterUpload, upload);

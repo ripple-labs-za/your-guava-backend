@@ -8,6 +8,98 @@ afterAll(teardown);
 afterEach(clearDB);
 
 describe('Insight Chats API', () => {
+  it('rate-limits every saved-chat write route', () => {
+    const router = require('../../src/routes/insightChats.routes');
+    const { chatWriteLimiter } = require('../../src/middleware/rateLimit.middleware');
+    const handlersFor = (method, path) => router.stack
+      .filter((layer) => layer.route && layer.route.path === path && layer.route.methods[method])
+      .flatMap((layer) => layer.route.stack.map((entry) => entry.handle));
+
+    expect(handlersFor('post', '/')).toContain(chatWriteLimiter);
+    expect(handlersFor('patch', '/:id')).toContain(chatWriteLimiter);
+    expect(handlersFor('delete', '/:id')).toContain(chatWriteLimiter);
+    expect(handlersFor('get', '/')).not.toContain(chatWriteLimiter);
+  });
+
+  it('keeps the saved-chat cap under parallel creates', async () => {
+    const InsightChat = require('../../src/models/InsightChat.model');
+    const { MAX_CHATS_PER_USER } = require('../../src/controllers/insightChats.controller');
+    const seed = await request
+      .post('/api/insight-chats')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'seed' });
+    const { userId, cafeId, orgId } = seed.body.chat;
+    await InsightChat.insertMany(
+      Array.from({ length: MAX_CHATS_PER_USER - 2 }, (_, index) => ({
+        userId, cafeId, orgId, title: `Filler ${index}`, messages: [],
+      }))
+    );
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, (_, index) => request
+        .post('/api/insight-chats')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ title: `Race ${index}` }))
+    );
+
+    const created = responses.filter((response) => response.status === 201);
+    // At the boundary a race may refuse every racer (each one that counts above the cap removes itself), but it
+    // must never let the user end above the cap, and every refusal is the named 409.
+    expect(created.length).toBeLessThanOrEqual(1);
+    expect(responses.every((response) => [201, 409].includes(response.status))).toBe(true);
+    expect(responses.filter((response) => response.status === 409)
+      .every((response) => response.body.details?.code === 'INSIGHT_CHAT_LIMIT_REACHED')).toBe(true);
+    const total = await InsightChat.countDocuments({ userId, cafeId });
+    expect(total).toBe(MAX_CHATS_PER_USER - 1 + created.length);
+    expect(total).toBeLessThanOrEqual(MAX_CHATS_PER_USER);
+
+    // Below the cap, a single create is never refused.
+    if (total === MAX_CHATS_PER_USER - 1) {
+      const single = await request
+        .post('/api/insight-chats')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ title: 'After the race' });
+      expect(single.status).toBe(201);
+    }
+  });
+
+  it('accepts only server-shaped contextStats', async () => {
+    const wrongType = await request
+      .post('/api/insight-chats')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'bad', contextStats: { transactionCount: 'lots' } });
+    expect(wrongType.status).toBe(400);
+    expect(wrongType.body.details?.code).toBe('INVALID_CONTEXT_STATS');
+
+    const oversized = await request
+      .post('/api/insight-chats')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'big', contextStats: { contextWindow: 'x'.repeat(5_000) } });
+    expect(oversized.status).toBe(400);
+
+    const created = await request
+      .post('/api/insight-chats')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: 'ok',
+        contextStats: {
+          transactionCount: 12, locations: 1, topItems: 4, forecasts: 3, menuItemIssues: 0,
+          contextWindow: 'Last 90 days.', injected: { $gt: 1 },
+        },
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.chat.contextStats).toEqual({
+      transactionCount: 12, locations: 1, topItems: 4, forecasts: 3, menuItemIssues: 0, contextWindow: 'Last 90 days.',
+    });
+
+    const badPatch = await request
+      .patch(`/api/insight-chats/${created.body.chat._id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ contextStats: { forecasts: -1 } });
+    expect(badPatch.status).toBe(400);
+    expect(badPatch.body.details?.code).toBe('INVALID_CONTEXT_STATS');
+  });
+
   let token;
 
   beforeEach(async () => {

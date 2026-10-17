@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const InsightChat = require('../models/InsightChat.model');
-const { getCachedInsights, refreshInsights, generateBusinessChatResponse, streamBusinessChatResponse } = require('../services/anthropic.service');
+const { prepareChatConversation, getCachedInsights, refreshInsights, generateBusinessChatResponse, streamBusinessChatResponse } = require('../services/anthropic.service');
 const { meterGuavaCredits } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
 
@@ -181,13 +181,8 @@ const chatInsights = async (req, res, next) => {
     const cafeId = activeCafeId(req);
     const orgId = req.user.orgId;
     const authorizedCafeIds = req.user.role === 'manager' ? req.user.cafeIds : undefined;
-    const { chatId, messages, question } = req.body;
-
-    const conversation = Array.isArray(messages)
-      ? messages
-      : question
-        ? [{ role: 'user', content: question }]
-        : [];
+    const { chatId } = req.body || {};
+    const conversation = await prepareChatConversation({ body: req.body, cafeId, orgId, authorizedCafeIds });
 
     if (!process.env.ANTHROPIC_API_KEY) {
       const result = await generateBusinessChatResponse({
@@ -287,13 +282,8 @@ const streamChatInsights = async (req, res, next) => {
     const cafeId = activeCafeId(req);
     const orgId = req.user.orgId;
     const authorizedCafeIds = req.user.role === 'manager' ? req.user.cafeIds : undefined;
-    const { chatId, messages, question } = req.body;
-
-    const conversation = Array.isArray(messages)
-      ? messages
-      : question
-        ? [{ role: 'user', content: question }]
-        : [];
+    const { chatId } = req.body || {};
+    const conversation = await prepareChatConversation({ body: req.body, cafeId, orgId, authorizedCafeIds });
 
     if (!process.env.ANTHROPIC_API_KEY) {
       openSse(res);

@@ -54,14 +54,18 @@ const insightDatasetIsTooThin = async (cafeId) => {
   return approved < MIN_INSIGHT_TRANSACTIONS;
 };
 
+const cafeAccessError = () => Object.assign(new Error('Cafe access is no longer available'), {
+  statusCode: 403,
+  code: 'CAFE_ACCESS_REVOKED',
+  details: { code: 'CAFE_ACCESS_REVOKED' },
+});
+
 const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   const scopedCafeIds = Array.isArray(authorizedCafeIds)
     ? [...new Set(authorizedCafeIds.map(String))]
     : null;
   if (scopedCafeIds && !scopedCafeIds.includes(String(cafeId))) {
-    const err = new Error('Cafe access is no longer available');
-    err.statusCode = 403;
-    throw err;
+    throw cafeAccessError();
   }
 
   const [activeCafe, organization] = await Promise.all([
@@ -70,9 +74,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   ]);
 
   if (!activeCafe) {
-    const err = new Error('Cafe access is no longer available');
-    err.statusCode = 403;
-    throw err;
+    throw cafeAccessError();
   }
 
   const cafes = orgId
@@ -377,5 +379,5 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
 };
 
 module.exports = {
-  MIN_INSIGHT_TRANSACTIONS, insightDatasetIsTooThin, buildBusinessContext,
+  cafeAccessError, MIN_INSIGHT_TRANSACTIONS, insightDatasetIsTooThin, buildBusinessContext,
 };

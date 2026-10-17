@@ -106,6 +106,14 @@ const proposeColumnMappingWithClaude = async (headers, sampleSummary) => {
   }, providerDiagnostics(message, startedAt, 'import_column_mapping'));
 };
 
+const mappingUnavailableReason = (err) => {
+  if (err.statusCode === 402) return 'insufficient_credits';
+  if (err.statusCode === 403) return 'permission_required';
+  if (err.code === 'AI_RATE_LIMITED') return 'rate_limited';
+  if (err.statusCode === 429) return 'usage_limit_reached';
+  return 'provider_unavailable';
+};
+
 const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
   if (usageContext.allowPaidAi === false) {
     return {
@@ -163,6 +171,7 @@ const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
 
   let result;
   try {
+    if (typeof usageContext.admitPaidCall === 'function') await usageContext.admitPaidCall();
     if (usageContext.orgId) {
       const metered = await meterGuavaCredits({
         orgId: usageContext.orgId,
@@ -200,10 +209,7 @@ const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
       itemsMode: 'packed',
       mappingAssistedByAi: false,
       aiCreditsCharged: 0,
-      aiUnavailableReason:
-        err.statusCode === 402 ? 'insufficient_credits' :
-          err.statusCode === 403 ? 'permission_required' :
-            'provider_unavailable',
+      aiUnavailableReason: mappingUnavailableReason(err),
     };
   }
 

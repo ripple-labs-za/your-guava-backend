@@ -103,7 +103,30 @@ const writeLimiter = rateLimit({
 // Paid AI calls are expensive and can hold provider connections open. Bound them
 // per organization and user independently of the broad IP-based global limiter.
 const AI_LIMIT = 20;
-const aiLimiter = rateLimit({
+const AI_RATE_LIMIT_MESSAGE = {
+  success: false,
+  code: 'AI_RATE_LIMITED',
+  message: 'Too many AI requests. Please wait a moment and try again.',
+};
+
+// A limiter normally answers 429 itself. Inside a handler whose AI step is optional (an upload whose column mapping
+// can fall back to the wizard) the refusal must come back as an error, so the handler can finish without AI.
+const softFailHandler = (req, res, next, options) => {
+  if (req.rateLimitSoftFail) {
+    res.removeHeader('Retry-After');
+    const code = options.message?.code || 'RATE_LIMITED';
+    return next(Object.assign(new Error(options.message?.message || 'Too many requests'), {
+      statusCode: options.statusCode,
+      code,
+      details: { code },
+    }));
+  }
+  return res.status(options.statusCode).json(options.message);
+};
+
+// Paid AI calls are expensive and can hold provider connections open. Bound them per organization and user
+// independently of the broad IP-based global limiter. One instance, so every AI entry point shares the budget.
+const createAiLimiter = (overrides = {}) => rateLimit({
   windowMs: 60 * 1000,
   limit: AI_LIMIT,
   standardHeaders: 'draft-7',
@@ -111,12 +134,41 @@ const aiLimiter = rateLimit({
   skip: limitsOff,
   keyGenerator: (req) => `${req.user?.orgId || 'unknown'}:${req.user?.id || req.ip}`,
   validate: { keyGeneratorIpFallback: false },
+  message: AI_RATE_LIMIT_MESSAGE,
+  handler: softFailHandler,
+  ...overrides,
+});
+const aiLimiter = createAiLimiter();
+
+/** Runs a limiter from inside a handler: resolves when admitted, rejects with a 429 error, never writes the response. */
+const admitThroughLimiter = (limiter) => (req, res) => new Promise((resolve, reject) => {
+  req.rateLimitSoftFail = true;
+  limiter(req, res, (error) => {
+    req.rateLimitSoftFail = false;
+    if (error) reject(error);
+    else resolve();
+  });
+});
+const admitAiRequest = admitThroughLimiter(aiLimiter);
+
+// Saved-chat writes: generous for a person, a hard stop for a retry loop writing 80 x 20,000-character chats.
+const CHAT_WRITE_LIMIT = 60;
+const createChatWriteLimiter = (overrides = {}) => rateLimit({
+  windowMs: 60 * 1000,
+  limit: CHAT_WRITE_LIMIT,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: limitsOff,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  validate: { keyGeneratorIpFallback: false },
   message: {
     success: false,
-    code: 'AI_RATE_LIMITED',
-    message: 'Too many AI requests. Please wait a moment and try again.',
+    code: 'CHAT_RATE_LIMITED',
+    message: 'Saved chats are being changed too quickly. Wait a minute, then try again.',
   },
+  ...overrides,
 });
+const chatWriteLimiter = createChatWriteLimiter();
 
 // Uploads need their own budget. Most uploads never touch the AI mapper -- a Yoco
 // export is matched by preset and a returning cafe reuses its saved mapping -- so
@@ -162,6 +214,7 @@ const parseLimiter = rateLimit({
 // other without reaching into express-rate-limit internals.
 const getLimiterOptions = (name) => {
   if (name === 'login') return { limit: AUTH_LIMITS.login.limit, windowMs: AUTH_LIMITS.login.windowMs };
+  if (name === 'chatWrite') return { limit: CHAT_WRITE_LIMIT, windowMs: 60 * 1000 };
   if (name === 'ai') return { limit: AI_LIMIT, windowMs: 60 * 1000 };
   if (name === 'upload') return { limit: UPLOAD_LIMIT, windowMs: 60 * 1000 };
   if (name === 'parse') return { limit: PARSE_LIMIT, windowMs: 60 * 1000 };
@@ -169,6 +222,7 @@ const getLimiterOptions = (name) => {
 };
 
 module.exports = {
+  createAiLimiter, admitThroughLimiter, admitAiRequest, createChatWriteLimiter, chatWriteLimiter,
   aiLimiter,
   uploadLimiter,
   parseLimiter,

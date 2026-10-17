@@ -1,6 +1,53 @@
 const InsightChat = require('../models/InsightChat.model');
 const { activeCafeId } = require('../utils/tenancy');
 
+const CONTEXT_STAT_COUNTS = ['transactionCount', 'locations', 'topItems', 'forecasts', 'menuItemIssues'];
+const MAX_CONTEXT_STAT_COUNT = 1_000_000_000;
+const MAX_CONTEXT_WINDOW_CHARS = 1000;
+
+const contextStatsError = () => Object.assign(
+  new Error('contextStats must hold whole-number counts and a context window description of at most 1000 characters'),
+  { statusCode: 400, code: 'INVALID_CONTEXT_STATS', details: { code: 'INVALID_CONTEXT_STATS' } }
+);
+
+/** The server-shaped contextStats, undefined when none was sent; anything else is a 400. Unknown keys are dropped. */
+const validatedContextStats = (value) => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw contextStatsError();
+  const clean = {};
+  for (const key of CONTEXT_STAT_COUNTS) {
+    if (value[key] === undefined) continue;
+    if (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > MAX_CONTEXT_STAT_COUNT) throw contextStatsError();
+    clean[key] = value[key];
+  }
+  if (value.contextWindow !== undefined) {
+    if (typeof value.contextWindow !== 'string' || value.contextWindow.length > MAX_CONTEXT_WINDOW_CHARS) {
+      throw contextStatsError();
+    }
+    clean.contextWindow = value.contextWindow;
+  }
+  return clean;
+};
+
+// Count-then-insert let parallel creates at 99 all insert. Insert first, then count: a create that finds the user
+// above the cap removes its own chat and is refused. Every chat that survives counted after its own insert, and so
+// saw every chat inserted before it, so the total can never end above the cap. Under a race exactly at the cap
+// more than one racer may be refused (each counts the others); a single create below the cap is never refused.
+// (Ranking by _id is not enough: ObjectId order is creation order, not insert order, so two racers can both rank
+// themselves 100th.)
+const enforceChatCap = async (req, chat) => {
+  const total = await InsightChat.countDocuments({ userId: req.user.id, cafeId: activeCafeId(req) });
+  if (total <= MAX_CHATS_PER_USER) return true;
+  await InsightChat.deleteOne({ _id: chat._id });
+  return false;
+};
+
+const chatLimitResponse = (res) => res.status(409).json({
+  success: false,
+  message: `You have reached the limit of ${MAX_CHATS_PER_USER} saved chats for this location. Delete a chat to start a new one.`,
+  details: { code: 'INSIGHT_CHAT_LIMIT_REACHED', limit: MAX_CHATS_PER_USER },
+});
+
 const MAX_MESSAGES = 80;
 // One chat can legitimately hold 80 messages of 20000 characters. Nothing here
 // is rate limited per user, and the portal calls createLocalChat on failure
@@ -127,13 +174,7 @@ const create = async (req, res, next) => {
       userId: req.user.id,
       cafeId: activeCafeId(req),
     });
-    if (existingChats >= MAX_CHATS_PER_USER) {
-      return res.status(409).json({
-        success: false,
-        message: `You have reached the limit of ${MAX_CHATS_PER_USER} saved chats for this location. Delete a chat to start a new one.`,
-        details: { code: 'INSIGHT_CHAT_LIMIT_REACHED', limit: MAX_CHATS_PER_USER },
-      });
-    }
+    if (existingChats >= MAX_CHATS_PER_USER) return chatLimitResponse(res);
 
     const messages = sanitizeMessages(req.body.messages);
     const chat = await InsightChat.create({
@@ -142,10 +183,11 @@ const create = async (req, res, next) => {
       orgId: req.user.orgId,
       title: buildTitle(req.body.title, messages),
       messages,
-      contextStats: req.body.contextStats || {},
+      contextStats: validatedContextStats(req.body.contextStats) || {},
       archived: Boolean(req.body.archived),
     });
 
+    if (!(await enforceChatCap(req, chat))) return chatLimitResponse(res);
     return res.status(201).json({ success: true, chat });
   } catch (error) {
     next(error);
@@ -174,9 +216,8 @@ const update = async (req, res, next) => {
     if (Array.isArray(req.body.messages)) {
       updates.messages = await preserveServerRequestKeys(req, sanitizeMessages(req.body.messages));
     }
-    if (req.body.contextStats && typeof req.body.contextStats === 'object') {
-      updates.contextStats = req.body.contextStats;
-    }
+    const contextStats = validatedContextStats(req.body.contextStats);
+    if (contextStats) updates.contextStats = contextStats;
     if (typeof req.body.archived === 'boolean') updates.archived = req.body.archived;
 
     if (Object.keys(updates).length === 0) {

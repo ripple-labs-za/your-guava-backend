@@ -6,7 +6,47 @@ const {
   modelId, fencedJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
 } = require('./prompts');
 const { providerDiagnostics } = require('./json');
-const { buildBusinessContext } = require('./context');
+const Cafe = require('../../models/Cafe.model');
+const { buildBusinessContext, cafeAccessError } = require('./context');
+
+const chatInputError = (message) => Object.assign(new Error(message), {
+  statusCode: 400,
+  code: 'AI_CHAT_INVALID_INPUT',
+  details: { code: 'AI_CHAT_INVALID_INPUT' },
+});
+
+
+const assertCafeInScope = async ({ cafeId, orgId, authorizedCafeIds }) => {
+  if (Array.isArray(authorizedCafeIds) && !authorizedCafeIds.map(String).includes(String(cafeId))) {
+    throw cafeAccessError();
+  }
+  const exists = await Cafe.exists({ _id: cafeId, ...(orgId ? { orgId } : {}) });
+  if (!exists) throw cafeAccessError();
+};
+
+const conversationFromBody = ({ messages, question } = {}) => {
+  if (messages !== undefined && !Array.isArray(messages)) {
+    throw chatInputError('messages must be an array of { role, content } objects');
+  }
+  if (Array.isArray(messages)) return messages;
+  if (question === undefined) return [];
+  if (typeof question !== 'string') throw chatInputError('question must be a string');
+  return [{ role: 'user', content: question }];
+};
+
+/**
+ * Everything that can refuse a chat request without calling the provider, run before any credit is reserved or any
+ * SSE header is sent, so the caller gets a JSON 400/403 instead of an HTTP 200 carrying an SSE error.
+ */
+const prepareChatConversation = async ({ body, cafeId, orgId, authorizedCafeIds }) => {
+  const conversation = conversationFromBody(body || {});
+  const { messages } = sanitizeMessages(conversation);
+  if (messages.length === 0 || messages[0].role !== 'user' || messages[messages.length - 1].role !== 'user') {
+    throw chatInputError('A chat request needs at least one question, and must end on it');
+  }
+  await assertCafeInScope({ cafeId, orgId, authorizedCafeIds });
+  return conversation;
+};
 
 const MAX_CHAT_HISTORY_MESSAGES = 10;
 const MAX_CHAT_MESSAGE_CHARS = 4000;
@@ -175,5 +215,5 @@ const generateBusinessChatResponse = async ({
 };
 
 module.exports = {
-  sanitizeMessages, buildBusinessChatRequest, generateBusinessChatResponse,
+  prepareChatConversation, assertCafeInScope, sanitizeMessages, buildBusinessChatRequest, generateBusinessChatResponse,
 };

@@ -1,3 +1,4 @@
+const { admitAiRequest } = require('../middleware/rateLimit.middleware');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -145,6 +146,7 @@ const upload = async (req, res, next) => {
     let savedMapping = { status: 'none', missingColumns: [] };
     let mappingAssistedByAi = false;
     let mappingCreditsUsed = 0;
+    let mappingAiUnavailableReason = null;
     const cafe = await Cafe.findById(cafeId).lean();
     const yoco = ingestion.yocoMapping();
     if (ingestion.isYocoFormat(headers) && hasRequiredHeaderMapping(yoco.mapping, headers, yoco.itemsMode)) {
@@ -173,11 +175,13 @@ const upload = async (req, res, next) => {
           cafeId,
           userId,
           allowPaidAi: canSpendCredits(req.user),
+          admitPaidCall: () => admitAiRequest(req, res),
         });
         columnMapping = cleanColumnMapping(proposal.mapping, headers);
         itemsMode = proposal.itemsMode;
         mappingAssistedByAi = Object.keys(columnMapping).length > 0;
         mappingCreditsUsed = Number(proposal.aiCreditsCharged) || 0;
+        mappingAiUnavailableReason = proposal.aiUnavailableReason || null;
       }
     }
 
@@ -227,6 +231,7 @@ const upload = async (req, res, next) => {
       savedMapping,
       mappingAssistedByAi,
       mappingCreditsUsed,
+      mappingAiUnavailableReason,
     });
   } catch (error) {
     await cleanupLocalFile(filePath);
