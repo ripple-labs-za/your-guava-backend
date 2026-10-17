@@ -43,7 +43,7 @@ const getItems = async (req, res, next) => {
         risingItems: [],
         decliningItems: [],
         meta: {
-          ...analyticsRangeMeta(req.query, dateMatch),
+          ...analyticsRangeMeta(req.query, dateMatch, timezone),
           risingItems: [],
           decliningItems: [],
         },
@@ -168,7 +168,7 @@ const getItems = async (req, res, next) => {
       items: itemsWithTrend,
       data: itemsWithTrend,
       meta: {
-        ...analyticsRangeMeta(req.query, dateMatch),
+        ...analyticsRangeMeta(req.query, dateMatch, timezone),
         risingItems,
         decliningItems,
       },

@@ -132,7 +132,7 @@ const getHeatmap = async (req, res, next) => {
       heatmap,
       data: heatmap,
       meta: {
-        ...analyticsRangeMeta(req.query, dateMatch),
+        ...analyticsRangeMeta(req.query, dateMatch, timezone),
         metric: 'average_per_observed_weekday',
         timeOfDay: { transactionsWithTime, transactionsWithoutTime },
       },

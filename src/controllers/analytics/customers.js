@@ -91,7 +91,7 @@ const getCustomers = async (req, res, next) => {
         success: true,
         insights: emptyInsights,
         data: emptyInsights,
-        meta: analyticsRangeMeta(req.query, dateMatch),
+        meta: analyticsRangeMeta(req.query, dateMatch, timezone),
       });
     }
 
@@ -137,7 +137,7 @@ const getCustomers = async (req, res, next) => {
       success: true,
       insights,
       data: insights,
-      meta: analyticsRangeMeta(req.query, dateMatch),
+      meta: analyticsRangeMeta(req.query, dateMatch, timezone),
     });
   } catch (error) {
     next(error);

@@ -1,8 +1,10 @@
 // Date ranges for analytics: local day boundaries and the range meta, over utils/timezone (BE-11-T05).
 // safeTimezone and getCafeTimezone are re-exported for the handlers; their one definition is utils/timezone.js.
 const {
-  DATE_ONLY_RE, safeTimezone, getCafeTimezone, zonedDayStart, zonedDayEnd, addZonedDays, zonedDayOrdinal,
+  DATE_ONLY_RE, zonedDateKey, safeTimezone, getCafeTimezone, zonedDayStart, zonedDayEnd, addZonedDays, zonedDayOrdinal,
 } = require('../../utils/timezone');
+
+const { daysInclusive } = require('../../services/analytics/windows');
 
 const DEFAULT_ANALYTICS_RANGE_DAYS = 30;
 const MAX_ANALYTICS_RANGE_DAYS = 1830;
@@ -61,15 +63,24 @@ const buildDateMatch = (query, timezone) => {
   return { $gte: startDate, $lte: endDate };
 };
 
-const analyticsRangeMeta = (query, dateMatch) => ({
-  startDate: query.startDate || null,
-  endDate: query.endDate || null,
-  effectiveStartDate: dateMatch.$gte.toISOString(),
-  effectiveEndDate: dateMatch.$lte.toISOString(),
-  defaultWindowDays: DEFAULT_ANALYTICS_RANGE_DAYS,
-  defaultedStartDate: !query.startDate,
-  defaultedEndDate: !query.endDate,
-});
+const analyticsRangeMeta = (query, dateMatch, timezone) => {
+  const effectiveStartDay = zonedDateKey(dateMatch.$gte, timezone);
+  const effectiveEndDay = zonedDateKey(dateMatch.$lte, timezone);
+  return {
+    startDate: query.startDate || null,
+    endDate: query.endDate || null,
+    effectiveStartDate: dateMatch.$gte.toISOString(),
+    effectiveEndDate: dateMatch.$lte.toISOString(),
+    effectiveStartDay,
+    effectiveEndDay,
+    effectiveDays: daysInclusive(effectiveStartDay, effectiveEndDay),
+    timezone,
+    defaultWindowDays: DEFAULT_ANALYTICS_RANGE_DAYS,
+    defaultedStartDate: !query.startDate,
+    defaultedEndDate: !query.endDate,
+  };
+};
+
 
 const dateToString = (format, timezone) => ({
   $dateToString: {

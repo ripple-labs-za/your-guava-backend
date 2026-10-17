@@ -1,9 +1,10 @@
 // GET /analytics/revenue.
 // Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
 const mongoose = require('mongoose');
+const { revenueTrend } = require('../../services/analytics/trend');
 const Transaction = require('../../models/Transaction.model');
 const {
-  getCafeTimezone, buildDateMatch, dateToString, inclusiveLocalDayCount, localDayBoundaryUtc, analyticsRangeMeta,
+  getCafeTimezone, buildDateMatch, dateToString, analyticsRangeMeta,
 } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
 
@@ -73,34 +74,12 @@ const getRevenue = async (req, res, next) => {
       worstDay = data.reduce((worst, d) => (d.revenue < worst.revenue ? d : worst), data[0]);
     }
 
-    // Calculate trend: compare current period total vs previous period of same length
-    const rangeDays = inclusiveLocalDayCount(startDate, endDate, timezone);
-    const prevStartDate = localDayBoundaryUtc(startDate, timezone, 'start', -rangeDays);
-    const prevEndDate = new Date(startDate.getTime() - 1);
-
-    const prevPipeline = [
-      {
-        $match: {
-          cafeId: cafeObjectId,
-          status: 'approved',
-          date: { $gte: prevStartDate, $lte: prevEndDate },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          revenue: { $sum: '$total' },
-        },
-      },
-    ];
-
-    const prevData = await Transaction.aggregate(prevPipeline);
-    const prevRevenue = prevData.length > 0 ? prevData[0].revenue : 0;
-
-    let trend = 0;
-    if (prevRevenue > 0) {
-      trend = parseFloat((((totalRevenue - prevRevenue) / prevRevenue) * 100).toFixed(1));
-    }
+    const { trend, reason: trendReason, effectiveWindow, comparisonWindow } = await revenueTrend({
+      cafeObjectId,
+      startDate,
+      endDate,
+      timezone,
+    });
 
     const summary = {
       totalRevenue: parseFloat(totalRevenue.toFixed(2)),
@@ -115,9 +94,12 @@ const getRevenue = async (req, res, next) => {
       data,
       summary,
       meta: {
-        ...analyticsRangeMeta(req.query, dateMatch),
+        ...analyticsRangeMeta(req.query, dateMatch, timezone),
         summary,
         period,
+        effectiveWindow,
+        comparisonWindow,
+        trendReason,
       },
     });
   } catch (error) {

@@ -83,7 +83,7 @@ const getCombos = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       data: combos,
-      meta: analyticsRangeMeta(req.query, dateMatch),
+      meta: analyticsRangeMeta(req.query, dateMatch, timezone),
     });
   } catch (error) {
     // If $sortArray is not available (older MongoDB), fall back to JS-side pair generation
@@ -147,7 +147,7 @@ const getCombos = async (req, res, next) => {
         return res.status(200).json({
           success: true,
           data: combos,
-          meta: analyticsRangeMeta(req.query, dateMatch),
+          meta: analyticsRangeMeta(req.query, dateMatch, timezone),
         });
       } catch (fallbackError) {
         next(fallbackError);
