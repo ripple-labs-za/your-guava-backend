@@ -47,13 +47,6 @@ const invalidatePlanningForecasts = async (cafeId, { from, timezone, session } =
   return { deletedCount, inputsVersion: cafe.forecastInputsVersion };
 };
 
-/**
- * Resolves whether the cafe trades on the target day and by how much.
- *
- * `source` records where a closure came from -- 'schedule' for the trading
- * hours in Settings, 'event' for a closure or partial-closure event in Factors
- * -- because the remedy the operator is shown has to match the cause.
- */
 const MIN_HOURLY_PROFILE_UNITS = 50;
 const overlapMinutes = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 
@@ -83,6 +76,13 @@ const mergeIntervals = (intervals) => {
   return merged;
 };
 
+/**
+ * Resolves whether the cafe trades on the target day and by how much.
+ *
+ * `source` records where a closure came from -- 'schedule' for the trading
+ * hours in Settings, 'event' for a closure or partial-closure event in Factors
+ * -- because the remedy the operator is shown has to match the cause.
+ */
 const getTradingAvailability = (cafe, events, dayOfWeek, { hasSalesHistory = false, hourlyProfile = null } = {}) => {
   const schedule = resolveDaySchedule(cafe, dayOfWeek, { hasSalesHistory });
   if (!schedule?.isOpen) {

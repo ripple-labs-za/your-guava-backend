@@ -150,7 +150,6 @@ describe('staleness', () => {
   });
 });
 
-
 describe('bounded review regressions for trading defaults', () => {
   it('requires all seven distinct weekdays before treating hours as saved', () => {
     const { hasSavedTradingHours, getCafeTradingHours, defaultTradingHours, resolveDaySchedule } = require('../../src/utils/tradingHours');
@@ -216,5 +215,12 @@ describe('stored weather under current historical rules', () => {
 
   it('uses the stored daytime high when it is present', async () => {
     expect(await baselineWithWeather({ available: true, temp: 12, maxTemp: 19, condition: 'Cloudy', isRain: false })).toBeCloseTo(100, 5);
+  });
+  it.each([
+    ['published rain chance', { chanceOfRain: 80, isRain: false }, 111.11],
+    ['below the rain chance threshold', { chanceOfRain: 69, isRain: true }, 100],
+    ['wording with no measurements', { condition: 'Rain', isRain: true }, 100],
+  ])('reinterprets historical %s without an amount', async (_label, stored, expected) => {
+    expect(await baselineWithWeather({ available: true, temp: 20, condition: 'Cloudy', ...stored })).toBe(expected);
   });
 });

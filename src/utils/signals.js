@@ -424,7 +424,6 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
   return { available: true, stage: stageDuring(area, windowStart, windowEnd), source: 'esp_schedule' };
 };
 
-
 const clearLoadSheddingCache = () => {
   loadSheddingCache = { status: null, fetchedAt: null };
   pendingStatusRequest = null;
