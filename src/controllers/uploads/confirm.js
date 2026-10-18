@@ -77,13 +77,14 @@ const confirm = async (req, res, next) => {
     }
 
     const previousUploadState = snapshotUploadState(upload);
-    const timezone = await getCafeTimezone(cafeId);
     upload = await lockUploadForParsing(upload, cafeId);
     let expectedUpdatedAt = upload.updatedAt;
     let parsed;
     let result;
+    let timezone;
 
     try {
+      timezone = await getCafeTimezone(cafeId);
       const buffer = await r2.downloadFile(upload.r2Key);
       if (!Buffer.isBuffer(buffer)) {
         const err = new Error('Original upload file is unavailable');

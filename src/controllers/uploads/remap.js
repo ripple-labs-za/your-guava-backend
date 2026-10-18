@@ -62,15 +62,16 @@ const remap = async (req, res, next) => {
     }
 
     const previousUploadState = snapshotUploadState(upload);
-    const timezone = await getCafeTimezone(cafeId);
     upload = await lockUploadForParsing(upload, cafeId);
     let expectedUpdatedAt = upload.updatedAt;
     let parsed;
     let result;
     let plan = { prepared: [], deferred: [], range: null };
     let readmitted = { applied: [], stale: [] };
+    let timezone;
 
     try {
+      timezone = await getCafeTimezone(cafeId);
       // 1. Parse first (read-only — can fail without any side effects)
       const buffer = await r2.downloadFile(upload.r2Key);
       if (!Buffer.isBuffer(buffer)) {

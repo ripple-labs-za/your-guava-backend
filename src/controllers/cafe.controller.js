@@ -1,4 +1,5 @@
 const Transaction = require('../models/Transaction.model');
+const Upload = require('../models/Upload.model');
 const Cafe = require('../models/Cafe.model');
 const User = require('../models/User.model');
 const { invalidatePlanningForecasts } = require('../services/forecast.service');
@@ -9,6 +10,10 @@ const { activeCafeId } = require('../utils/tenancy');
 const { pickColumnMapping } = require('../services/parser.service');
 
 const FORECAST_INPUT_PREFIXES = ['location.lat', 'location.lng', 'location.city', 'tradingHours', 'timezone'];
+
+const timezoneLocked = async (cafeId) => Boolean(
+  await Transaction.exists({ cafeId }) || await Upload.exists({ cafeId, status: 'parsing' })
+);
 
 const affectsForecastInputs = (setUpdates = {}, unsetUpdates = {}) =>
   [...Object.keys(setUpdates), ...Object.keys(unsetUpdates)].some((key) =>
@@ -96,7 +101,7 @@ const getMe = async (req, res, next) => {
     if (!tradingHoursSaved) {
       cafe.tradingHours = defaultTradingHours();
     }
-    const timezoneEditable = !(await Transaction.exists({ cafeId: cafe._id }));
+    const timezoneEditable = !(await timezoneLocked(cafe._id));
     return res.status(200).json({ success: true, cafe: { ...cafeDto(cafe), timezoneEditable, tradingHoursSaved } });
   } catch (error) {
     next(error);
@@ -168,11 +173,25 @@ const updateMe = async (req, res, next) => {
       if (!current) return res.status(404).json({ success: false, message: 'Cafe not found' });
       if (safeTimezone(current.timezone) !== timezone) {
         // D-024: imported sales were read in the current zone; changing it would move them between days.
-        if (await Transaction.exists({ cafeId: current._id })) {
+        if (await timezoneLocked(current._id)) {
           return res.status(409).json({
             success: false,
             code: 'TIMEZONE_LOCKED',
             message: 'The timezone can only be changed before the first sales are imported, because imported sales keep the times they were read with. Contact support to change it now.',
+          });
+        }
+        // Node and Mongo can ship different timezone databases. Probe the same
+        // expression analytics uses before saving a zone Mongo cannot read.
+        try {
+          await Cafe.aggregate([
+            { $match: { _id: current._id } },
+            { $project: { day: { $dateToString: { date: new Date(), timezone, format: '%Y-%m-%d' } } } },
+          ]);
+        } catch (error) {
+          if (error.code !== 40485) throw error;
+          return res.status(400).json({
+            success: false, code: 'INVALID_TIMEZONE',
+            message: 'This timezone is not available yet. Choose another timezone or contact support.',
           });
         }
         setUpdates.timezone = timezone;

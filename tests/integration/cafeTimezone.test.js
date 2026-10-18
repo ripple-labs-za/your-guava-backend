@@ -51,6 +51,21 @@ describe('cafe timezone', () => {
     }
   });
 
+  it.each(['Asia/Kolkata', 'Europe/Kyiv'])('can save the current IANA name %s in both runtimes', async (timezone) => {
+    const res = await putCafe({ timezone });
+    expect(res.status).toBe(200);
+    expect(res.body.cafe.timezone).toBe(timezone);
+  });
+
+  it('refuses a zone unsupported by Mongo without saving other fields', async () => {
+    const res = await putCafe({ timezone: 'America/Coyhaique', name: 'Must not save' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_TIMEZONE');
+    const me = await request.get('/api/cafe/me').set(auth());
+    expect(me.body.cafe.name).toBe('Test Cafe');
+    expect(me.body.cafe.timezone).toBe('Africa/Johannesburg');
+  });
+
   it('buckets sales and windows in the cafe timezone once it is set', async () => {
     await putCafe({ timezone: 'America/New_York' });
     // 23:30 on 15 Jan in New York is 06:30 on 16 Jan in Johannesburg.

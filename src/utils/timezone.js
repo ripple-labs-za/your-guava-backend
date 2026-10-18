@@ -3,11 +3,21 @@
 
 let supportedZones = null;
 
-// Canonical IANA names only, compared exactly. Intl accepts aliases and odd casing, but the portal offers canonical names
-// and a stored alias would never match the picker again.
+// ICU's canonical list can lag IANA renames. Accept these current names as well,
+// only when this runtime can actually use them, while keeping exact casing.
+const IANA_RENAMES = ['Asia/Kolkata', 'Europe/Kyiv', 'Asia/Ho_Chi_Minh', 'Asia/Kathmandu',
+  'America/Argentina/Buenos_Aires', 'America/Nuuk'];
 const isSupportedTimezone = (value) => {
   if (typeof value !== 'string' || value.length === 0 || value.length > 64) return false;
-  if (!supportedZones) supportedZones = new Set([...Intl.supportedValuesOf('timeZone'), 'UTC']);
+  if (!supportedZones) {
+    supportedZones = new Set([...Intl.supportedValuesOf('timeZone'), 'UTC']);
+    for (const zone of IANA_RENAMES) {
+      try {
+        new Intl.DateTimeFormat('en', { timeZone: zone }).format(0);
+        supportedZones.add(zone);
+      } catch { /* A newer IANA name must still be supported by this runtime. */ }
+    }
+  }
   return supportedZones.has(value);
 };
 
