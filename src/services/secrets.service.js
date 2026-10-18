@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const logger = require('../utils/logger');
 
 const ENC_V1 = 'enc:v1:';
 const ENC_V2 = 'enc:v2:';
@@ -66,12 +67,13 @@ const encryptSecret = (value) => {
   const { key, kid } = currentKey();
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_LENGTH });
+  cipher.setAAD(Buffer.from(`v2:${kid}`));
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${ENC_V2}${kid}:${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
 };
 
-const open = (key, ivPart, tagPart, dataPart) => {
+const open = (key, ivPart, tagPart, dataPart, aad) => {
   const decode = (part) => {
     if (!/^[A-Za-z0-9_-]+$/.test(part)) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
     const bytes = Buffer.from(part, 'base64url');
@@ -87,6 +89,7 @@ const open = (key, ivPart, tagPart, dataPart) => {
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv, {
     authTagLength: TAG_LENGTH,
   });
+  if (aad) decipher.setAAD(Buffer.from(aad));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 };
@@ -98,6 +101,9 @@ const open = (key, ivPart, tagPart, dataPart) => {
 const decryptSecretWithStatus = (value) => {
   if (value == null || value === '') return { value, needsReencrypt: false, reason: null };
   const stored = String(value);
+  if (/^enc:/i.test(stored.trim()) && !stored.startsWith(ENC_V2) && !stored.startsWith(ENC_V1)) {
+    throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+  }
 
   if (stored.startsWith(ENC_V2)) {
     const parts = stored.slice(ENC_V2.length).split(':');
@@ -114,7 +120,7 @@ const decryptSecretWithStatus = (value) => {
         'SECRET_KEY_UNAVAILABLE'
       );
     }
-    const plaintext = open(match.key, ivPart, tagPart, dataPart);
+    const plaintext = open(match.key, ivPart, tagPart, dataPart, `v2:${kid}`);
     const isCurrent = match === ring[0];
     return { value: plaintext, needsReencrypt: !isCurrent, reason: isCurrent ? null : 'previous-key' };
   }
@@ -147,7 +153,13 @@ const decryptSecret = (value) => decryptSecretWithStatus(value).value;
 const readAndUpgradeSecret = async ({ model, filter, path, stored }) => {
   const { value, needsReencrypt } = decryptSecretWithStatus(stored);
   if (needsReencrypt && value) {
-    await model.updateOne({ ...filter, [path]: stored }, { $set: { [path]: encryptSecret(value) } });
+    const upgraded = encryptSecret(value);
+    try {
+      await model.updateOne({ ...filter, [path]: stored }, { $set: { [path]: upgraded } });
+    } catch (error) {
+      // Re-sealing is best effort: a readable token must survive a transient write failure.
+      logger.warn('secret_upgrade_failed', { code: error?.code || 'SECRET_UPGRADE_WRITE_FAILED' });
+    }
   }
   return value;
 };

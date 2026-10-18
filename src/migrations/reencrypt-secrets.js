@@ -9,6 +9,12 @@ const { decryptSecretWithStatus, encryptSecret, decryptSecret } = require('../se
  *
  * Key rotation, in order: set TOKEN_ENCRYPTION_KEY_PREVIOUS to the old key and TOKEN_ENCRYPTION_KEY to the
  * new one, deploy, run this with --apply, confirm a second dry run reports 0, then remove the previous key.
+ * Do not run --apply until rollback below BE-09-T03 is ruled out: that older code cannot read v2
+ * envelopes, and rolling back requires reconnecting the integrations (ISSUES #78 / GATE-03).
+ * Development only: a JWT-fallback source of 64 hex or 43-44 base64 characters is always scrypted,
+ * whereas TOKEN_ENCRYPTION_KEY_PREVIOUS treats it as a raw key. It cannot be copied into previous;
+ * reconnect those development integrations when switching to an explicit encryption key.
+ * Interim pre-release v2 envelopes without authenticated key ids must also be recreated; v1 remains readable.
  *
  *   node src/migrations/reencrypt-secrets.js           # dry run: counts only, changes nothing
  *   node src/migrations/reencrypt-secrets.js --apply   # write the upgrades
