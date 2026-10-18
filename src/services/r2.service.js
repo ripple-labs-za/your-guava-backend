@@ -73,15 +73,26 @@ const localPathForKey = (key) => {
   return target;
 };
 
-const signLocalUrl = (key, expires) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET must be set to sign local download URLs');
+const MIN_DOWNLOAD_SECRET_LENGTH = 32;
+
+/**
+ * Local download links get their own key. Signing them with the session secret meant anyone able to
+ * mint one could mint the other, and rotating either forced rotating both (WS-07-T08).
+ */
+const downloadSigningSecret = () => {
+  const secret = process.env.DOWNLOAD_SIGNING_SECRET || '';
+  const reused = [process.env.JWT_SECRET, process.env.JWT_REFRESH_SECRET, process.env.TOKEN_ENCRYPTION_KEY]
+    .filter(Boolean)
+    .includes(secret);
+  if (secret.length < MIN_DOWNLOAD_SECRET_LENGTH || reused) {
+    throw storageError('Local download links are not configured', 503, 'DOWNLOAD_SIGNING_NOT_CONFIGURED');
   }
-  return crypto
-    .createHmac('sha256', process.env.JWT_SECRET)
-    .update(`${key}.${expires}`)
-    .digest('hex');
+  return secret;
 };
+
+const signLocalUrl = (key, expires) =>
+  crypto.createHmac('sha256', downloadSigningSecret()).update(`${key}.${expires}`).digest('hex');
+
 
 const getClient = () => {
   if (client) return client;

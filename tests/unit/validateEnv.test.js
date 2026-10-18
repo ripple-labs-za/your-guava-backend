@@ -22,7 +22,7 @@ const KEYS = [
   'PAYSTACK_CURRENCY',
   'API_PUBLIC_URL',
   'BILLING_MOCK_ENABLED',
-  'TOKEN_ENCRYPTION_KEY',
+  'TOKEN_ENCRYPTION_KEY', 'TOKEN_ENCRYPTION_KEY_PREVIOUS', 'DOWNLOAD_SIGNING_SECRET',
   'YOCO_INTEGRATION_ENABLED',
   'YOCO_CLIENT_ID',
   'YOCO_CLIENT_SECRET',
@@ -171,6 +171,7 @@ describe('validateEnv', () => {
   beforeEach(() => {
     env = snapshotEnv();
     for (const key of KEYS) delete process.env[key];
+    process.env.DOWNLOAD_SIGNING_SECRET = 'test-download-signing-secret-0123456789';
   });
 
   afterEach(() => {

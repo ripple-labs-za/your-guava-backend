@@ -133,6 +133,27 @@ const validateEnv = () => {
   }
 
   if (isHardenedEnvironment()) errors.push(...aiModelProblems());
+  const r2Configured = REQUIRED_R2_ENV.every((name) => Boolean(process.env[name]));
+  if (!r2Configured) {
+    const downloadSecret = process.env.DOWNLOAD_SIGNING_SECRET || '';
+    if (!downloadSecret) {
+      errors.push('DOWNLOAD_SIGNING_SECRET is required when uploads are stored locally (R2 is not configured)');
+    } else if (downloadSecret.length < 32) {
+      errors.push('DOWNLOAD_SIGNING_SECRET must be at least 32 characters');
+    } else if ([process.env.JWT_SECRET, process.env.JWT_REFRESH_SECRET, process.env.TOKEN_ENCRYPTION_KEY].includes(downloadSecret)) {
+      errors.push('DOWNLOAD_SIGNING_SECRET must be independent from the JWT and token-encryption secrets');
+    }
+  }
+
+  const previousTokenKey = process.env.TOKEN_ENCRYPTION_KEY_PREVIOUS;
+  if (previousTokenKey) {
+    if (previousTokenKey === process.env.TOKEN_ENCRYPTION_KEY) {
+      errors.push('TOKEN_ENCRYPTION_KEY_PREVIOUS must differ from TOKEN_ENCRYPTION_KEY');
+    } else if (isProduction && previousTokenKey.length < 32) {
+      errors.push('TOKEN_ENCRYPTION_KEY_PREVIOUS must be at least 32 characters in production');
+    }
+  }
+
   if (isProduction) {
     if ((process.env.JWT_SECRET || '').length < 32) {
       errors.push('JWT_SECRET must be at least 32 characters in production');

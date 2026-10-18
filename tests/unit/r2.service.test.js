@@ -14,6 +14,7 @@ describe('r2 storage safety', () => {
 
   beforeEach(() => {
     process.env.NODE_ENV = 'test';
+    process.env.DOWNLOAD_SIGNING_SECRET = 'test-download-signing-secret-0123456789';
     process.env.JWT_SECRET = 'test-local-signing-secret-with-enough-entropy';
     process.env.API_PUBLIC_URL = 'http://localhost:5000';
     delete process.env.UPLOAD_MAX_BYTES;
@@ -52,7 +53,7 @@ describe('r2 storage safety', () => {
   it('rejects an expired link with 410', () => {
     const key = 'cafe/upload.csv';
     const expires = String(Date.now() - 1000);
-    const sig = crypto.createHmac('sha256', process.env.JWT_SECRET)
+    const sig = crypto.createHmac('sha256', process.env.DOWNLOAD_SIGNING_SECRET)
       .update(`${key}.${expires}`)
       .digest('hex');
 
@@ -63,7 +64,7 @@ describe('r2 storage safety', () => {
   it('rejects traversal even when the traversal value has a valid signature', () => {
     const key = '../outside.csv';
     const expires = String(Date.now() + 60_000);
-    const sig = crypto.createHmac('sha256', process.env.JWT_SECRET)
+    const sig = crypto.createHmac('sha256', process.env.DOWNLOAD_SIGNING_SECRET)
       .update(`${key}.${expires}`)
       .digest('hex');
 
@@ -112,4 +113,25 @@ describe('r2 storage safety', () => {
     const dotted = await disposition('sales.from-the-september-till');
     expect(dotted).toBe(`attachment; filename="sales.from-the-september-till"; filename*=UTF-8''sales.from-the-september-till`);
   });
+it('verifies local links with DOWNLOAD_SIGNING_SECRET and refuses one signed with the session secret', () => {
+  const key = 'cafe/upload.csv';
+  const expires = String(Date.now() + 60_000);
+  const sign = (secret) => crypto.createHmac('sha256', secret).update(`${key}.${expires}`).digest('hex');
+
+  expect(() => r2.getLocalDownloadPath(key, expires, sign(process.env.JWT_SECRET)))
+    .toThrow(expect.objectContaining({ statusCode: 403, code: 'INVALID_DOWNLOAD_SIGNATURE' }));
+  expect(r2.getLocalDownloadPath(key, expires, sign(process.env.DOWNLOAD_SIGNING_SECRET)))
+    .toBe(path.resolve(process.cwd(), 'uploads', 'r2', 'cafe', 'upload.csv'));
+});
+
+it('refuses to sign local links without an independent DOWNLOAD_SIGNING_SECRET', async () => {
+  delete process.env.DOWNLOAD_SIGNING_SECRET;
+  await expect(r2.getSignedDownloadUrl('cafe/upload.csv', 60))
+    .rejects.toMatchObject({ statusCode: 503, code: 'DOWNLOAD_SIGNING_NOT_CONFIGURED' });
+
+  process.env.DOWNLOAD_SIGNING_SECRET = process.env.JWT_SECRET;
+  await expect(r2.getSignedDownloadUrl('cafe/upload.csv', 60))
+    .rejects.toMatchObject({ code: 'DOWNLOAD_SIGNING_NOT_CONFIGURED' });
+});
+
 });
