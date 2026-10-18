@@ -35,7 +35,7 @@ const leaveRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
+      enum: ['pending', 'approved', 'rejected', 'cancelled'],
       default: 'pending',
     },
     approvedBy: {
@@ -45,8 +45,13 @@ const leaveRequestSchema = new mongoose.Schema(
     approvedAt: {
       type: Date,
     },
+    cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    cancelledAt: { type: Date },
+    cancelReason: { type: String, trim: true, maxlength: 500 },
   },
   { timestamps: true }
 );
+
+leaveRequestSchema.index({ cafeId: 1, staffId: 1, status: 1, startDate: 1 });
 
 module.exports = mongoose.model('LeaveRequest', leaveRequestSchema);

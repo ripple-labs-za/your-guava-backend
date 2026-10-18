@@ -1,6 +1,5 @@
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, createTestManager, app } = require('../setup');
-const LeaveBalance = require('../../src/models/LeaveBalance.model');
 
 const request = supertest(app);
 
@@ -176,8 +175,11 @@ describe('Leave API', () => {
       ]);
       expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
 
-      const balance = await LeaveBalance.findOne({ staffId }).lean();
-      expect(balance.annual.used).toBe(5);
+      const balances = await request
+        .get('/api/leave/balances')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .query({ onDate: '2026-04-06' });
+      expect(balances.body.balances[0].annual.used).toBe(5);
     });
   });
 

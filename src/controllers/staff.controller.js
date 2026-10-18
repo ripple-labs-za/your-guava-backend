@@ -3,6 +3,8 @@ const Staff = require('../models/Staff.model');
 const LeaveBalance = require('../models/LeaveBalance.model');
 const { parseDateOnly } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
+const { balanceViews } = require('../services/workforce/leaveCycles');
+const { cafeToday } = require('../services/workforce/cafeCalendar');
 
 // Pay is owner-only information. Managers get the roster without hourlyRate.
 const staffDto = (staff, user) => {
@@ -62,23 +64,10 @@ const list = async (req, res, next) => {
 
     const staff = await Staff.find({ cafeId, isActive: true }).sort({ name: 1 }).lean();
 
-    // Attach leave balances
-    const staffIds = staff.map((s) => s._id);
-    const balances = await LeaveBalance.find({ staffId: { $in: staffIds } }).lean();
-    const balanceMap = {};
-    for (const b of balances) {
-      balanceMap[b.staffId.toString()] = b;
-    }
-
-    const staffWithBalances = staff.map((s) =>
-      staffDto(
-        {
-          ...s,
-          leaveBalance: balanceMap[s._id.toString()] || null,
-        },
-        req.user
-      )
-    );
+    // Attach each person's balance in their current leave cycle.
+    const balances = await LeaveBalance.find({ cafeId, staffId: { $in: staff.map((member) => member._id) } }).lean();
+    const views = await balanceViews({ cafeId, staff, balances, onDate: await cafeToday(cafeId) });
+    const staffWithBalances = staff.map((member, index) => staffDto({ ...member, leaveBalance: views[index] }, req.user));
 
     return res.status(200).json({ success: true, staff: staffWithBalances });
   } catch (error) {
@@ -98,7 +87,12 @@ const getOne = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Staff member not found' });
     }
 
-    const leaveBalance = await LeaveBalance.findOne({ staffId: staff._id }).lean();
+    const [leaveBalance] = await balanceViews({
+      cafeId,
+      staff: [staff],
+      balances: await LeaveBalance.find({ staffId: staff._id, cafeId }).lean(),
+      onDate: await cafeToday(cafeId),
+    });
 
     return res
       .status(200)

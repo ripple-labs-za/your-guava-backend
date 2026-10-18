@@ -84,6 +84,8 @@ const RBAC_TABLE = [
   ['GET', '/api/leave/balances', 'member', 'read'],
   ['PUT', '/api/leave/:id/approve', 'owner', 'workforce administration'],
   ['PUT', '/api/leave/:id/reject', 'owner', 'workforce administration'],
+  ['PUT', '/api/leave/:id/cancel', 'owner', 'workforce administration'],
+  ['PUT', '/api/leave/balances/:staffId', 'owner', 'workforce administration'],
   ['GET', '/api/uploads/local-download', 'public', 'signed URL'],
   ['GET', '/api/uploads', 'member', 'read'],
   ['GET', '/api/uploads/:id/rows', 'member', 'read'],
