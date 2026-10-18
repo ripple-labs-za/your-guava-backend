@@ -33,6 +33,16 @@ const staffSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // The days of the week this person normally works: 0 Sunday … 6 Saturday.
+    // Leave is charged only on these days (BE-08-T03, D-014).
+    workDays: {
+      type: [{ type: Number, min: 0, max: 6 }],
+      default: () => [1, 2, 3, 4, 5],
+      validate: {
+        validator: (days) => Array.isArray(days) && days.length > 0 && days.every(Number.isInteger),
+        message: 'workDays must list at least one day from 0 (Sunday) to 6 (Saturday)',
+      },
+    },
     isActive: {
       type: Boolean,
       default: true,

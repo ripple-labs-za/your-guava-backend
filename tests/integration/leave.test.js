@@ -44,7 +44,7 @@ describe('Leave API', () => {
       expect(res.body.leaveRequest).toBeDefined();
       expect(res.body.leaveRequest.type).toBe('annual');
       expect(res.body.leaveRequest.status).toBe('pending');
-      expect(res.body.leaveRequest.days).toBe(5); // Mon-Fri = 5 weekdays
+      expect(res.body.leaveRequest.days).toBe(4); // Mon-Fri, less Family Day (6 April 2026)
     });
 
     it('returns 400 when required fields are missing', async () => {
@@ -179,7 +179,7 @@ describe('Leave API', () => {
         .get('/api/leave/balances')
         .set('Authorization', `Bearer ${ownerToken}`)
         .query({ onDate: '2026-04-06' });
-      expect(balances.body.balances[0].annual.used).toBe(5);
+      expect(balances.body.balances[0].annual.used).toBe(4);
     });
   });
 

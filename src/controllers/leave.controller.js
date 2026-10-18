@@ -13,25 +13,12 @@ const {
   ADJUSTMENTS_KEPT, isCycleType, cycleWindow, cycleTotal, usedDaysInCycle, lockLeaveBalance,
   assertWithinCycle, insufficientBalance, balanceViews, adjustmentView,
 } = require('../services/workforce/leaveCycles');
+const { leaveDayBreakdown, describeWorkPattern } = require('../services/workforce/workingDays');
+const { findOverlappingLeave, leaveOverlapError } = require('../services/workforce/leaveOverlap');
 
 const MAX_LEAVE_SPAN_DAYS = 366;
 const MAX_CALENDAR_SPAN_DAYS = 93;
 const LEAVE_TYPES = new Set(['annual', 'sick', 'family', 'unpaid']);
-
-/**
- * Count weekdays between two dates (inclusive).
- */
-function countWeekdays(start, end) {
-  const totalDays = inclusiveDateOnlyDays(start, end);
-  const completeWeeks = Math.floor(totalDays / 7);
-  let count = completeWeeks * 5;
-  const remainingDays = totalDays % 7;
-  for (let index = 0; index < remainingDays; index++) {
-    const day = (start.getUTCDay() + index) % 7;
-    if (day !== 0 && day !== 6) count++;
-  }
-  return count;
-}
 
 // POST /api/leave — Submit leave request
 const create = async (req, res, next) => {
@@ -62,15 +49,23 @@ const create = async (req, res, next) => {
       return res.status(400).json({ success: false, message: `Leave periods cannot exceed ${MAX_LEAVE_SPAN_DAYS} days` });
     }
 
-    const staffMember = await Staff.findOne({ _id: staffId, cafeId }).select('name startDate').lean();
+    const staffMember = await Staff.findOne({ _id: staffId, cafeId }).select('name startDate workDays').lean();
     if (!staffMember) {
       return res.status(404).json({ success: false, code: 'STAFF_NOT_FOUND', message: 'Staff member not found' });
     }
 
-    const days = countWeekdays(start, end); // BE-08-T03 replaces this with the working pattern
+    const { days } = leaveDayBreakdown(start, end, staffMember.workDays);
     if (days === 0) {
-      return res.status(400).json({ success: false, message: 'Leave period must include at least one weekday' });
+      throw new WorkforceError(
+        400,
+        'LEAVE_NO_WORKING_DAYS',
+        `${formatDateOnly(start)} to ${formatDateOnly(end)} has none of ${staffMember.name}'s working days ` +
+          `(${describeWorkPattern(staffMember.workDays)}) outside public holidays, so there is nothing to record.`
+      );
     }
+
+    const overlap = await findOverlappingLeave({ cafeId, staffId, start, end });
+    if (overlap) throw leaveOverlapError(overlap, staffMember.name);
 
     if (type !== 'unpaid') {
       const balance = await LeaveBalance.findOne({ staffId, cafeId }).lean();
@@ -137,6 +132,16 @@ const approve = async (req, res, next) => {
       }
       const balance = await lockLeaveBalance({ staffId: leaveRequest.staffId, cafeId, session });
       if (!balance) throw new WorkforceError(404, 'LEAVE_BALANCE_NOT_FOUND', 'Leave balance not found');
+      const clash = await findOverlappingLeave({
+        cafeId,
+        staffId: leaveRequest.staffId,
+        start: leaveRequest.startDate,
+        end: leaveRequest.endDate,
+        statuses: ['approved'],
+        excludeId: leaveRequest._id,
+        session,
+      });
+      if (clash) throw leaveOverlapError(clash, 'This staff member');
 
       if (leaveRequest.type !== 'unpaid') {
         const staff = await Staff.findOne({ _id: leaveRequest.staffId, cafeId }).select('name startDate').session(session).lean();
@@ -219,71 +224,55 @@ const reject = async (req, res, next) => {
   }
 };
 
-// GET /api/leave/calendar — Approved leave for calendar view
+// GET /api/leave/calendar — who is away on each day: every day of the person's
+// working pattern inside approved leave, weekends and public holidays included.
 const getCalendar = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    let { startDate, endDate } = req.query;
-
-    if (!startDate || !endDate) {
-      // Default to current month
-      const now = new Date();
-      startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+    let range;
+    if (!req.query.startDate || !req.query.endDate) {
+      const today = await cafeToday(cafeId);
+      range = {
+        start: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)),
+        end: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0)),
+      };
     } else {
-      startDate = parseDateOnly(startDate);
-      endDate = parseDateOnly(endDate);
-      if (!startDate || !endDate || endDate < startDate) {
-        return res.status(400).json({
-          success: false,
-          message: 'startDate and endDate must be a valid YYYY-MM-DD range',
-        });
+      const start = parseDateOnly(String(req.query.startDate));
+      const end = parseDateOnly(String(req.query.endDate));
+      if (!start || !end || end < start) {
+        return res.status(400).json({ success: false, message: 'startDate and endDate must be a valid YYYY-MM-DD range' });
       }
+      range = { start, end };
     }
-    if (inclusiveDateOnlyDays(startDate, endDate) > MAX_CALENDAR_SPAN_DAYS) {
-      return res.status(400).json({
-        success: false,
-        message: `Calendar ranges cannot exceed ${MAX_CALENDAR_SPAN_DAYS} days`,
-      });
+    if (inclusiveDateOnlyDays(range.start, range.end) > MAX_CALENDAR_SPAN_DAYS) {
+      return res.status(400).json({ success: false, message: `Calendar ranges cannot exceed ${MAX_CALENDAR_SPAN_DAYS} days` });
     }
-    endDate.setUTCHours(23, 59, 59, 999);
 
     const leaveRequests = await LeaveRequest.find({
       cafeId,
       status: 'approved',
-      startDate: { $lte: endDate },
-      endDate: { $gte: startDate },
+      startDate: { $lte: range.end },
+      endDate: { $gte: range.start },
     })
-      .populate('staffId', 'name')
+      .populate('staffId', 'name workDays')
+      .sort({ startDate: 1 })
       .lean();
 
-    // Build a map of date -> staff on leave
-    const calendar = {};
-    for (const lr of leaveRequests) {
-      const current = new Date(Math.max(lr.startDate.getTime(), startDate.getTime()));
-      const end = new Date(Math.min(lr.endDate.getTime(), endDate.getTime()));
-      current.setUTCHours(0, 0, 0, 0);
-      end.setUTCHours(0, 0, 0, 0);
-
-      while (current <= end) {
-        const day = current.getUTCDay();
-        if (day !== 0 && day !== 6) {
-          const key = formatDateOnly(current);
-          if (!calendar[key]) {
-            calendar[key] = { date: key, staff: [] };
-          }
-          calendar[key].staff.push({
-            name: lr.staffId ? lr.staffId.name : 'Unknown',
-            type: lr.type,
-          });
-        }
-        current.setUTCDate(current.getUTCDate() + 1);
+    const byDate = leaveRequests.reduce((days, lr) => {
+      const from = new Date(Math.max(lr.startDate.getTime(), range.start.getTime()));
+      const to = new Date(Math.min(lr.endDate.getTime(), range.end.getTime()));
+      const { chargedDates, holidayDates } = leaveDayBreakdown(from, to, lr.staffId?.workDays);
+      const entry = { name: lr.staffId ? lr.staffId.name : 'Unknown', type: lr.type };
+      for (const key of [...chargedDates, ...holidayDates.map((holiday) => holiday.date)]) {
+        days.set(key, { date: key, staff: [...(days.get(key)?.staff || []), entry] });
       }
-    }
+      return days;
+    }, new Map());
 
-    return res.status(200).json({ success: true, calendar: Object.values(calendar) });
+    const calendar = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return res.status(200).json({ success: true, calendar });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 

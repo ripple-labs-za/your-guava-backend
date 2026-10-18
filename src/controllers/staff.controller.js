@@ -5,6 +5,8 @@ const { parseDateOnly } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const { balanceViews } = require('../services/workforce/leaveCycles');
 const { cafeToday } = require('../services/workforce/cafeCalendar');
+const { parseWorkDays } = require('../services/workforce/input');
+const { sendWorkforceError } = require('../services/workforce/errors');
 
 // Pay is owner-only information. Managers get the roster without hourlyRate.
 const staffDto = (staff, user) => {
@@ -34,6 +36,7 @@ const create = async (req, res, next) => {
     if (startDate && !parsedStartDate) {
       return res.status(400).json({ success: false, message: 'startDate must use YYYY-MM-DD' });
     }
+    const workDays = parseWorkDays(req.body.workDays);
 
     let staff;
     await session.withTransaction(async () => {
@@ -45,13 +48,15 @@ const create = async (req, res, next) => {
         role,
         hourlyRate: parsedRate,
         startDate: parsedStartDate,
+        ...(workDays ? { workDays } : {}),
       }], { session });
       await LeaveBalance.create([{ staffId: staff._id, cafeId }], { session });
     });
 
     return res.status(201).json({ success: true, staff });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   } finally {
     await session.endSession();
   }
@@ -117,6 +122,7 @@ const update = async (req, res, next) => {
     if (hourlyRate !== undefined && (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 10000)) {
       return res.status(400).json({ success: false, message: 'hourlyRate must be between 0 and 10000' });
     }
+    const workDays = parseWorkDays(req.body.workDays);
 
     const staff = await Staff.findOneAndUpdate(
       { _id: id, cafeId },
@@ -129,6 +135,7 @@ const update = async (req, res, next) => {
           ...(hourlyRate !== undefined && { hourlyRate: parsedRate }),
           ...(startDate !== undefined && { startDate: parsedStartDate }),
           ...(isActive !== undefined && { isActive }),
+          ...(workDays !== undefined && { workDays }),
         },
       },
       { new: true, runValidators: true }
@@ -140,7 +147,8 @@ const update = async (req, res, next) => {
 
     return res.status(200).json({ success: true, staff });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 

@@ -38,4 +38,24 @@ const dateOnlyInput = (value, field) => {
   return date;
 };
 
-module.exports = { WORKFORCE_TEXT_LIMITS, invalid, objectIdString, requiredText, optionalText, dateOnlyInput };
+// 1 to 7 whole numbers from 0 (Sunday) to 6 (Saturday); stored unique and ascending.
+const parseWorkDays = (value, field = 'workDays') => {
+  if (value === undefined) return undefined;
+  const valid =
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= 7 &&
+    value.every((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+  if (!valid) throw invalid(field, 'workDays must list the days worked as numbers from 0 (Sunday) to 6 (Saturday)');
+  return [...new Set(value)].sort((a, b) => a - b);
+};
+
+module.exports = {
+  WORKFORCE_TEXT_LIMITS,
+  invalid,
+  objectIdString,
+  requiredText,
+  optionalText,
+  dateOnlyInput,
+  parseWorkDays,
+};
