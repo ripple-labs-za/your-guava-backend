@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
 const { getCafeTradingHours } = require('../../utils/tradingHours');
+const { rankMovers, itemTrend } = require('../../services/analytics/movers');
 const { saleCount } = require('../../services/analytics/semantics');
 const { openDaysBetween, shiftDay } = require('../../services/analytics/windows');
 const Transaction = require('../../models/Transaction.model');
@@ -38,7 +39,7 @@ const getItems = async (req, res, next) => {
       // Keep the existing empty response (lines 338-351 at b1d532c) exactly, with `timezone` passed to analyticsRangeMeta:
       return res.status(200).json({
         success: true, items: [], data: [], risingItems: [], decliningItems: [],
-        meta: { ...analyticsRangeMeta(req.query, dateMatch, timezone), risingItems: [], decliningItems: [] },
+        meta: { ...analyticsRangeMeta(req.query, dateMatch, timezone), risingItems: [], decliningItems: [], newItems: [], moverFloor: rankMovers(new Map()).moverFloor },
       });
     }
     const firstDay = presence[0]._id;
@@ -123,42 +124,11 @@ const getItems = async (req, res, next) => {
       trendMap.get(name)[period] = entry.totalQty;
     }
 
-    // Attach trend to items
     const itemsWithTrend = items.map((item) => {
-      const t = trendMap.get(item.name);
-      let trend = 0;
-      if (t && t.previous > 0) {
-        trend = parseFloat((((t.current - t.previous) / t.previous) * 100).toFixed(1));
-      } else if (t && t.current > 0 && t.previous === 0) {
-        trend = 100;
-      }
-      return { ...item, trend };
+      const qty = trendMap.get(item.name) || { current: 0, previous: 0 };
+      return { ...item, trend: itemTrend(qty), isNew: qty.previous === 0 && qty.current > 0 };
     });
-
-    // Build full trend list for rising/declining (not limited to top 20)
-    const allItemTrends = [...trendMap.entries()]
-      .map(([name, t]) => {
-        let trend = 0;
-        if (t.previous > 0) {
-          trend = parseFloat((((t.current - t.previous) / t.previous) * 100).toFixed(1));
-        } else if (t.current > 0 && t.previous === 0) {
-          trend = 100;
-        }
-        return { name, trend, currentQty: t.current, previousQty: t.previous };
-      })
-      .filter((i) => i.currentQty > 0 || i.previousQty > 0);
-
-    const risingItems = [...allItemTrends]
-      .filter((item) => item.trend > 0)
-      .sort((a, b) => b.trend - a.trend)
-      .slice(0, 5)
-      .map(({ name, trend }) => ({ name, trend }));
-
-    const decliningItems = [...allItemTrends]
-      .filter((item) => item.trend < 0)
-      .sort((a, b) => a.trend - b.trend)
-      .slice(0, 5)
-      .map(({ name, trend }) => ({ name, trend }));
+    const { risingItems, decliningItems, newItems, moverFloor } = rankMovers(trendMap);
 
     return res.status(200).json({
       success: true,
@@ -169,6 +139,8 @@ const getItems = async (req, res, next) => {
         observedSpan: { startDate: firstDay, endDate: lastDay, openDays },
         risingItems,
         decliningItems,
+        newItems,
+        moverFloor,
       },
     });
   } catch (error) {
