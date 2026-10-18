@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mockAnthropicMessageCreate = jest.fn();
 
 jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
@@ -325,7 +326,7 @@ describe('insight refresh lease, replay and window', () => {
     const intervals = jest.spyOn(global, 'setInterval');
     const cleared = jest.spyOn(global, 'clearInterval');
     if (fails) {
-      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest.spyOn(logger, 'error').mockImplementation(() => {});
       mockAnthropicMessageCreate.mockRejectedValue(overloaded());
     } else mockAnthropicMessageCreate.mockResolvedValue(insightsReply(['Completed.']));
     const response = await refresh(owner, `heartbeat-${fails}`);
@@ -374,7 +375,7 @@ describe('insight refresh lease, replay and window', () => {
 
   it('lets a waiting refresh run once the holder fails, instead of reporting a false 409', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const owner = await createTestUser();
     await UsageLedger.init();
     await seedRecentSales(owner.user.activeCafeId);

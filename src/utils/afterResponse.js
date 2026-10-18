@@ -1,3 +1,4 @@
+const logger = require('./logger');
 /**
  * Work that must not decide how long a response takes (identity-4): the handler answers first and the task runs on a later
  * turn of the event loop. Failures are logged, never thrown into the request. Tests and graceful shutdown await
@@ -9,7 +10,7 @@ const runAfterResponse = (label, task) => {
   const promise = new Promise((resolve) => setImmediate(resolve))
     .then(task)
     .catch((error) => {
-      console.error(`[after-response] ${label} failed:`, error?.message || String(error));
+      logger.error('after_response_failed', { label, ...logger.errorFields(error) });
     })
     .finally(() => pending.delete(promise));
   pending.add(promise);

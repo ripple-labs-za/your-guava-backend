@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const { isHardenedEnvironment } = require('../config/posture');
 
 // A code the product wrote for the client to branch on (SEVERE_PARTIAL_IMPORT, LEGACY_XLS, ...). err.code alone is
@@ -29,9 +30,7 @@ const errorMiddleware = (err, req, res, next) => {
   }
 
   if (statusCode >= 500) {
-    console.error(JSON.stringify({
-      level: 'error',
-      event: 'request_error',
+    logger.error('request_error', {
       requestId,
       method: req.method,
       path: req.path,
@@ -43,8 +42,9 @@ const errorMiddleware = (err, req, res, next) => {
       ...(err.upstreamMessage
         ? { upstreamMessage: String(err.upstreamMessage).slice(0, 200) }
         : {}),
+      ...(err.logContext ? { context: err.logContext } : {}),
       stack: err.stack,
-    }));
+    });
   }
 
   // A 5xx message is redacted in production because it is usually a stack-level

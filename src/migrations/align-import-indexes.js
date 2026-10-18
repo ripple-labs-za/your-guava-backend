@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 
 /**
@@ -79,7 +80,7 @@ if (require.main === module) {
     const apply = process.argv.includes('--apply');
     await mongoose.connect(process.env.MONGODB_URI);
     const result = await module.exports.up({ dryRun: !apply });
-    console.log(`${apply ? 'APPLIED' : 'DRY RUN - nothing changed'}: ${result.dropped.join(', ') || 'no legacy indexes'}`);
+    logger.printLine(`${apply ? 'APPLIED' : 'DRY RUN - nothing changed'}: ${result.dropped.join(', ') || 'no legacy indexes'}`);
     await mongoose.disconnect();
-  })().catch((error) => { console.error(error); process.exit(1); });
+  })().catch((error) => { logger.fatal('migration_cli_failed', logger.errorFields(error, { stack: true })); process.exit(1); });
 }

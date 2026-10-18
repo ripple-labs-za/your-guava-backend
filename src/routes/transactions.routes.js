@@ -100,7 +100,14 @@ const handleMulterUpload = (req, res, next) => {
         ? `File exceeds ${uploadMaxBytes()} bytes`
         : err.message || 'File upload failed';
 
-    return res.status(statusCode).json({ success: false, message });
+    if (statusCode < 500) return res.status(statusCode).json({ success: false, message });
+    const storageError = new Error(
+      'We could not save this file on our server, so nothing was imported. Please try again in a few minutes.'
+    );
+    storageError.statusCode = 500;
+    storageError.exposeMessage = true;
+    storageError.logContext = { stage: 'upload_storage', code: err.code, syscall: err.syscall, cause: String(err.message || err) };
+    return next(storageError);
   });
 };
 

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth.middleware');
@@ -114,14 +115,14 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
 router.post('/webhook', async (req, res) => {
   const verification = verifyWebhookSignature(req);
   if (!verification.valid) {
-    console.warn(`[yoco webhook] Rejected: ${verification.reason}`);
+    logger.warn('yoco_webhook_rejected', { reason: verification.reason });
     return res.status(401).json({ received: false, message: 'Invalid webhook signature' });
   }
 
   // Respond quickly to Yoco (must respond within 15s), then process asynchronously
   res.status(200).json({ received: true });
   processWebhookEvent(req.body).catch((err) => {
-    console.error('[yoco webhook] Processing error:', err.message);
+    logger.error('yoco_webhook_failed', logger.errorFields(err));
   });
 });
 

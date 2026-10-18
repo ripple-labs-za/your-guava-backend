@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // GET /uploads/:id and its rows.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const Upload = require('../../models/Upload.model');
@@ -32,7 +33,7 @@ const detail = async (req, res, next) => {
     )) {
       setImmediate(() => {
         claimAndRunPostImportMaintenance(upload).catch((error) => {
-          console.error('[uploads] request-triggered maintenance recovery failed:', error.message);
+          logger.error('upload_maintenance_recovery_failed', { trigger: 'request', ...logger.errorFields(error) });
         });
       });
     }

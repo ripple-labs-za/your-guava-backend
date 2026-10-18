@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Reconciliation: provider-response parsing, session claims and leases, failures, and the pending-payment sweeper.
 // Moved from billingPayments.service.js by BE-11-T04; successful settlement evicts only the paying organisation.
 const { clearApiCache } = require('../../middleware/cache.middleware');
@@ -95,7 +96,7 @@ const observedFields = (transaction) => ({
 });
 
 const holdForAttention = async (paymentSession, transaction, reason) => {
-  console.error(`[billing] payment ${paymentSession.reference} (org ${paymentSession.orgId}) needs manual attention: ${reason}`);
+  logger.error('payment_needs_attention', { sessionId: String(paymentSession._id), reference: paymentSession.reference, orgId: String(paymentSession.orgId), reason });
   const held = await PaymentSession.findOneAndUpdate(
     { _id: paymentSession._id, status: 'processing', processingStartedAt: paymentSession.processingStartedAt },
     {
@@ -153,10 +154,7 @@ const reconcilePaidSession = async (paymentSession) => {
     await session.endSession();
   }
   if (!reversed) return PaymentSession.findById(paymentSession._id);
-  console.error(
-    `[billing] payment ${reversed.reference} (org ${reversed.orgId}, ${reversed.kind}) was reversed by the provider;`,
-    reversed.kind === 'credits' ? 'unspent pack credits were withdrawn' : 'the plan period was left in place for manual review'
-  );
+  logger.error('payment_reversed', { sessionId: String(reversed._id), reference: reversed.reference, orgId: String(reversed.orgId), kind: reversed.kind });
   return reversed;
 };
 
@@ -234,11 +232,7 @@ const recordFulfillmentFailure = async (paymentSession, transaction, error) => {
     );
   }
 
-  console.error(
-    `[billing] captured payment ${failed.reference} could not be fulfilled after`,
-    `${failed.fulfillmentFailures} attempts and needs manual attention:`,
-    reason
-  );
+  logger.error('payment_needs_attention', { sessionId: String(failed._id), reference: failed.reference, attempts: failed.fulfillmentFailures, reason });
   return PaymentSession.findOneAndUpdate(
     {
       _id: failed._id,
@@ -348,7 +342,7 @@ const reconcilePayment = async (reference, webhookPayload = null, options = {}) 
 
       if (result.planChanged) {
         invalidateFutureForecastsForOrg(paymentSession.orgId).catch((error) => {
-          console.error('[billing] forecast invalidation failed:', error.message);
+          logger.error('forecast_invalidation_failed', { orgId: String(paymentSession.orgId), ...logger.errorFields(error) });
         });
       }
       // Only the transition to paid evicts; callback replays return before this branch.
@@ -473,7 +467,7 @@ const reconcilePendingPayments = async ({
   })
     .sort({ updatedAt: 1, _id: 1 })
     .limit(boundedLimit)
-    .select('reference')
+    .select('reference provider orgId status')
     .lean();
 
   const summary = { scanned: sessions.length, paid: 0, pending: 0, failed: 0, errors: 0 };
@@ -490,7 +484,14 @@ const reconcilePendingPayments = async ({
         else summary.pending += 1;
       } catch (error) {
         if (error.statusCode === 202) summary.pending += 1;
-        else summary.errors += 1;
+        else {
+          summary.errors += 1;
+          logger.error('payment_reconcile_failed', {
+            sessionId: String(candidate._id), reference: candidate.reference, provider: candidate.provider,
+            orgId: candidate.orgId ? String(candidate.orgId) : undefined, status: candidate.status,
+            ...logger.errorFields(error),
+          });
+        }
       }
     }
   };

@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const crypto = require('crypto');
 const axios = require('axios');
 const supertest = require('supertest');
@@ -110,7 +111,7 @@ describe('Paystack in-flight statuses (billing-1)', () => {
     const owner = await createTestUser();
     const session = await creditSession(owner, 'webhook-retry');
     jest.spyOn(axios, 'get').mockRejectedValue(Object.assign(new Error('socket hang up'), { response: { status: 500, data: {} } }));
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const { raw, signature } = signed({ event: 'charge.success', data: { reference: session.reference } });
 
     const res = await request
@@ -131,7 +132,7 @@ describe('captures that do not match the session (billing-2)', () => {
     verifyReturns(verifyResponse('success', {
       reference: session.reference, amountRand: 1, requestedRand: 99, id: 5150004,
     }));
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     expect((await reconcileOneGatePayment(session.reference)).status).toBe('needs_attention');
     expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(0);
   });
@@ -205,14 +206,14 @@ describe('captures that do not match the session (billing-2)', () => {
     const owner = await createTestUser();
     const session = await creditSession(owner, 'mismatched-capture');
     const lookup = verifyReturns(verifyResponse('success', { reference: session.reference, amountRand: 120, id: 7000003 }));
-    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorLog = jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const held = await reconcileOneGatePayment(session.reference);
 
     expect(held.status).toBe('needs_attention');
     expect(held.providerReason).toMatch(/did not match/i);
     expect(held.providerReason).toMatch(/120\.00/);
-    expect(errorLog.mock.calls.flat().join(' ')).toMatch(/mismatched-capture/);
+    expect(errorLog).toHaveBeenCalledWith('payment_needs_attention', expect.objectContaining({ reference: 'mismatched-capture' }));
     expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(0);
 
     await age(session._id, { createdAt: new Date(Date.now() - 25 * HOUR) });
@@ -262,7 +263,7 @@ describe('captures that do not match the session (billing-2)', () => {
       await PaymentSession.init();
       const owner = await createTestUser();
       const sessions = await Promise.all(['race-a', 'race-b', 'race-c'].map((ref) => creditSession(owner, ref)));
-      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest.spyOn(logger, 'error').mockImplementation(() => {});
       jest.spyOn(axios, 'get').mockImplementation(async (url) => {
         const reference = decodeURIComponent(String(url).split('/').pop());
         await new Promise((resolve) => setTimeout(resolve, 5));
@@ -335,7 +336,7 @@ describe('captures that do not match the session (billing-2)', () => {
       const reference = decodeURIComponent(String(url).split('/').pop());
       return { data: verifyResponse('success', { reference, amountRand: 99, id: 998877 }) };
     });
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const settled = await reconcileOneGatePayment(first.reference);
     const duplicate = await reconcileOneGatePayment(second.reference);
@@ -381,7 +382,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
       const owner = await createTestUser();
       const session = await creditSession(owner, 'retry-reversal-write');
       await settle(session, 9100003);
-      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest.spyOn(logger, 'error').mockImplementation(() => {});
       jest.spyOn(Organization, 'updateOne').mockRejectedValueOnce(new Error('temporary withdrawal failure'));
 
       await expect(reconcileOneGatePayment(session.reference, null, { recheckPaid: true }))
@@ -401,7 +402,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
       const session = await creditSession(owner, 'concurrent-refunds');
       await settle(session, 9100004);
       await Organization.updateOne({ _id: owner.user.orgId }, { $inc: { 'aiCredits.bonus': 1000 } });
-      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest.spyOn(logger, 'error').mockImplementation(() => {});
       axios.get.mockResolvedValue({ data: verifyResponse('reversed', {
         reference: session.reference, amountRand: 99, id: 9100004,
       }) });
@@ -415,7 +416,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
   it('marks a reversed credit pack reversed and withdraws its unused credits', async () => {
     const owner = await createTestUser();
     const session = await creditSession(owner, 'reversed-pack');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     await settle(session, 7000006);
     await Organization.updateOne({ _id: owner.user.orgId }, { $set: { 'aiCredits.bonusUsed': 200 } });
 
@@ -434,7 +435,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
   it('records a reversed plan payment and flags it for review without cutting access', async () => {
     const owner = await createTestUser();
     const session = await planSession(owner, 'reversed-plan');
-    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorLog = jest.spyOn(logger, 'error').mockImplementation(() => {});
     await settle(session, 7000007);
 
     const reversed = await reconcileOneGatePayment(
@@ -447,7 +448,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
     expect(reversed.status).toBe('reversed');
     expect(org.plan).toBe('growth');
     expect(org.billingStatus).toBe('active');
-    expect(errorLog.mock.calls.flat().join(' ')).toMatch(/reversed-plan.*manual review/);
+    expect(errorLog).toHaveBeenCalledWith('payment_reversed', expect.objectContaining({ reference: 'reversed-plan', kind: 'plan' }));
   });
 
   it('does not re-verify a paid session unless asked to', async () => {
@@ -464,7 +465,7 @@ describe('card details (billing-10, WS-05-T04)', () => {
   it('reads the original reference from a signed refund webhook and applies the reversal', async () => {
     const owner = await createTestUser();
     const session = await creditSession(owner, 'refund-webhook');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     await settle(session, 7000008);
     const { raw, signature } = signed({
       event: 'refund.processed',

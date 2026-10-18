@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Insights: the cache, the refresh lease and de-duplication, and generation.
 // Renewed leases and completed-day windows keep paid refreshes honest.
 const { getCafeTradingHours } = require('../../utils/tradingHours');
@@ -315,7 +316,7 @@ const startLeaseHeartbeat = ({ cafeId, token, leaseMs }) => {
     GeneratedInsight.updateOne(
       { cafeId, 'refreshLease.token': token },
       { $set: { 'refreshLease.expiresAt': new Date(Date.now() + leaseMs) } }
-    ).catch((error) => console.error(`[insights] refresh lease renewal failed: ${error.name}`));
+    ).catch((error) => logger.error('insight_lease_renewal_failed', logger.errorFields(error)));
   }, Math.max(250, Math.floor(leaseMs / 3)));
   timer.unref?.();
   return () => clearInterval(timer);

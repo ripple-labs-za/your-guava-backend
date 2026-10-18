@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const AnthropicSdk = require('@anthropic-ai/sdk');
 
 const clampInteger = (value, fallback, min, max) => {
@@ -147,12 +148,9 @@ const asUpstreamAiError = (error) => {
 
 const logProviderFailure = (operation, error, { requestId } = {}) => {
   const { status, type } = upstreamErrorSummary(error);
-  const parts = [`[anthropic] ${operation} failed: status=${status} type=${type}`];
   const localId = safeLogId(requestId);
   const providerId = providerRequestIdOf(error);
-  if (localId) parts.push(`requestId=${localId}`);
-  if (providerId) parts.push(`providerRequestId=${providerId}`);
-  console.error(parts.join(' '));
+  logger.error('ai_call_failed', { operation, status, type, ...(localId ? { requestId: localId } : {}), ...(providerId ? { providerRequestId: providerId } : {}) });
 };
 
 /** Runs an SDK call; aborts pass through untouched, every other failure is logged once and wrapped. */

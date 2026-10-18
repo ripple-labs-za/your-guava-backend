@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const axios = require('axios');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
@@ -95,7 +96,7 @@ describe('Paystack return', () => {
 
   it('redirects a reference that is not ours as pending without asking Paystack', async () => {
     const lookup = jest.spyOn(axios, 'get');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const res = await returnFor('reference=GGPNOTOURS');
 
@@ -107,7 +108,7 @@ describe('Paystack return', () => {
     const owner = await createTestUser();
     await credits(owner, 'ret-mismatch');
     verifyOnce('success', 'ret-mismatch', 120, 6200003);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const res = await returnFor('reference=ret-mismatch');
 

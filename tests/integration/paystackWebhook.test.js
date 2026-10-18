@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const crypto = require('crypto');
 const axios = require('axios');
 const supertest = require('supertest');
@@ -83,7 +84,7 @@ describe('Paystack webhook settlement', () => {
         reference: 'hook-currency-mismatch', amountRand: 99, currency: 'NGN', id: 6100099,
       }),
     });
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const res = await postSigned(webhookEvent('charge.success', {
       reference: 'hook-currency-mismatch', amountRand: 99,
     }));
@@ -150,7 +151,7 @@ describe('Paystack webhook settlement', () => {
     const owner = await createTestUser();
     await credits(owner, 'hook-mismatch');
     verifyAlways('success', 120, 6100004);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const res = await postSigned(webhookEvent('charge.success', { reference: 'hook-mismatch', amountRand: 120 }));
 
@@ -162,7 +163,7 @@ describe('Paystack webhook settlement', () => {
   it('records a refund against the payment it refunds', async () => {
     const owner = await createTestUser();
     await credits(owner, 'hook-refund');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     jest.spyOn(axios, 'get')
       .mockResolvedValueOnce({ data: verifyResponse('success', { reference: 'hook-refund', amountRand: 99, id: 6100005 }) })
       .mockResolvedValueOnce({ data: verifyResponse('reversed', { reference: 'hook-refund', amountRand: 99, id: 6100005 }) });

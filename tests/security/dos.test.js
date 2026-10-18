@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mockR2Files = new Map();
 jest.mock('../../src/services/r2.service', () => ({
   uploadFile: async (buffer, key) => { mockR2Files.set(key, buffer); },
@@ -217,7 +218,7 @@ describe('BE-01 DoS regression suite', () => {
   describe('BE-01-T06 menu matching', () => {
     it('the crafted menu reconciliation page answers inside the budget', async () => {
       await Item.insertMany(payloads.craftedMenu(user.activeCafeId, normalizeItemName));
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
       const outcome = await measureBudget(() => request.get('/api/items/reconciliation?limit=100').set(auth()));
       warn.mockRestore();
       record('T06 crafted menu reconciliation', outcome);

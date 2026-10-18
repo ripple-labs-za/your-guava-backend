@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
@@ -83,11 +84,11 @@ async function migrate() {
   const cafes = await Cafe.find({ _id: { $in: cafeIds } }).select('name').lean();
   const cafeName = new Map(cafes.map((c) => [String(c._id), c.name]));
 
-  console.log(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
-  console.log(`items scanned            : ${items.length}`);
-  console.log(`already correct          : ${items.length - updates.length - keptManual.length}`);
-  console.log(`manual choices preserved : ${keptManual.length}`);
-  console.log(`to recategorise          : ${updates.length}\n`);
+  logger.printLine(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
+  logger.printLine(`items scanned            : ${items.length}`);
+  logger.printLine(`already correct          : ${items.length - updates.length - keptManual.length}`);
+  logger.printLine(`manual choices preserved : ${keptManual.length}`);
+  logger.printLine(`to recategorise          : ${updates.length}\n`);
 
   const byMove = new Map();
   for (const u of updates) {
@@ -96,19 +97,19 @@ async function migrate() {
     byMove.get(key).push(u);
   }
   for (const [move, rows] of [...byMove.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    console.log(`  ${move.padEnd(22)} ${String(rows.length).padStart(4)}`);
+    logger.printLine(`  ${move.padEnd(22)} ${String(rows.length).padStart(4)}`);
     for (const r of rows.slice(0, 5)) {
-      console.log(`      ${r.name}  (${cafeName.get(String(r.cafeId)) || r.cafeId})`);
+      logger.printLine(`      ${r.name}  (${cafeName.get(String(r.cafeId)) || r.cafeId})`);
     }
-    if (rows.length > 5) console.log(`      ... and ${rows.length - 5} more`);
+    if (rows.length > 5) logger.printLine(`      ... and ${rows.length - 5} more`);
   }
 
   if (keptManual.length > 0) {
-    console.log('\nleft untouched because a person had set them:');
+    logger.printLine('\nleft untouched because a person had set them:');
     for (const k of keptManual.slice(0, 10)) {
-      console.log(`  ${k.name}: kept "${k.stored}" (would otherwise become "${k.wouldBecome}")`);
+      logger.printLine(`  ${k.name}: kept "${k.stored}" (would otherwise become "${k.wouldBecome}")`);
     }
-    if (keptManual.length > 10) console.log(`  ... and ${keptManual.length - 10} more`);
+    if (keptManual.length > 10) logger.printLine(`  ... and ${keptManual.length - 10} more`);
   }
 
   if (apply && updates.length > 0) {
@@ -117,10 +118,10 @@ async function migrate() {
         updateOne: { filter: { _id: u._id }, update: { $set: { category: u.to } } },
       }))
     );
-    console.log(`\nmodified: ${result.modifiedCount}`);
-    console.log('Forecasts regenerate on their own; existing stored forecasts keep their old factors until then.');
+    logger.printLine(`\nmodified: ${result.modifiedCount}`);
+    logger.printLine('Forecasts regenerate on their own; existing stored forecasts keep their old factors until then.');
   } else if (!apply) {
-    console.log('\nRe-run with --apply to write these changes.');
+    logger.printLine('\nRe-run with --apply to write these changes.');
   }
 
   await mongoose.disconnect();
@@ -130,5 +131,5 @@ async function migrate() {
 module.exports = { plan, legacyInferItemCategory };
 
 if (require.main === module) {
-  migrate().catch((e) => { console.error(e); process.exit(1); });
+  migrate().catch((e) => { logger.fatal('migration_cli_failed', logger.errorFields(e, { stack: true })); process.exit(1); });
 }

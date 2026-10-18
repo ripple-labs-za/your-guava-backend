@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const { outboundGet } = require('../utils/http');
 
 // In-memory cache: { key -> { data, fetchedAt } }
@@ -135,7 +136,7 @@ const getWeatherForecast = async (lat, lng, date) => {
     // Log-only, once per process: a missing key is a configuration fact, not a per-request event.
     if (!warnedUnconfigured) {
       warnedUnconfigured = true;
-      console.warn('[weather] WEATHER_API_KEY or WEATHER_API_URL not set');
+      logger.warn('weather_unconfigured', {});
     }
     return unavailableWeatherSignal('Weather service is not configured');
   }
@@ -190,7 +191,7 @@ const getWeatherForecast = async (lat, lng, date) => {
     failedWeatherRequests.delete(pendingKey);
     failedWeatherRequests.set(pendingKey, Date.now() + WEATHER_FAILURE_TTL_MS);
     while (failedWeatherRequests.size > 500) failedWeatherRequests.delete(failedWeatherRequests.keys().next().value);
-    console.error('[weather] API error:', error.message);
+    logger.error('weather_api_failed', logger.errorFields(error));
     return { ...unavailableWeatherSignal('Weather data is temporarily unavailable'), transient: true };
   }
 };

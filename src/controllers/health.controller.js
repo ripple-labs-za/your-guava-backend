@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const crypto = require('crypto');
 const { sha256Hex } = require('../utils/authPrimitives');
 const mongoose = require('mongoose');
@@ -135,7 +136,7 @@ const readiness = async (req, res) => {
     try {
       result = await computeReadiness();
     } catch (error) {
-      console.error('[readiness] probe failed:', error?.message || String(error));
+      logger.error('readiness_probe_failed', logger.errorFields(error));
       return res.status(503).json({ success: false, status: 'not_ready', ...basePayload(req), checks: null, probe: 'failed' });
     }
     return res.status(result.ready ? 200 : 503).json({

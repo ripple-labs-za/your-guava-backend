@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // PATCH /uploads/:id/mapping: re-import an upload under a new mapping.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const Upload = require('../../models/Upload.model');
@@ -146,7 +147,7 @@ const remap = async (req, res, next) => {
       await readmission.queueReadmission(queued, plan.range, upload._id);
       setImmediate(() => {
         recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
-          console.error('[uploads] re-admission kick failed:', error.message);
+          logger.error('upload_readmission_kick_failed', logger.errorFields(error));
         });
       });
     }

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const fs = require('fs');
 const path = require('path');
 const Transaction = require('../models/Transaction.model');
@@ -362,7 +363,7 @@ const persistParsedRows = async (
         duplicateRows++;
       } else {
         if (failOnPersistenceError) throw err;
-        console.error('[ingestion] row error:', err.message);
+        logger.error('ingestion_row_failed', logger.errorFields(err));
         errors++;
         addPersistenceRowError(rowErrors, row, 'Could not save row');
       }

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
@@ -30,10 +31,10 @@ if (require.main === module) {
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     const summary = await relinkIgnoredLines({ apply: process.argv.includes('--apply') });
-    console.log(summary);
+    logger.printLine(JSON.stringify(summary));
     await mongoose.disconnect();
   })().catch((error) => {
-    console.error(error);
+    logger.fatal('migration_cli_failed', logger.errorFields(error, { stack: true }));
     process.exit(1);
   });
 }

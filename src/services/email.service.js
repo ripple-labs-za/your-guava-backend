@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const { DEFAULT_TIMEZONE, zonedDayOrdinal } = require('../utils/timezone');
 const { Resend } = require('resend');
 const { withDeadline, isOutboundTimeout } = require('../utils/http');
@@ -177,13 +178,13 @@ const sendEmail = async ({ to, subject, html, text, tags }) => {
       { context: { method: 'POST', host: 'api.resend.com' } }
     );
     if (error) {
-      console.error('[email] Resend send failed:', error);
+      logger.error('email_send_failed', { provider: 'resend', ...logger.errorFields(error) });
       return { sent: false, error };
     }
     return { sent: true, data };
   } catch (error) {
     if (isOutboundTimeout(error)) return { sent: false, timedOut: true, error };
-    console.error('[email] Resend send failed:', error.message);
+    logger.error('email_send_failed', { provider: 'resend', ...logger.errorFields(error) });
     return { sent: false, error };
   }
 };

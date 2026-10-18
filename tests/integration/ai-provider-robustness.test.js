@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mockAnthropicMessageCreate = jest.fn();
 
 jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
@@ -138,7 +139,7 @@ describe('stalled streams', () => {
   it('ends a stream that stalls before its first delta, refunds it and logs it with the request id', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     process.env.AI_STREAM_IDLE_TIMEOUT_MS = '1000';
-    const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     const owner = await createTestUser();
     await seedCompletedDaySales(owner.user.activeCafeId);
     const signals = [];
@@ -152,6 +153,7 @@ describe('stalled streams', () => {
       .set('X-Request-Id', 'stall-request-0001')
       .send({ messages: [{ role: 'user', content: 'Anything?' }] });
 
+    expect(response.headers['x-client-request-id']).toBe('stall-request-0001');
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(signals[0].aborted).toBe(true);
     expect(signals[0].reason.code).toBe('AI_PROVIDER_TIMEOUT');
@@ -160,15 +162,13 @@ describe('stalled streams', () => {
     }));
     const row = await UsageLedger.findOne({ idempotencyKey: 'stall-before-delta' }).lean();
     expect(row.status).toBe('refunded');
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(
-      /^\[anthropic\] streamBusinessChatResponse failed: status=null type=AiStreamTimeoutError requestId=stall-request-0001/
-    ));
+    expect(logSpy).toHaveBeenCalledWith('ai_call_failed', expect.objectContaining({ operation: 'streamBusinessChatResponse', status: null, type: 'AiStreamTimeoutError', requestId: response.headers['x-request-id'] }));
   });
 
   it('ends a stream that stalls after its first delta within the idle limit and charges it (D-015)', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     process.env.AI_STREAM_IDLE_TIMEOUT_MS = '1000';
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const owner = await createTestUser();
     await seedCompletedDaySales(owner.user.activeCafeId);
     const signals = [];

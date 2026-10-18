@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('axios');
 
 const axios = require('axios');
@@ -121,7 +122,7 @@ describe('bounded review regressions for calendars and shared load shedding', ()
     process.env.ESKOMSEPUSH_API_KEY = 'test-eskom-key';
     clearLoadSheddingCache();
     axios.get.mockReset().mockRejectedValue(new Error('provider unavailable'));
-    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logged = jest.spyOn(logger, 'error').mockImplementation(() => {});
     const now = new Date('2026-09-22T06:00:00Z');
     const results = await Promise.all(Array.from({ length: 7 }, (_, index) =>
       getLoadSheddingForDate('Johannesburg', `2026-09-${22 + index}`, 'Africa/Johannesburg', now)));

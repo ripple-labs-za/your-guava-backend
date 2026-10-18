@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 const Organization = require('../../models/Organization.model');
 const User = require('../../models/User.model');
 // Called through the module object so tests can spy on it.
@@ -100,7 +101,7 @@ const runBillingReminders = async ({ now = new Date() } = {}) => {
     } catch (error) {
       summary.failed += 1;
       await Organization.updateOne({ _id: org._id }, { $pull: { billingRemindersSent: key } }).catch(() => null);
-      console.error(`[billing] reminder ${key} for org ${org._id} failed:`, error.message);
+      logger.error('billing_reminder_failed', { key, orgId: String(org._id), ...logger.errorFields(error) });
     }
   }
   return summary;

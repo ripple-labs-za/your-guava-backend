@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const mongoose = require('mongoose');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
@@ -29,7 +30,7 @@ const withEnv = async (overrides, fn) => {
 
 describe('origin checks run in every non-test environment', () => {
   it.each(['development', 'staging', 'production'])('NODE_ENV=%s refuses foreign and missing origins', async (nodeEnv) => {
-    jest.spyOn(console, 'info').mockImplementation(() => {});
+    jest.spyOn(logger, 'info').mockImplementation(() => {});
     // The test env switches origin checks off (tests/env.js); these cases exist to prove they are on.
     await withEnv({ NODE_ENV: nodeEnv, CLIENT_URL: 'http://localhost:5185', ORIGIN_CHECKS_ENABLED: 'true' }, async () => {
       const body = { email: 'nobody@yourguava.com', password: 'password123' };
@@ -42,7 +43,7 @@ describe('origin checks run in every non-test environment', () => {
 
 describe('the console transport never reports a delivery it did not make', () => {
   it('answers register 202 with deliveryMode console in the test environment', async () => {
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(logger, 'warn').mockImplementation(() => {});
     const res = await request.post('/api/auth/register')
       .send({ name: 'Console Owner', email: 'console@yourguava.com', password: 'password123', cafeName: 'Console Cafe' });
     expect(res.status).toBe(202);
@@ -51,7 +52,7 @@ describe('the console transport never reports a delivery it did not make', () =>
 
   it('keeps the invitation usable for local testing but says no email was sent', async () => {
     const owner = await createTestUser({ email: 'console-owner@yourguava.com' });
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(logger, 'warn').mockImplementation(() => {});
     const res = await request.post('/api/team/invite').set('Authorization', `Bearer ${owner.token}`)
       .send({ name: 'Console Manager', email: 'console-manager@yourguava.com', cafeIds: [owner.user.activeCafeId] });
     expect(res.status).toBe(201);
@@ -97,7 +98,7 @@ describe('public readiness returns status only', () => {
 
   it('answers 503, never 500, when the probe itself throws, and recovers in the next window', async () => {
     const r2 = require('../../src/services/r2.service');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const broken = jest.spyOn(r2, 'getConfigurationStatus').mockImplementation(() => { throw new Error('probe exploded'); });
     await withEnv({ READINESS_TOKEN }, async () => {
       const anonymous = await request.get('/api/ready');

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
 const Transaction = require('../models/Transaction.model');
@@ -705,9 +706,7 @@ const findMatchCandidates = async (cafeId, item, { limit = 3, pool = null } = {}
   });
   if (prepared.budget.exhausted && !prepared.budget.reported) {
     prepared.budget.reported = true;
-    console.warn(JSON.stringify({
-      level: 'warn', event: 'menu_match_budget_exhausted', cafeId: String(cafeId), poolSize: candidatePool.length,
-    }));
+    logger.warn('menu_match_budget_exhausted', { cafeId: String(cafeId), poolSize: candidatePool.length });
   }
   return ranked;
 };

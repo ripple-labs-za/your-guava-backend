@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, createTestManager, app } = require('../setup');
 const User = require('../../src/models/User.model');
@@ -110,7 +111,7 @@ describe('Team API', () => {
       jest
         .spyOn(emailService, 'sendTeamInviteEmail')
         .mockResolvedValue({ skipped: true, reason: 'resend_not_configured' });
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
       const res = await request
         .post('/api/team/invite')
@@ -125,7 +126,7 @@ describe('Team API', () => {
       expect(res.body.success).toBe(false);
       expect(res.body.emailSent).toBe(false);
       expect(res.body.message).toMatch(/email is not configured/i);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/invitation .* blocked because email is not configured/i));
+      expect(warnSpy).toHaveBeenCalledWith('invitation_email_unconfigured', expect.objectContaining({ invitationId: expect.any(String) }));
 
       const persisted = await User.findOne({ email: 'no-email@yourguava.com' });
       expect(persisted).toBeNull();
@@ -159,7 +160,7 @@ describe('Team API', () => {
       jest
         .spyOn(emailService, 'sendTeamInviteEmail')
         .mockResolvedValue({ skipped: true, reason: 'resend_not_configured' });
-      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      jest.spyOn(logger, 'warn').mockImplementation(() => {});
       jest.spyOn(emailService, 'sendWelcomeEmail').mockResolvedValue({ sent: true });
 
       const invite = await request

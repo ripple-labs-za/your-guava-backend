@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // DELETE /uploads/:id: remove an upload, its rows and its storage object, re-admitting from overlapping uploads
 // the rows they held only through it (BE-03-T02).
 const mongoose = require('mongoose');
@@ -119,13 +120,13 @@ const remove = async (req, res, next) => {
       // Start the queue now rather than at the next sweep; the job is idempotent and claims atomically.
       setImmediate(() => {
         recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
-          console.error('[uploads] re-admission kick failed:', error.message);
+          logger.error('upload_readmission_kick_failed', logger.errorFields(error));
         });
       });
     }
 
     try { await fillActualsForRange(cafeId, dateRange, timezone); } catch (error) {
-      console.error('[uploads] delete actuals refresh failed:', error.message);
+      logger.error('upload_delete_actuals_refresh_failed', logger.errorFields(error));
     }
     try {
       await r2.deleteFile(upload.r2Key);
@@ -137,13 +138,13 @@ const remove = async (req, res, next) => {
         }
       );
     } catch (error) {
-      console.error('[uploads] stored file cleanup deferred:', error.message);
+      logger.warn('upload_storage_cleanup_deferred', logger.errorFields(error));
     }
 
     try {
       await invalidateAiInsights(cafeId);
     } catch (error) {
-      console.error('[uploads] delete AI insight invalidation failed:', error.message);
+      logger.error('upload_delete_insight_invalidation_failed', logger.errorFields(error));
     }
     clearApiCache({ cafeId });
     return res.status(200).json({

@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 /**
  * Xero OAuth + sync service
  *
@@ -91,7 +92,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
       }
     } catch (err) {
       if (isOutboundTimeout(err)) throw err;
-      console.warn('[xero] Could not fetch tenantId from /connections:', err?.message);
+      logger.warn('xero_tenant_lookup_failed', logger.errorFields(err));
     }
   }
 

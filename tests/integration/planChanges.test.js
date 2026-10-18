@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, createTestManager, app } = require('../setup');
 const Organization = require('../../src/models/Organization.model');
@@ -346,7 +347,7 @@ describe('option A keeps both captured terms under concurrent changes', () => {
       reference: `${reference}-${first}`, amount, currency: 'ZAR', plan, billingCycle: 'monthly',
     })));
     const [up, down] = sessions;
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     jest.spyOn(oneGate, 'lookupGatewayTransaction').mockImplementation(async (reference) =>
       paidTransaction(reference, reference === up.reference ? 1799 : 399));
 

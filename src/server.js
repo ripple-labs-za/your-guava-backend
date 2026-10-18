@@ -1,3 +1,4 @@
+const logger = require('./utils/logger');
 require('dotenv').config();
 const paymentProvider = require('./services/paymentProvider.service');
 const { startEventLoopMonitor, stopEventLoopMonitor } = require('./utils/eventLoopMonitor');
@@ -56,13 +57,13 @@ const runPendingUploadCleanup = () => {
         recoverPendingUploadMaintenance(),
       ]);
       if (summary.deleted > 0 || summary.storageRetried > 0 || summary.failed > 0) {
-        console.log('[uploads] abandoned upload cleanup:', summary);
+        logger.info('upload_cleanup_summary', summary);
       }
       if (maintenance.completed > 0 || maintenance.failed > 0) {
-        console.log('[uploads] maintenance recovery:', maintenance);
+        logger.info('upload_maintenance_recovery_summary', maintenance);
       }
     } catch (error) {
-      console.error('[uploads] abandoned upload cleanup failed:', error.message);
+      logger.error('upload_cleanup_failed', logger.errorFields(error));
     }
   })().finally(() => {
     cleanupPromise = undefined;
@@ -89,10 +90,10 @@ const runPaymentReconciliation = () => {
     try {
       const summary = await reconcilePendingPayments();
       if (summary.paid > 0 || summary.failed > 0 || summary.errors > 0) {
-        console.log('[billing] pending payment reconciliation:', summary);
+        logger.info('payment_reconcile_summary', summary);
       }
     } catch (error) {
-      console.error('[billing] pending payment reconciliation failed:', error.message);
+      logger.error('payment_reconcile_sweep_failed', logger.errorFields(error));
     }
   })().finally(() => {
     paymentReconciliationPromise = undefined;
@@ -119,10 +120,10 @@ const runUsageReconciliation = () => {
     try {
       const summary = await reconcileStaleUsageReservations();
       if (summary.refunded > 0 || summary.errors > 0) {
-        console.log('[billing] stale usage reconciliation:', summary);
+        logger.info('usage_reconcile_summary', summary);
       }
     } catch (error) {
-      console.error('[billing] stale usage reconciliation failed:', error.message);
+      logger.error('usage_reconcile_sweep_failed', logger.errorFields(error));
     }
   })().finally(() => {
     usageReconciliationPromise = undefined;
@@ -150,9 +151,9 @@ const runBillingReminderJob = () => {
   billingReminderPromise = (async () => {
     try {
       const summary = await runBillingReminders();
-      if (summary.sent > 0 || summary.failed > 0) console.log('[billing] period-end reminders:', summary);
+      if (summary.sent > 0 || summary.failed > 0) logger.info('billing_reminder_summary', summary);
     } catch (error) {
-      console.error('[billing] period-end reminders failed:', error.message);
+      logger.error('billing_reminder_sweep_failed', logger.errorFields(error));
     }
   })().finally(() => { billingReminderPromise = undefined; });
   return billingReminderPromise;
@@ -212,7 +213,7 @@ const start = async () => {
       candidateServer.once('listening', onListening);
       candidateServer.once('error', onError);
     });
-    console.log(`Your Guava API running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+    logger.info('server_listening', { port: Number(PORT), env: process.env.NODE_ENV || 'development' });
     schedulePendingUploadCleanup();
     schedulePaymentReconciliation();
     scheduleUsageReconciliation();
@@ -227,7 +228,7 @@ const start = async () => {
     try {
       await cleanupFailedStart();
     } catch (cleanupError) {
-      console.error('[server] startup cleanup failed:', cleanupError.message);
+      logger.error('startup_cleanup_failed', logger.errorFields(cleanupError));
     }
     throw error;
   }
@@ -236,7 +237,7 @@ const start = async () => {
 const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
-    console.log(`[server] ${signal} received; draining connections`);
+    logger.info('shutdown_started', { signal });
     if (cleanupTimer) clearInterval(cleanupTimer);
     if (paymentReconciliationTimer) clearInterval(paymentReconciliationTimer);
     if (usageReconciliationTimer) clearInterval(usageReconciliationTimer);
@@ -272,8 +273,8 @@ const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
 
     await Promise.race([closeResources, timeout]);
     clearTimeout(timeoutHandle);
-    if (timedOut) console.error(`[server] shutdown exceeded ${timeoutMs}ms; connections were forced closed`);
-    else console.log('[server] shutdown complete');
+    if (timedOut) logger.error('shutdown_timeout', { signal, timeoutMs });
+    else logger.info('shutdown_complete', { signal });
     if (exitProcess) process.exit(timedOut ? 1 : 0);
   })();
   return shutdownPromise;
@@ -281,12 +282,12 @@ const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
 
 if (require.main === module) {
   start().catch((error) => {
-    console.error('[server] startup failed:', error.message);
+    logger.fatal('startup_failed', logger.errorFields(error, { stack: true }));
     process.exit(1);
   });
   const shutdownForSignal = (signal) => {
     void shutdown(signal, { exitProcess: true }).catch((error) => {
-      console.error('[server] shutdown failed:', error.message);
+      logger.fatal('shutdown_failed', logger.errorFields(error));
       process.exit(1);
     });
   };

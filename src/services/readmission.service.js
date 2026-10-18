@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 const Upload = require('../models/Upload.model');
 const r2 = require('./r2.service');
@@ -90,7 +91,7 @@ const prepareReadmission = async ({ cafeId, range, excludeUploadId, timezone }) 
       parsedRows += entry.parsedRows;
       prepared.push(entry);
     } catch (error) {
-      console.error('[readmission] could not re-read upload', String(candidate._id), error.message);
+      logger.error('upload_readmission_failed', { uploadId: String(candidate._id), ...logger.errorFields(error) });
       deferred.push(candidate);
     }
   }

@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, app } = require('../setup');
 
@@ -11,24 +12,13 @@ afterAll(teardown);
 afterEach(clearDB);
 
 describe('Observability', () => {
-  it('echoes a trusted request ID on health responses', async () => {
-    const requestId = 'launch-smoke-req-001';
-
-    const res = await request
-      .get('/api/health')
-      .set('X-Request-Id', requestId);
-
-    expect(res.status).toBe(200);
-    expect(res.headers['x-request-id']).toBe(requestId);
-    expect(res.body).toEqual(
-      expect.objectContaining({
-        success: true,
-        status: 'ok',
-        service: 'your-guava-api',
-        requestId,
-      })
-    );
-  });
+it('issues its own request id and echoes a well-formed client id separately', async () => {
+  const res = await request.get('/api/health').set('X-Request-Id', 'launch-smoke-req-001');
+  expect(res.status).toBe(200);
+  expect(res.headers['x-request-id']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  expect(res.headers['x-client-request-id']).toBe('launch-smoke-req-001');
+  expect(res.body).toEqual(expect.objectContaining({ success: true, status: 'ok', requestId: res.headers['x-request-id'] }));
+});
 
   it('reports readiness with database and env checks', async () => {
     const res = await request.get('/api/ready').set('X-Readiness-Token', READINESS_TOKEN);
@@ -46,21 +36,13 @@ describe('Observability', () => {
   it('logs the mounted request path without the query string', async () => {
     // Request logs are off in tests (tests/env.js); switch them on for one request.
     const previousRequestLogs = process.env.REQUEST_LOGS_ENABLED;
-    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {});
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
     process.env.REQUEST_LOGS_ENABLED = 'true';
     let entries;
     try {
       await request.get('/api/auth/me').query({ token: 'should-not-be-logged' });
       await new Promise((resolve) => setImmediate(resolve));
-      entries = infoSpy.mock.calls
-        .map(([line]) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .filter((entry) => entry && entry.event === 'http_request');
+      entries = infoSpy.mock.calls.filter(([event]) => event === 'http_request').map(([, fields]) => fields);
     } finally {
       process.env.REQUEST_LOGS_ENABLED = previousRequestLogs;
       infoSpy.mockRestore();
@@ -79,11 +61,11 @@ describe('Observability', () => {
       .set('X-Request-Id', requestId);
 
     expect(res.status).toBe(404);
-    expect(res.headers['x-request-id']).toBe(requestId);
+    expect(res.headers['x-client-request-id']).toBe(requestId);
     expect(res.body).toEqual({
       success: false,
       message: 'Route not found',
-      requestId,
+      requestId: res.headers['x-request-id'],
     });
   });
 

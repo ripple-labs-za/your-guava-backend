@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // AI column mapping for imports: the in-process LRU, the sensitive-header check and the model proposal.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const crypto = require('crypto');
@@ -196,11 +197,7 @@ const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
     // The wrapped error carries the provider's status and type; the bare
     // err.name was "Error" for every failure, which is what made an invalid
     // API key indistinguishable from an outage in the logs.
-    console.error(
-      '[anthropic] proposeColumnMapping failed:',
-      err.upstreamStatus != null ? `status=${err.upstreamStatus}` : (err.code || err.name || 'unknown'),
-      err.upstreamMessage ? `- ${err.upstreamMessage}` : ''
-    );
+    logger.error('ai_column_mapping_failed', { upstreamStatus: err.upstreamStatus, errorCode: String(err.code || err.name || 'unknown'), upstreamMessage: err.upstreamMessage });
     return {
       mapping: {},
       itemsMode: 'packed',

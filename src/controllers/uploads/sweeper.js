@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // The abandoned-upload sweeper server.js runs on a timer.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const Upload = require('../../models/Upload.model');
@@ -151,7 +152,7 @@ const cleanupAbandonedPendingUploads = async ({
       } else summary.failed++;
     } catch (error) {
       summary.failed++;
-      console.error('[uploads] expired upload storage was removed but status finalization failed:', error.message);
+      logger.error('upload_expiry_finalize_failed', logger.errorFields(error));
     }
   }
 

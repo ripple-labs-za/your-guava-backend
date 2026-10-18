@@ -1,3 +1,4 @@
+const logger = require('./logger');
 const { outboundGet } = require('./http');
 const { zonedDateKey, zonedDateTimeToUtc } = require('./timezone');
 
@@ -363,7 +364,7 @@ const fetchLoadSheddingStatus = async () => {
   pendingStatusRequest = requestLoadSheddingStatus()
     .catch((error) => {
       statusRetryAt = Date.now() + LOAD_SHEDDING_FAILURE_TTL_MS;
-      console.error('[signals] Load shedding API error:', error.message);
+      logger.error('loadshedding_api_failed', logger.errorFields(error));
       throw error;
     })
     .finally(() => { pendingStatusRequest = null; });

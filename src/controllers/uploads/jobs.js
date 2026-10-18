@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // The post-import job queue: forecast invalidation, actuals fill, insight invalidation, claim, run, schedule and recovery.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
 const { backgroundJobsInline } = require('../../config/flags');
@@ -51,15 +52,13 @@ const fillActualsForRange = async (cafeId, dateRange, timezone) => {
     .limit(MAX_ACTUALS_REFRESH_FORECASTS + 1)
     .lean();
   if (forecasts.length > MAX_ACTUALS_REFRESH_FORECASTS) {
-    console.warn(
-      `[uploads] actuals refresh capped at ${MAX_ACTUALS_REFRESH_FORECASTS} forecasts for cafe ${cafeId}`
-    );
+    logger.warn('actuals_refresh_capped', { cafeId: String(cafeId), cap: MAX_ACTUALS_REFRESH_FORECASTS });
   }
   for (const forecast of forecasts.slice(0, MAX_ACTUALS_REFRESH_FORECASTS)) {
     try {
       await updateForecastActuals(cafeId, forecast.date, { timezone: resolvedTimezone });
     } catch (err) {
-      console.error('[uploads] updateForecastActuals failed for', forecast.date.toISOString(), err.message);
+      logger.error('forecast_actuals_update_failed', { cafeId: String(cafeId), date: forecast.date, ...logger.errorFields(err) });
     }
   }
 };
@@ -84,7 +83,7 @@ const runPostImportMaintenance = async (claimedUpload, timezone) => {
     try {
       await operation();
     } catch (error) {
-      console.error(`[uploads] ${label} failed:`, error.message);
+      logger.error('upload_maintenance_step_failed', { step: label, ...logger.errorFields(error) });
       errors.push(`${label}: ${error.message}`.slice(0, 500));
     }
   };
@@ -199,7 +198,7 @@ const schedulePostImportMaintenance = async (uploadId, cafeId, dateRange, timezo
   }
   setImmediate(() => {
     claimAndRunPostImportMaintenance(candidate, timezone).catch((error) => {
-      console.error('[uploads] post-import maintenance failed:', error.message);
+      logger.error('upload_maintenance_failed', { uploadId: String(uploadId), ...logger.errorFields(error) });
     });
   });
 };
@@ -279,7 +278,7 @@ const recoverPendingUploadMaintenance = async ({
       if (result?.status === 'partial_failure') summary.failed++;
     } catch (error) {
       summary.failed++;
-      console.error('[uploads] maintenance recovery failed:', error.message);
+      logger.error('upload_maintenance_recovery_failed', { trigger: 'sweep', ...logger.errorFields(error) });
     }
   }
   return summary;

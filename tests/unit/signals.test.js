@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('axios');
 
 const axios = require('axios');
@@ -260,7 +261,7 @@ describe('signals utility', () => {
     });
 
     it('returns unknown rather than stage zero when the provider fails', async () => {
-      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
       axios.get.mockRejectedValueOnce(new Error('provider offline'));
 
       await expect(getLoadSheddingStage('Johannesburg')).resolves.toEqual({

@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const {
   setup,
@@ -126,7 +127,7 @@ describe('Auth API', () => {
     });
 
     it('retains the pending registration when verification delivery fails', async () => {
-      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
       jest.spyOn(emailService, 'sendVerificationEmail').mockResolvedValue({
         skipped: true,
         reason: 'resend_not_configured',
@@ -141,7 +142,7 @@ describe('Auth API', () => {
         email: 'delivery@yourguava.com',
       })).toBe(1);
       expect(await User.countDocuments({ email: 'delivery@yourguava.com' })).toBe(0);
-      expect(errorSpy).toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith('verification_email_failed', expect.objectContaining({ reason: 'resend_not_configured' }));
     });
 
     it('rotates verification links on resend without revealing account existence', async () => {
@@ -178,7 +179,7 @@ describe('Auth API', () => {
     });
 
     it('still completes verification when the non-critical welcome email fails', async () => {
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
       jest
         .spyOn(emailService, 'sendWelcomeEmail')
         .mockRejectedValue(new Error('resend unavailable'));
@@ -190,8 +191,7 @@ describe('Auth API', () => {
         .send({ token: verificationToken, password: 'password123' });
       expect(verified.status).toBe(201);
       expect(warnSpy).toHaveBeenCalledWith(
-        '[auth] Welcome email failed after verification:',
-        'resend unavailable'
+        'welcome_email_failed', expect.objectContaining({ errorMessage: 'resend unavailable' })
       );
     });
 

@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // The usage ledger: metered reservations, finish, commit after a lease breach, refund, recovery, the sweeper and the summary.
 // Moved from usage.service.js by BE-11-T04; behaviour unchanged.
 const crypto = require('crypto');
@@ -240,9 +241,7 @@ const commitAfterLeaseBreach = async (ledger, orgId, { resultPayload, providerDi
   );
   if (!claimed) return null;
 
-  console.warn(
-    `[usage] reservation ${claimed._id} outlived its lease and was recommitted for org ${orgId}`
-  );
+  logger.warn('usage_reservation_recommitted', { ledgerId: String(claimed._id), orgId: String(orgId) });
   const recharge = await reserveCreditsAtomic(orgId, claimed.credits, new Date());
   if (!recharge) {
     // The answer was delivered, so the row stays committed. Recording that the
@@ -411,8 +410,9 @@ const reconcileStaleUsageReservations = async ({
         } else {
           summary.skipped += 1;
         }
-      } catch (_error) {
+      } catch (error) {
         summary.errors += 1;
+        logger.error('usage_reconcile_failed', { ledgerId: String(candidates[index]._id), ...logger.errorFields(error) });
       }
     }
   };

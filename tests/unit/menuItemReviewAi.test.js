@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mockAnthropicMessageCreate = jest.fn();
 
 jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
@@ -39,7 +40,7 @@ describe('menu item AI review hardening', () => {
   beforeEach(() => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     mockAnthropicMessageCreate.mockReset();
-    logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -115,12 +116,10 @@ describe('menu item AI review hardening', () => {
     expect(result.aiUnavailableReason).toBe('provider_unavailable');
     expect(result.source).toBe('rules');
     expect(logSpy).toHaveBeenCalledWith(
-      '[anthropic] menuItemAiReview failed: status=401 type=authentication_error'
+      'ai_call_failed', expect.objectContaining({ operation: 'menuItemAiReview', status: 401 })
     );
     expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[menu-review] AI suggestion unavailable'),
-      expect.anything(),
-      expect.anything()
+      'ai_menu_review_unavailable', expect.objectContaining({ upstreamStatus: 401 })
     );
   });
 

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const crypto = require('crypto');
 const Item = require('../models/Item.model');
 const { inferItemCategory, isItemCategory } = require('../utils/itemCategory');
@@ -259,13 +260,7 @@ const suggestMenuItemReview = async (cafeId, item, candidates = [], usageContext
     // statusCode is our own billing/permission signal; upstreamStatus is the
     // provider's, and is only ever a log detail — a provider 402 must not be
     // reported to the cafe as their own credit balance running out.
-    console.error(
-      '[menu-review] AI suggestion unavailable:',
-      error.upstreamStatus != null
-        ? `upstreamStatus=${error.upstreamStatus}`
-        : `code=${error.statusCode || error.code || error.name || 'unknown'}`,
-      error.upstreamMessage ? `- ${error.upstreamMessage}` : ''
-    );
+    logger.error('ai_menu_review_unavailable', { upstreamStatus: error.upstreamStatus, errorCode: String(error.statusCode || error.code || error.name || 'unknown'), upstreamMessage: error.upstreamMessage });
     return {
       ...fallback,
       aiUnavailableReason:

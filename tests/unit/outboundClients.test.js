@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mockS3Send = jest.fn();
 const mockS3Config = jest.fn();
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -78,7 +79,7 @@ beforeEach(() => {
   axios.post.mockReset();
   email._resetClient();
   r2._resetClient();
-  consoleSpies = ['warn', 'error'].map((level) => jest.spyOn(console, level).mockImplementation(() => {}));
+  consoleSpies = ['warn', 'error'].map((level) => jest.spyOn(logger, level).mockImplementation(() => {}));
 });
 
 afterEach(() => {

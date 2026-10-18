@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('axios');
 
 const axios = require('axios');
@@ -97,7 +98,7 @@ describe('provider outages', () => {
   });
 
   it('schedules a retry 15 minutes out when the weather provider fails', async () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     process.env.WEATHER_API_KEY = 'test-weather-key';
     process.env.WEATHER_API_URL = 'https://api.weatherapi.com/v1';
     clearWeatherCache();

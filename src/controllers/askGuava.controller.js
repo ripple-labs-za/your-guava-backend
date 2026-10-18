@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 // Ask Guava: cached and refreshed insights, the chat answer and its SSE stream, paid-credit metering and chat persistence.
 // Moved from forecasts.controller.js by BE-11-T04; behaviour unchanged.
 const crypto = require('crypto');
@@ -144,7 +145,7 @@ const persistChatExchangeWithoutBlockingDelivery = async (options) => {
   } catch (error) {
     // The committed usage record contains the complete result for replay, so a
     // transient chat-history write must not turn a delivered answer into a 500.
-    console.error('[ask-guava] chat exchange persistence failed:', error.code || error.name);
+    logger.error('chat_persistence_failed', { errorCode: String(error.code || error.name) });
   }
 };
 
@@ -380,7 +381,7 @@ const streamChatInsights = async (req, res, next) => {
     }
     if (requestAbort.signal.aborted || res.destroyed) return;
     if (!error.wrappedProviderError && !isAbortError(error)) {
-      console.error(JSON.stringify({ level: 'error', event: 'ask_guava_stream_failed', requestId: req.id, code: error.code || error.name }));
+      logger.error('ask_guava_stream_failed', { requestId: req.id, code: error.code || error.name });
     }
     if (res.headersSent) {
       writeStreamEvent(res, 'error', {

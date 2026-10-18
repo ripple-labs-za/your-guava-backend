@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // POST /team/transfer-ownership.
 // Moved from team.controller.js by BE-11-T03; behaviour unchanged.
 const mongoose = require('mongoose');
@@ -124,7 +125,7 @@ const transferOwnership = async (req, res, next) => {
 
     // identity-16: both people hear about the transfer; a failed notice never fails the transfer.
     if (handoff) {
-      const warn = (who) => (error) => console.warn(`[team] ownership notice to the ${who} failed:`, error.message);
+      const warn = (who) => (error) => logger.warn('ownership_notice_failed', { who, ...logger.errorFields(error) });
       emailService.sendSecurityNoticeEmail({
         kind: 'ownership_transferred_away', user: handoff.previous, orgName: handoff.orgName, counterpartName: handoff.next.name,
       }).catch(warn('previous owner'));

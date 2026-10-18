@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Registration: the pending-registration upsert, verification and its resend cap.
 // Moved from auth.controller.js by BE-11-T04; behaviour unchanged.
 const mongoose = require('mongoose');
@@ -28,10 +29,7 @@ const REGISTER_ACCEPTED_MESSAGE =
 // New, pending and existing addresses leave register through this one function, so their answers cannot drift apart.
 const respondToRegistration = (res, emailResult, email) => {
   if (!emailService.deliveryAccepted(emailResult)) {
-    console.error(
-      '[auth] Registration email could not be sent:',
-      emailResult?.error?.message || emailResult?.reason || 'unknown error'
-    );
+    logger.error('verification_email_failed', { reason: emailResult?.reason, errorMessage: emailResult?.error?.message });
     return res.status(emailResult?.skipped ? 503 : 502).json({
       success: false,
       verificationRequired: true,
@@ -183,10 +181,7 @@ const rotateVerification = async (normalizedEmail) => {
         },
       }
     );
-    console.error(
-      '[auth] Verification resend failed:',
-      result?.error?.message || result?.reason || 'unknown error'
-    );
+    logger.error('verification_resend_failed', { reason: result?.reason, errorMessage: result?.error?.message });
   }
 };
 
@@ -313,7 +308,7 @@ const verifyEmail = async (req, res, next) => {
     });
 
     emailService.sendWelcomeEmail({ user, org, cafe }).catch((error) => {
-      console.warn('[auth] Welcome email failed after verification:', error.message);
+      logger.warn('welcome_email_failed', logger.errorFields(error));
     });
     return res.status(201).json({
       success: true,

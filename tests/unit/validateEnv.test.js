@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const validateEnv = require('../../src/config/validateEnv');
 
 const KEYS = [
@@ -143,9 +144,9 @@ describe('validateEnv', () => {
     process.env.JWT_REFRESH_SECRET = 'development-refresh';
     process.env.CLIENT_URL = 'http://localhost:5185';
     process.env.AI_MODEL_CHAT = 'mistyped-model';
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     expect(() => validateEnv()).not.toThrow();
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/AI_MODEL_CHAT.*unknown model mistyped-model/));
+    expect(warn).toHaveBeenCalledWith('env_warning', { message: expect.stringMatching(/AI_MODEL_CHAT.*unknown model mistyped-model/) });
   });
   it('rejects production startup when an AI feature has no request rules', () => {
     setProductionBaseEnv();
@@ -286,7 +287,7 @@ describe('validateEnv', () => {
   it('does not warn about Yoco webhook secrets while the legacy Yoco integration is disabled', () => {
     setProductionBaseEnv();
     setProductionBillingEnv();
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
     expect(() => validateEnv()).not.toThrow();
     expect(warnSpy).not.toHaveBeenCalled();

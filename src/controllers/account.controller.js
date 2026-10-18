@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const User = require('../models/User.model');
@@ -597,7 +598,7 @@ const handlePaystackReturn = async (req, res) => {
       // A 202 means "not settled yet", which is a legitimate pending outcome.
       // Anything else still must not strand the customer on a blank page.
       if (error?.statusCode !== 202) {
-        console.error('[billing] paystack return reconciliation failed:', error.message);
+        logger.error('payment_return_reconcile_failed', { provider: 'paystack', reference, requestId: req.id, ...logger.errorFields(error) });
       }
       try {
         const session = await PaymentSession.findOne({ reference }).select('status').lean();
@@ -643,7 +644,7 @@ const handlePaystackWebhook = async (req, res, next) => {
       });
     } catch (error) {
       if (![202, 400, 404].includes(error?.statusCode)) {
-        console.error(`[billing] paystack webhook reconciliation failed for ${reference}:`, error.message);
+        logger.error('payment_webhook_reconcile_failed', { provider: 'paystack', reference, event, requestId: req.id, ...logger.errorFields(error) });
         return res.status(500).json({ success: false, message: 'Reconciliation failed; retry later' });
       }
     }
@@ -669,7 +670,7 @@ const handleOneGateWebhook = async (req, res, next) => {
       await reconcilePayment(reference, req.body);
     } catch (error) {
       if (![202, 404, 400].includes(error?.statusCode)) {
-        console.error('[billing] onegate webhook reconciliation failed:', error.message);
+        logger.error('payment_webhook_reconcile_failed', { provider: 'onegate', reference, requestId: req.id, ...logger.errorFields(error) });
       }
     }
     return res.status(200).json({ success: true });

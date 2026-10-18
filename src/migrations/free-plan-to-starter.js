@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 
 /** Rewrite the legacy stored plan; retain the schema enum until GATE-03.
@@ -19,19 +20,19 @@ async function main() {
   const db = mongoose.connection.db;
   if (!process.argv.includes('--apply')) {
     const count = await db.collection('organizations').countDocuments({ plan: 'free' });
-    console.log(`DRY RUN: ${count} organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.`);
+    logger.printLine(`DRY RUN: ${count} organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.`);
     for await (const org of db.collection('organizations').find({ plan: 'free' }, { projection: { _id: 1 } })) {
-      console.log(String(org._id));
+      logger.printLine(String(org._id));
     }
   } else {
-    console.log('APPLIED:', await up(db));
+    logger.printLine('APPLIED: ' + JSON.stringify(await up(db)));
   }
   await mongoose.disconnect();
 }
 
 if (require.main === module) {
   main().catch(async (error) => {
-    console.error('free-plan-to-starter failed:', error.message);
+    logger.fatal('migration_cli_failed', logger.errorFields(error, { stack: true }));
     await mongoose.disconnect().catch(() => null);
     process.exit(1);
   });

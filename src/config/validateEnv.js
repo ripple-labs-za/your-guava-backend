@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const { parseTrustProxyHops } = require('./proxy');
 const { isHardenedEnvironment } = require('./posture');
 const { originChecksEnabled, workforceEnabled } = require('./flags');
@@ -225,7 +226,7 @@ const validateEnv = () => {
     }
   }
 
-  if (!isHardenedEnvironment()) aiModelProblems().forEach((problem) => console.warn(`[env] ${problem}`));
+  if (!isHardenedEnvironment()) aiModelProblems().forEach((problem) => logger.warn('env_warning', { message: problem }));
   if (errors.length > 0) {
     throw new Error(`Environment validation failed:\n - ${errors.join('\n - ')}`);
   }

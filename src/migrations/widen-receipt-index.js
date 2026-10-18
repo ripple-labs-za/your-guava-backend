@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 require('dotenv').config();
 const mongoose = require('mongoose');
 
@@ -30,12 +31,12 @@ async function migrate() {
   const old = indexes.find((i) => sameKey(i.key, OLD_KEY) && i.unique);
   const next = indexes.find((i) => sameKey(i.key, NEW_KEY) && i.unique);
 
-  console.log(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
-  console.log(`  old unique {cafeId, receiptId}       : ${old ? old.name : 'absent'}`);
-  console.log(`  new unique {cafeId, receiptId, date} : ${next ? next.name : 'absent'}`);
+  logger.printLine(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
+  logger.printLine(`  old unique {cafeId, receiptId}       : ${old ? old.name : 'absent'}`);
+  logger.printLine(`  new unique {cafeId, receiptId, date} : ${next ? next.name : 'absent'}`);
 
   if (!apply) {
-    console.log('\nRe-run with --apply to make the change.');
+    logger.printLine('\nRe-run with --apply to make the change.');
     await mongoose.disconnect();
     process.exit(0);
   }
@@ -45,20 +46,20 @@ async function migrate() {
       unique: true,
       partialFilterExpression: { receiptId: { $type: 'string' } },
     });
-    console.log('  created the wider unique index');
+    logger.printLine('  created the wider unique index');
   }
   if (old) {
     await collection.dropIndex(old.name);
-    console.log(`  dropped ${old.name}`);
+    logger.printLine(`  dropped ${old.name}`);
   }
 
-  console.log('done');
+  logger.printLine('done');
   await mongoose.disconnect();
   process.exit(0);
 }
 
 if (require.main === module) {
-  migrate().catch((e) => { console.error(e); process.exit(1); });
+  migrate().catch((e) => { logger.fatal('migration_cli_failed', logger.errorFields(e, { stack: true })); process.exit(1); });
 }
 
 module.exports = { OLD_KEY, NEW_KEY };

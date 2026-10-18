@@ -37,7 +37,8 @@ describe('Launch smoke', () => {
       .set('X-Request-Id', 'launch-smoke-health');
 
     expect(health.status).toBe(200);
-    expect(health.body.requestId).toBe('launch-smoke-health');
+    expect(health.headers['x-client-request-id']).toBe('launch-smoke-health');
+    expect(health.body.requestId).toBe(health.headers['x-request-id']);
 
     const ready = await request.get('/api/ready');
     expect(ready.status).toBe(200);

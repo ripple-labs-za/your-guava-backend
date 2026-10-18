@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('axios');
 
 const axios = require('axios');
@@ -48,7 +49,7 @@ describe('weather cache', () => {
   });
 
   it('does not retry a failed provider for two minutes', async () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     axios.get.mockRejectedValue(new Error('timeout of 8000ms exceeded'));
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -86,7 +87,7 @@ describe('load-shedding lookups', () => {
   });
 
   it('does not retry a failed provider for two minutes', async () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     axios.get.mockRejectedValue(new Error('provider offline'));
 
     await getLoadSheddingStage('Johannesburg');

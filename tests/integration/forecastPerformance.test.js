@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const mongoose = require('mongoose');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const supertest = require('supertest');
@@ -266,14 +267,14 @@ describe('forecast performance', () => {
     jest.spyOn(Forecast, 'findOneAndUpdate').mockImplementation((filter, update, options) => (
       failing.has(update?.$set?.dateKey) ? Promise.reject(new Error('write conflict')) : realUpsert(filter, update, options)
     ));
-    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errors = jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     const outcome = await forecastService.generateWeekForecast(cafe._id).catch((error) => error);
 
     expect(outcome.code).toBe('FORECAST_WEEK_PARTIAL');
     expect(outcome.failures.map((failure) => failure.dateKey).sort()).toEqual([...failing].sort());
     expect(outcome.forecasts).toHaveLength(5);
-    expect(errors.mock.calls.filter(([message]) => String(message).includes('week day generation failed'))).toHaveLength(2);
+    expect(errors.mock.calls.filter(([message]) => message === 'forecast_day_generation_failed')).toHaveLength(2);
   });
 
   it('limits synchronous backfill per user', () => {

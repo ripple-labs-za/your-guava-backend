@@ -1,3 +1,4 @@
+const logger = require('./logger');
 /**
  * How long the event loop waits before it can run the next callback.
  *
@@ -36,9 +37,8 @@ const summarise = (source, windowMs) => {
 
 const defaultLog = (entry) => {
   const level = entry.p99Ms > WARN_P99_MS ? 'warn' : 'info';
-  const line = JSON.stringify({ level, event: 'event_loop_lag', ...entry });
-  if (level === 'warn') console.warn(line);
-  else console.info(line);
+  if (level === 'warn') logger.warn('event_loop_lag', entry);
+  else logger.info('event_loop_lag', entry);
 };
 
 const startEventLoopMonitor = ({

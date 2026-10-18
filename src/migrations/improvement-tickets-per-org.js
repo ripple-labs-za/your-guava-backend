@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Improvement = require('../models/Improvement.model');
@@ -27,10 +28,10 @@ if (require.main === module) {
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     const result = await migrateImprovementTicketIndexes({ apply: process.argv.includes('--apply') });
-    console.info(JSON.stringify({ event: 'migration', name: 'improvement-tickets-per-org', ...result }));
+    logger.info('migration', { name: 'improvement-tickets-per-org', ...result });
     await mongoose.disconnect();
   })().catch((error) => {
-    console.error(error);
+    logger.fatal('migration_cli_failed', logger.errorFields(error, { stack: true }));
     process.exitCode = 1;
   });
 }

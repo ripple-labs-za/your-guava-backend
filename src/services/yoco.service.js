@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const { outboundGet, outboundPost } = require('../utils/http');
 const crypto = require('crypto');
@@ -241,7 +242,7 @@ async function fetchAllOrders(accessToken, startDate, endDate) {
   } while (cursor);
 
   if (truncated) {
-    console.warn(JSON.stringify({ level: 'warn', event: 'yoco_sync_truncated', reason: truncated, pages }));
+    logger.warn('yoco_sync_truncated', { reason: truncated, pages });
   }
   return { orders, pages, truncated };
 }
@@ -350,7 +351,7 @@ async function syncOrders(cafeId, orders) {
       if (err.code === 11000) {
         skipped++;
       } else {
-        console.error('[yoco sync] Order error:', err.message);
+        logger.error('yoco_order_sync_failed', logger.errorFields(err));
         errors++;
       }
     }
@@ -398,7 +399,7 @@ async function processWebhookEvent(payload) {
     '+yocoTokens.accessToken +yocoTokens.refreshToken'
   );
   if (!cafe) {
-    console.warn(`[yoco webhook] No cafe found for business_id: ${business_id}`);
+    logger.warn('yoco_webhook_unknown_business', { businessId: business_id });
     return;
   }
 
@@ -411,7 +412,7 @@ async function processWebhookEvent(payload) {
   );
 
   const result = await syncOrders(cafe._id, [order]);
-  console.log(`[yoco webhook] Synced order ${order_id}: ${result.imported} imported`);
+  logger.info('yoco_webhook_synced', { orderId: order_id, imported: result.imported });
 
   // Update last sync time
   await Cafe.findByIdAndUpdate(cafe._id, { lastSyncAt: new Date() });

@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const {
   startEventLoopMonitor, stopEventLoopMonitor, getEventLoopStats,
 } = require('../../src/utils/eventLoopMonitor');
@@ -39,13 +40,13 @@ describe('event-loop lag monitor', () => {
   });
 
   it('writes one structured event_loop_lag line per window by default, as a warning when p99 passes 200 ms', async () => {
-    const info = jest.spyOn(console, 'info').mockImplementation(() => {});
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     startEventLoopMonitor({ intervalMs: 100 });
     await sleep(30);
     stallFor(260);
     await sleep(250);
-    const lines = [...info.mock.calls, ...warn.mock.calls].map(([line]) => JSON.parse(line));
+    const lines = [...info.mock.calls, ...warn.mock.calls].map(([event, fields]) => ({ event, ...fields }));
     expect(lines.length).toBeGreaterThanOrEqual(2);
     expect(lines.every((line) => line.event === 'event_loop_lag')).toBe(true);
     expect(warn.mock.calls.length).toBeGreaterThanOrEqual(1);

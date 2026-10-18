@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const { setup, teardown, clearDB, createTestUser } = require('../setup');
 const Organization = require('../../src/models/Organization.model');
 const emailService = require('../../src/services/email.service');
@@ -122,7 +123,7 @@ describe('period-end reminders (gap-3)', () => {
   it('retries a reminder whose delivery failed, and records it once', async () => {
     const owner = await createTestUser();
     await paidUntil(owner.user.orgId, 6.5 * DAY);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const send = jest.spyOn(emailService, 'sendBillingReminderEmail')
       .mockResolvedValueOnce({ sent: false, error: 'provider down' })
       .mockResolvedValueOnce({ sent: true });

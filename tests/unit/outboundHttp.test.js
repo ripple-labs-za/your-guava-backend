@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const { AxiosError } = require('axios');
 const {
   outboundPolicy,
@@ -20,7 +21,7 @@ let warnSpy;
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
   for (const key of ENV_KEYS) delete process.env[key];
-  warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -107,8 +108,7 @@ describe('outbound HTTP policy', () => {
     expect(took).toBeGreaterThanOrEqual(90);
     expect(took).toBeLessThan(1000);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(warnSpy.mock.calls[0][0])).toEqual({
-      level: 'warn',
+    expect({ event: warnSpy.mock.calls[0][0], ...warnSpy.mock.calls[0][1] }).toEqual({
       event: 'outbound_timeout',
       service: 'yoco',
       phase: 'total',
@@ -116,7 +116,7 @@ describe('outbound HTTP policy', () => {
       method: 'POST',
       host: 'yoco.invalid',
     });
-    expect(warnSpy.mock.calls[0][0]).not.toContain('never-logged');
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('never-logged');
   });
 
   it('maps an axios socket timeout to the same named error', async () => {

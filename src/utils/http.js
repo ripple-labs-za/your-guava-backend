@@ -1,3 +1,4 @@
+const logger = require('./logger');
 const axios = require('axios');
 
 /**
@@ -88,15 +89,7 @@ const hostOf = (url) => {
 };
 
 const logTimeout = (error, context = {}) => {
-  console.warn(JSON.stringify({
-    level: 'warn',
-    event: 'outbound_timeout',
-    service: error.service,
-    phase: error.phase,
-    timeoutMs: error.timeoutMs,
-    ...(context.method ? { method: context.method } : {}),
-    ...(context.host ? { host: context.host } : {}),
-  }));
+  logger.warn('outbound_timeout', { service: error.service, phase: error.phase, timeoutMs: error.timeoutMs, ...(context.method ? { method: context.method } : {}), ...(context.host ? { host: context.host } : {}) });
 };
 
 const asTimeout = (error, policy, controller) => {

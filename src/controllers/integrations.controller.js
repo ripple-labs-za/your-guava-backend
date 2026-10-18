@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const Cafe = require('../models/Cafe.model');
 const { encryptSecret, decryptSecret } = require('../services/secrets.service');
 const {
@@ -167,7 +168,7 @@ const callback = async (req, res, _next) => {
     await Cafe.findByIdAndUpdate(activeCafeId(req), { $set: update });
     return res.status(200).json({ success: true });
   } catch (error) {
-    console.error('[integrations] OAuth callback failed:', error?.message);
+    logger.error('integration_oauth_callback_failed', { provider: req.params?.provider, ...logger.errorFields(error) });
     return res.status(isConfigError(error) ? 503 : 502).json({
       success: false,
       code: isConfigError(error) ? 'INTEGRATION_NOT_CONFIGURED' : 'OAUTH_CALLBACK_FAILED',

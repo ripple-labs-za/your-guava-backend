@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Forecast generation for a day and a week: trading availability, signals, grouping, calibration, per-item loop, upsert.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
 const Transaction = require('../../models/Transaction.model');
@@ -605,7 +606,7 @@ const generateForecastsForDates = async (cafeId, dates, { origin = 'live', conte
     }
     const dateKey = zonedDateKey(targets[index], context.timezone);
     const message = result.reason?.message || 'Forecast generation failed';
-    console.error(`[forecasts] week day generation failed for ${dateKey}:`, message);
+    logger.error('forecast_day_generation_failed', { dateKey, errorMessage: message });
     failures.push({ dateKey, message });
   });
   return { forecasts, failures };

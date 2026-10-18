@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('../../src/services/r2.service', () => ({
   uploadFile: async () => {}, downloadFile: async () => Buffer.from(''), getSignedDownloadUrl: async () => 'https://test.r2.local',
   deleteFile: async () => {}, _resetClient: () => {},
@@ -39,7 +40,7 @@ it('answers the reconciliation page for a crafted menu in under 1 s', async () =
     reviewStatus: 'needs_review', totalSold: 1, isActive: true,
   }));
   await Item.insertMany([...matched, ...review]);
-  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
 
   const outcome = await measureBudget(() => request
     .get('/api/items/reconciliation?limit=100')

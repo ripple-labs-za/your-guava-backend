@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const {
   getAnthropicClientOptions,
   asUpstreamAiError,
@@ -53,7 +54,7 @@ describe('Anthropic upstream error wrapping', () => {
   let logSpy;
 
   beforeEach(() => {
-    logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -111,7 +112,7 @@ describe('Anthropic upstream error wrapping', () => {
     ).rejects.toMatchObject({ statusCode: 502, upstreamStatus: 401 });
 
     expect(logSpy).toHaveBeenCalledWith(
-      '[anthropic] proposeColumnMapping failed: status=401 type=authentication_error'
+      'ai_call_failed', { operation: 'proposeColumnMapping', status: 401, type: 'authentication_error' }
     );
   });
 
@@ -134,7 +135,7 @@ describe('provider error classification', () => {
     expect(asUpstreamAiError(unparseable).upstreamMessage).not.toMatch(/raw|private|payload/);
   });
   let logSpy;
-  beforeEach(() => { logSpy = jest.spyOn(console, 'error').mockImplementation(() => {}); });
+  beforeEach(() => { logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {}); });
   afterEach(() => { jest.restoreAllMocks(); });
 
   const providerError = (status, type, extra = {}) => Object.assign(new Error(`${status} {"type":"error"}`), {
@@ -199,7 +200,7 @@ describe('provider error classification', () => {
       { requestId: 'req-local-0001' }
     )).rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_FAILED' });
     expect(logSpy).toHaveBeenCalledWith(
-      '[anthropic] streamBusinessChatResponse failed: status=401 type=authentication_error requestId=req-local-0001 providerRequestId=req_401'
+      'ai_call_failed', { operation: 'streamBusinessChatResponse', status: 401, type: 'authentication_error', requestId: 'req-local-0001', providerRequestId: 'req_401' }
     );
   });
 

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Cafe = require('../models/Cafe.model');
@@ -28,8 +29,8 @@ const backfillEventDateKeys = async ({ apply = false, cafeId } = {}) => {
 if (require.main === module) {
   mongoose.connect(process.env.MONGODB_URI)
     .then(() => backfillEventDateKeys({ apply: process.argv.includes('--apply') }))
-    .then((stats) => { console.log(JSON.stringify(stats)); return mongoose.disconnect(); })
-    .catch((error) => { console.error(error); process.exit(1); });
+    .then((stats) => { logger.printLine(JSON.stringify(stats)); return mongoose.disconnect(); })
+    .catch((error) => { logger.fatal('migration_cli_failed', logger.errorFields(error, { stack: true })); process.exit(1); });
 }
 
 module.exports = { name: 'backfill-event-date-keys', backfillEventDateKeys };

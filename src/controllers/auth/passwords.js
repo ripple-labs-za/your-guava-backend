@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Passwords: forgot (deferred delivery), reset and change.
 // Moved from auth.controller.js by BE-11-T04; behaviour unchanged.
 const mongoose = require('mongoose');
@@ -41,7 +42,7 @@ const deliverPasswordReset = async (normalizedEmail) => {
       { _id: record._id, status: 'pending' },
       { $set: { status: 'revoked', revokedAt: new Date() } }
     );
-    console.error('[auth] Password reset email failed:', result?.error?.message || result?.reason || 'unknown error');
+    logger.error('password_reset_email_failed', { reason: result?.reason, errorMessage: result?.error?.message });
   }
 };
 
@@ -125,7 +126,7 @@ const resetPassword = async (req, res, next) => {
     });
 
     emailService.sendSecurityNoticeEmail({ kind: 'password_reset', user: holder })
-      .catch((error) => console.warn('[auth] password reset notice failed:', error.message));
+      .catch((error) => logger.warn('password_reset_notice_failed', logger.errorFields(error)));
 
     clearRefreshCookie(res);
     return res.status(200).json({
@@ -204,7 +205,7 @@ const changePassword = async (req, res, next) => {
 
     // identity-16: the account holder hears about it; a failed notice never fails the change.
     emailService.sendSecurityNoticeEmail({ kind: 'password_changed', user: holder })
-      .catch((error) => console.warn('[auth] password change notice failed:', error.message));
+      .catch((error) => logger.warn('password_change_notice_failed', logger.errorFields(error)));
 
     clearRefreshCookie(res);
 

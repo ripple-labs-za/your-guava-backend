@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 jest.mock('axios');
 
 const axios = require('axios');
@@ -10,15 +11,18 @@ const toDateKey = (date) => {
 
 describe('weather service', () => {
   it('warns once per process, not once per call, when weather is not configured', async () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.WEATHER_API_KEY = '';
     await jest.isolateModulesAsync(async () => {
-      const { getWeatherForecast: fresh } = require('../../src/services/weather.service');
-      await fresh(-33.9, 18.4, new Date());
-      await fresh(-33.9, 18.4, new Date());
+      const isolatedLogger = require('../../src/utils/logger');
+      const warn = jest.spyOn(isolatedLogger, 'warn').mockImplementation(() => {});
+      try {
+        const { getWeatherForecast: fresh } = require('../../src/services/weather.service');
+        await fresh(-33.9, 18.4, new Date());
+        await fresh(-33.9, 18.4, new Date());
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith('weather_unconfigured', {});
+      } finally { warn.mockRestore(); }
     });
-    expect(warn).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
   });
 
   const originalKey = process.env.WEATHER_API_KEY;
@@ -190,7 +194,7 @@ describe('weather service', () => {
   });
 
   it('does not fabricate weather when the provider request fails', async () => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     axios.get.mockRejectedValueOnce(new Error('provider offline'));
 
     const result = await getWeatherForecast(-33.9, 18.4, new Date());

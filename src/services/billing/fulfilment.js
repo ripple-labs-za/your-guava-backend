@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Fulfilment: applying a paid plan or credit pack to the organisation, and the mock credit purchase.
 // Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
 const Organization = require('../../models/Organization.model');
@@ -68,11 +69,7 @@ const warnOnOverCapacityPlan = async (orgId, previousPlanId, nextPlanId) => {
   }
   const capacity = await getPlanCapacity(orgId, nextPlan.id);
   if (!capacity.seats.exceeded && !capacity.locations.exceeded) return;
-  console.warn(
-    `[billing] org ${orgId} is over capacity on the paid ${nextPlan.id} plan:`,
-    `${capacity.seats.used}/${capacity.seats.included} seats,`,
-    `${capacity.locations.used}/${capacity.locations.included} locations`
-  );
+  logger.warn('org_over_capacity', { orgId: String(orgId), plan: nextPlan.id, seatsUsed: capacity.seats.used, seatsIncluded: capacity.seats.included, locationsUsed: capacity.locations.used, locationsIncluded: capacity.locations.included });
 };
 
 const planChangeConflictError = (pending) => {
@@ -210,7 +207,7 @@ const applyDuePlanChange = async (org, now = new Date()) => {
     if (updated.plan !== org.plan) {
       await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
       invalidateFutureForecastsForOrg(org._id).catch((error) => {
-        console.error('[billing] forecast invalidation after a scheduled plan change failed:', error.message);
+        logger.error('forecast_invalidation_failed', logger.errorFields(error));
       });
     }
     return updated;

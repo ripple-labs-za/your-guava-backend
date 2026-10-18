@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const errorMiddleware = require('../../src/middleware/error.middleware');
 
 const createResponse = () => {
@@ -19,7 +20,7 @@ describe('error middleware', () => {
 
   it('does not expose messages or details for production server errors', () => {
     process.env.NODE_ENV = 'production';
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const response = createResponse();
 
     errorMiddleware(
@@ -49,7 +50,7 @@ describe('error middleware', () => {
     // reasonable fear they had just been billed for nothing. Opt-in only, and
     // only ever set on a fixed string the product authored.
     process.env.NODE_ENV = 'production';
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const response = createResponse();
     const friendly = 'The AI service is temporarily unavailable. No credits were charged — please try again shortly.';
 
@@ -75,7 +76,7 @@ describe('error middleware', () => {
 
   it('still redacts a 5xx that did not opt in, even alongside upstream detail', () => {
     process.env.NODE_ENV = 'production';
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     const response = createResponse();
 
     errorMiddleware(
@@ -97,7 +98,7 @@ describe('error middleware', () => {
 
   it('logs upstream provider detail for wrapped AI failures without exposing it to the client', () => {
     process.env.NODE_ENV = 'development';
-    const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
     const response = createResponse();
     const rawBody = '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}';
     const cause = Object.assign(new Error(`401 ${rawBody}`), {
@@ -119,9 +120,9 @@ describe('error middleware', () => {
     );
 
     expect(logSpy).toHaveBeenCalledTimes(1);
-    const entry = JSON.parse(logSpy.mock.calls[0][0]);
+    const [event, entry] = logSpy.mock.calls[0];
+    expect(event).toBe('request_error');
     expect(entry).toEqual(expect.objectContaining({
-      event: 'request_error',
       statusCode: 503,
       upstreamStatus: 401,
       upstreamMessage: 'authentication_error: invalid x-api-key',
@@ -136,7 +137,7 @@ describe('error middleware', () => {
   });
 
   it('omits upstream fields from the log when an error carries none', () => {
-    const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
 
     errorMiddleware(
       new Error('boom'),
@@ -145,7 +146,8 @@ describe('error middleware', () => {
       jest.fn()
     );
 
-    const entry = JSON.parse(logSpy.mock.calls[0][0]);
+    const [event, entry] = logSpy.mock.calls[0];
+    expect(event).toBe('request_error');
     expect(entry).not.toHaveProperty('upstreamStatus');
     expect(entry).not.toHaveProperty('upstreamMessage');
   });
@@ -194,7 +196,7 @@ describe('error middleware', () => {
   });
 it('keeps an opted-in AI error code and retry hint in production', () => {
   process.env.NODE_ENV = 'production';
-  jest.spyOn(console, 'error').mockImplementation(() => {});
+  jest.spyOn(logger, 'error').mockImplementation(() => {});
   const response = createResponse();
   const friendly = 'The AI service is busy right now. No credits were charged. Try again in a minute.';
 
@@ -218,4 +220,21 @@ it('keeps an opted-in AI error code and retry hint in production', () => {
   });
 });
 
+});
+
+it('logs an error\'s logContext as context and never sends it to the client', () => {
+  const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+  const response = createResponse();
+  errorMiddleware(
+    Object.assign(new Error('We could not save this file on our server.'), {
+      statusCode: 500,
+      exposeMessage: true,
+      logContext: { stage: 'upload_storage', code: 'ENOSPC', cause: "ENOSPC: no space left on device, open '/app/uploads/x.csv'" },
+    }),
+    { id: 'request-ctx', method: 'POST', path: '/upload' },
+    response,
+    jest.fn()
+  );
+  expect(logSpy.mock.calls[0][1].context).toMatchObject({ code: 'ENOSPC' });
+  expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('ENOSPC');
 });

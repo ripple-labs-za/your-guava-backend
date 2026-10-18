@@ -1,3 +1,4 @@
+const logger = require('../../src/utils/logger');
 const axios = require('axios');
 const { setup, teardown, clearDB, createTestUser } = require('../setup');
 const Organization = require('../../src/models/Organization.model');
@@ -42,7 +43,7 @@ describe('the sweeper over Paystack sessions whose return and webhook were lost'
     const lookup = jest.spyOn(axios, 'get').mockResolvedValue({
       data: verifyResponse('success', { reference: 'sweep-mismatch', amountRand: 120, id: 6300099 }),
     });
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
     await reconcilePendingPayments({ minAgeMs: 0 });
     expect(lookup).toHaveBeenCalledTimes(1);
     expect((await PaymentSession.findOne({ reference: 'sweep-mismatch' }).lean()).status).toBe('needs_attention');

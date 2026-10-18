@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 // Invitations: create, preview, accept, resend and revoke, with the TTL and token helpers.
 // Moved from team.controller.js by BE-11-T03; behaviour unchanged.
 const mongoose = require('mongoose');
@@ -203,12 +204,9 @@ const inviteManager = async (req, res, next) => {
         : 'Team invite email could not be sent. No usable invitation remains.';
 
       if (providerMissing) {
-        console.warn(`[team] invitation ${invitation._id} blocked because email is not configured`);
+        logger.warn('invitation_email_unconfigured', { invitationId: String(invitation._id) });
       } else {
-        console.error(
-          `[team] invitation ${invitation._id} email failed and was revoked:`,
-          emailResult?.error?.message || 'unknown error'
-        );
+        logger.error('invitation_email_failed', { invitationId: String(invitation._id), errorMessage: emailResult?.error?.message });
       }
 
       return res.status(providerMissing ? 503 : 502).json({
