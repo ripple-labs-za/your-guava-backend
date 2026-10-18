@@ -5,8 +5,9 @@ const axios = require('axios');
  * One outbound HTTP policy for every third-party call the API makes.
  *
  * Each call gets two limits from this table:
- *   connectTimeoutMs  axios `timeout` / the S3 handler's connectionTimeout. In Node, axios arms it as a
- *                     socket-inactivity timer, so it fires on a stalled connect or a response that stops.
+ *   connectTimeoutMs  the S3 handler's connectionTimeout. Axios's default follow-redirects transport
+ *                     also applies its timeout while waiting for response headers, so axios uses the
+ *                     total limit below rather than cutting healthy providers off after five seconds.
  *   totalTimeoutMs    a wall-clock deadline for the whole call, body included. It aborts the request
  *                     through an AbortSignal and settles the caller even when an SDK ignores the signal.
  * A timed-out call rejects with OutboundTimeoutError (504, UPSTREAM_TIMEOUT) and logs one JSON line, so
@@ -38,10 +39,23 @@ const TIMEOUT_CODES = new Set([
   'UND_ERR_BODY_TIMEOUT',
 ]);
 
-const boundedMs = (raw, fallback, { min, max }) => {
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
+const warnedSettings = new Map();
+const boundedMs = (variable, fallback, { min, max }) => {
+  const raw = process.env[variable];
+  if (raw === undefined) {
+    warnedSettings.delete(variable);
+    return fallback;
+  }
+  if (!/^\d+$/.test(raw)) {
+    if (warnedSettings.get(variable) !== raw) {
+      // Name the knob and fallback, never echo an arbitrary environment value.
+      logger.warn('outbound_timeout_config_invalid', { variable, defaultTimeoutMs: fallback });
+      warnedSettings.set(variable, raw);
+    }
+    return fallback;
+  }
+  warnedSettings.delete(variable);
+  return Math.max(min, Math.min(max, Number(raw)));
 };
 
 const outboundPolicy = (service) => {
@@ -50,16 +64,19 @@ const outboundPolicy = (service) => {
   }
   const { label, totalTimeoutMs: defaultTotal } = OUTBOUND_SERVICES[service];
   const totalTimeoutMs = boundedMs(
-    process.env[`OUTBOUND_${service.toUpperCase()}_TIMEOUT_MS`],
+    `OUTBOUND_${service.toUpperCase()}_TIMEOUT_MS`,
     defaultTotal,
     TOTAL_BOUNDS
   );
   const connectTimeoutMs = Math.min(
-    boundedMs(process.env.OUTBOUND_CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT_MS, CONNECT_BOUNDS),
+    boundedMs('OUTBOUND_CONNECT_TIMEOUT_MS', DEFAULT_CONNECT_TIMEOUT_MS, CONNECT_BOUNDS),
     totalTimeoutMs
   );
   return Object.freeze({ service, label, connectTimeoutMs, totalTimeoutMs });
 };
+
+// Validate even unused providers when the module loads during server startup.
+for (const service of Object.keys(OUTBOUND_SERVICES)) outboundPolicy(service);
 
 class OutboundTimeoutError extends Error {
   constructor(policy, phase = 'total', cause) {
@@ -92,18 +109,18 @@ const logTimeout = (error, context = {}) => {
   logger.warn('outbound_timeout', { service: error.service, phase: error.phase, timeoutMs: error.timeoutMs, ...(context.method ? { method: context.method } : {}), ...(context.host ? { host: context.host } : {}) });
 };
 
-const asTimeout = (error, policy, controller) => {
+const asTimeout = (error, policy, controller, timeoutPhase) => {
   if (isOutboundTimeout(error)) return error;
   if (controller.signal.aborted && isOutboundTimeout(controller.signal.reason)) {
     return controller.signal.reason;
   }
   if (TIMEOUT_CODES.has(error?.code) || error?.name === 'TimeoutError') {
-    return new OutboundTimeoutError(policy, 'connect', error);
+    return new OutboundTimeoutError(policy, timeoutPhase, error);
   }
   return null;
 };
 
-const withDeadline = async (service, run, { signal: callerSignal, context } = {}) => {
+const withDeadline = async (service, run, { signal: callerSignal, context, timeoutPhase = 'connect' } = {}) => {
   const policy = outboundPolicy(service);
   const controller = new AbortController();
   let timer;
@@ -121,7 +138,7 @@ const withDeadline = async (service, run, { signal: callerSignal, context } = {}
   try {
     return await Promise.race([Promise.resolve().then(() => run(signal, policy)), deadline]);
   } catch (error) {
-    const timeout = asTimeout(error, policy, controller);
+    const timeout = asTimeout(error, policy, controller, timeoutPhase);
     if (!timeout) throw error;
     logTimeout(timeout, context);
     throw timeout;
@@ -132,7 +149,7 @@ const withDeadline = async (service, run, { signal: callerSignal, context } = {}
 
 const withTimeouts = (policy, config, signal) => ({
   ...config,
-  timeout: policy.connectTimeoutMs,
+  timeout: policy.totalTimeoutMs,
   signal,
 });
 
@@ -140,12 +157,14 @@ const withTimeouts = (policy, config, signal) => ({
 const outboundGet = (service, url, config = {}) =>
   withDeadline(service, (signal, policy) => axios.get(url, withTimeouts(policy, config, signal)), {
     signal: config.signal,
+    timeoutPhase: 'total',
     context: { method: 'GET', host: hostOf(url) },
   });
 
 const outboundPost = (service, url, data, config = {}) =>
   withDeadline(service, (signal, policy) => axios.post(url, data, withTimeouts(policy, config, signal)), {
     signal: config.signal,
+    timeoutPhase: 'total',
     context: { method: 'POST', host: hostOf(url) },
   });
 

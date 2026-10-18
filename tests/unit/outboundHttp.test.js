@@ -72,13 +72,13 @@ describe('outbound HTTP policy', () => {
     expect(outboundPolicy('yoco').connectTimeoutMs).toBe(100);
   });
 
-  it('passes the connect timeout and an abort signal to axios', async () => {
+  it('passes the total timeout and an abort signal to axios', async () => {
     const adapter = jest.fn(async (config) => ({
       data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config,
     }));
     await outboundGet('yoco', 'https://yoco.invalid/v1/orders/', { adapter, params: { limit: 50 } });
     const [config] = adapter.mock.calls[0];
-    expect(config.timeout).toBe(5000);
+    expect(config.timeout).toBe(20000);
     expect(config.signal).toBeInstanceOf(AbortSignal);
     expect(config.params).toEqual({ limit: 50 });
   });
@@ -119,11 +119,11 @@ describe('outbound HTTP policy', () => {
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('never-logged');
   });
 
-  it('maps an axios socket timeout to the same named error', async () => {
+  it('maps an axios response timeout to the same named total-deadline error', async () => {
     const adapter = (config) =>
-      Promise.reject(new AxiosError('timeout of 5000ms exceeded', 'ECONNABORTED', config));
+      Promise.reject(new AxiosError('timeout of 15000ms exceeded', 'ECONNABORTED', config));
     await expect(outboundGet('xero', 'https://api.xero.invalid/connections', { adapter }))
-      .rejects.toMatchObject({ name: 'OutboundTimeoutError', service: 'xero', phase: 'connect', timeoutMs: 5000 });
+      .rejects.toMatchObject({ name: 'OutboundTimeoutError', service: 'xero', phase: 'total', timeoutMs: 15000 });
   });
 
   it('passes every other failure through untouched', async () => {
