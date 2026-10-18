@@ -165,8 +165,10 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
   let totalActual = 0;
 
   const owners = new Map();
+  const canonicalPredictions = new Map();
   for (const fi of forecast.items) {
     const key = canonicalItemId(itemIndex, fi.salesItemId);
+    if (key) canonicalPredictions.set(key, (canonicalPredictions.get(key) || 0) + storedPrediction(fi));
     if (key && (!owners.has(key) || String(fi.salesItemId) === key)) owners.set(key, fi);
   }
   let mergedLine = false;
@@ -203,7 +205,13 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
       : null;
 
   forecast.accuracy = accuracy !== null ? parseFloat(accuracy.toFixed(1)) : undefined;
-  const itemAccuracy = itemWape(forecast.items, { totalPredicted, totalActual });
+  // A merge combines demand, so compare the owner's actual against every
+  // prediction for its canonical item without changing the stored forecasts.
+  const scoringItems = forecast.items.filter((fi) => fi.actualQty != null).map((fi) => ({
+    expectedQty: canonicalPredictions.get(canonicalItemId(itemIndex, fi.salesItemId)) ?? storedPrediction(fi),
+    actualQty: fi.actualQty,
+  }));
+  const itemAccuracy = itemWape(scoringItems, { totalPredicted, totalActual });
   forecast.itemAccuracy = itemAccuracy !== null ? parseFloat(itemAccuracy.toFixed(1)) : undefined;
   forecast.actualRevenue = parseFloat(actualRevenue.toFixed(2));
   forecast.actualTransactionCount = transactions.length;

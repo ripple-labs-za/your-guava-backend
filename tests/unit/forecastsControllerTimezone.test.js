@@ -10,6 +10,7 @@ const mockClearApiCache = jest.fn();
 jest.mock('../../src/models/Forecast.model', () => ({
   findOne: (...args) => mockForecastFindOne(...args),
   find: (...args) => mockForecastFind(...args),
+  countDocuments: jest.fn().mockResolvedValue(0),
   deleteMany: jest.fn(),
 }));
 jest.mock('../../src/models/Cafe.model', () => ({
@@ -141,7 +142,9 @@ describe('forecast controller cafe-local dates', () => {
     const sort = jest.fn().mockReturnValue({ select });
     mockForecastFind.mockReturnValue({ sort });
 
-    await controller.getAccuracy(req(), response(), jest.fn());
+    const next = jest.fn();
+    await controller.getAccuracy(req(), response(), next);
+    expect(next).not.toHaveBeenCalled();
 
     expect(mockForecastFind.mock.calls[0][0].date).toEqual({
       $gte: new Date('2026-02-06T05:00:00.000Z'),

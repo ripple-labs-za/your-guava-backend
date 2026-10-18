@@ -58,12 +58,50 @@ describe('forecast accuracy honesty', () => {
   it('leaves days the product called insufficient_data out of the headline accuracy', async () => {
     for (let d = 1; d <= 5; d += 1) await scoredDay(cafe._id, d, { accuracy: 90 });
     for (let d = 6; d <= 8; d += 1) await scoredDay(cafe._id, d, { status: 'insufficient_data', accuracy: 40 });
+    await scoredDay(cafe._id, 40, { status: 'insufficient_data', accuracy: 40 });
+    const unscored = await scoredDay(cafe._id, 9, { status: 'insufficient_data', accuracy: 40 });
+    await Forecast.updateOne({ _id: unscored._id }, { $unset: { actualsUpdatedAt: 1 } });
 
     const res = await request.get('/api/forecasts/accuracy').set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
     // (5 x 90 + 3 x 40) / 8 = 71.3 when the disowned days are counted.
     expect(res.body).toEqual(expect.objectContaining({ basis: 'live', liveCount: 5, avgAccuracy: 90, excludedInsufficientDays: 3 }));
+  });
+
+  it.each([
+    [50, 50, 100],
+    [30, 30, 60],
+    [70, 70, 60],
+  ])('scores merged predictions %s + %s against canonical actuals', async (oldPrediction, rootPrediction, expectedAccuracy) => {
+    const Item = require('../../src/models/Item.model');
+    const day = localDay(1);
+    const [oldItem, root] = await Item.create([
+      { cafeId: cafe._id, name: 'Flat White Old', normalizedName: 'flat white old', reviewStatus: 'merged' },
+      { cafeId: cafe._id, name: 'Flat White', normalizedName: 'flat white', reviewStatus: 'matched' },
+    ]);
+    await Item.updateOne({ _id: oldItem._id }, { mergedInto: root._id });
+    await Forecast.create({
+      cafeId: cafe._id, date: day, generatedAt: new Date(), signals: quietSignals, totalPredictedRevenue: 0,
+      items: [
+        { itemName: 'Flat White Old', salesItemId: oldItem._id, predictedQty: oldPrediction, expectedQty: oldPrediction },
+        { itemName: 'Flat White', salesItemId: root._id, predictedQty: rootPrediction, expectedQty: rootPrediction },
+      ],
+      forecastCoverage: { itemCount: 2, storedItemCount: 2, totalPredictedQty: oldPrediction + rootPrediction, includesAllRevenue: true },
+    });
+    await Transaction.create({
+      cafeId: cafe._id, date: at(day, 10), hour: 10, dayOfWeek: 0, status: 'approved', total: 3000,
+      items: [
+        { name: 'Flat White Old', salesItemId: oldItem._id, quantity: 40, unitPrice: 30 },
+        { name: 'Flat White', salesItemId: root._id, quantity: 60, unitPrice: 30 },
+      ],
+    });
+    const scored = (await updateForecastActuals(cafe._id, day)).toObject();
+    expect(scored.accuracy).toBe(expectedAccuracy);
+    expect(scored.itemAccuracy).toBe(expectedAccuracy);
+    expect(scored.calibrationExcluded).toBe(true);
+    expect(scored.items.map((item) => item.expectedQty)).toEqual([oldPrediction, rootPrediction]);
+    expect(scored.items.map((item) => item.actualQty)).toEqual([null, 100]);
   });
 
   it('scores a day by item-level error as well as volume', async () => {
