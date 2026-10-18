@@ -14,18 +14,18 @@ const {
 const {
   getForecastSettings, getFactorEntitlements, factorUnlocked, buildGlobalFactors, buildItemFactors, multiplyFactors,
 } = require('../forecastFactors.service');
-const { getCafeTradingHours, parseTime } = require('../../utils/tradingHours');
+const { resolveDaySchedule, parseTime } = require('../../utils/tradingHours');
 const {
   clamp, computeForecastCalibration, CALIBRATION_LOOKBACK_DAYS, buildLearningFactor, calibrationMultiplierForItem,
 } = require('./calibration');
 const {
   groupByWeekAndItem, buildHistoricalPriceMap, weightedAverage, forecastConfidence, requiredHistoryWeeks,
   bucketDateKeys, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
-  deFactorItemBuckets, winsoriseBuckets,
+  deFactorItemBuckets, winsoriseBuckets, buildHourlyProfile,
 } = require('./history');
 const { computeSuggestedStockMap } = require('./stock');
 
-const FORECAST_MODEL_VERSION = '2026-09-29.1';
+const FORECAST_MODEL_VERSION = '2026-09-29.2';
 const MAX_STORED_FORECAST_ITEMS = 25;
 
 /**
@@ -35,41 +35,60 @@ const MAX_STORED_FORECAST_ITEMS = 25;
  * hours in Settings, 'event' for a closure or partial-closure event in Factors
  * -- because the remedy the operator is shown has to match the cause.
  */
-const getTradingAvailability = (cafe, events, dayOfWeek) => {
-  const schedule = getCafeTradingHours(cafe).find((entry) => entry.dayOfWeek === dayOfWeek);
+const MIN_HOURLY_PROFILE_UNITS = 50;
+const overlapMinutes = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+
+// Share of the scheduled day's units that fall inside the (merged, clipped) closure intervals; null when the profile is too thin.
+const hourlyClosedShare = (profile, openMinutes, closeMinutes, intervals) => {
+  if (!(profile instanceof Map) || intervals.length === 0) return null;
+  let scheduled = 0;
+  let closed = 0;
+  for (const [hour, units] of profile.entries()) {
+    const start = hour * 60;
+    const openPart = overlapMinutes(start, start + 60, openMinutes, closeMinutes) / 60;
+    if (openPart <= 0) continue;
+    scheduled += units * openPart;
+    for (const [from, to] of intervals) closed += units * (overlapMinutes(start, start + 60, from, to) / 60);
+  }
+  if (scheduled < MIN_HOURLY_PROFILE_UNITS) return null;
+  return Math.min(1, closed / scheduled);
+};
+
+const mergeIntervals = (intervals) => {
+  const merged = [];
+  for (const interval of [...intervals].sort((left, right) => left[0] - right[0])) {
+    const last = merged[merged.length - 1];
+    if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
+    else merged.push([...interval]);
+  }
+  return merged;
+};
+
+const getTradingAvailability = (cafe, events, dayOfWeek, { hasSalesHistory = false, hourlyProfile = null } = {}) => {
+  const schedule = resolveDaySchedule(cafe, dayOfWeek, { hasSalesHistory });
   if (!schedule?.isOpen) {
     return {
-      status: 'closed',
-      multiplier: 0,
-      reason: 'Cafe is closed in its trading hours',
-      source: 'schedule',
+      status: 'closed', multiplier: 0, reason: 'Cafe is closed in its trading hours', source: 'schedule',
+      scheduleSource: schedule?.source || 'default',
     };
   }
-
   const fullClosure = (events || []).find((event) => event.type === 'closure');
   if (fullClosure) {
     return {
-      status: 'closed',
-      multiplier: 0,
-      reason: fullClosure.name || 'Cafe closure',
-      source: 'event',
-      eventName: fullClosure.name || '',
+      status: 'closed', multiplier: 0, reason: fullClosure.name || 'Cafe closure', source: 'event',
+      eventName: fullClosure.name || '', scheduleSource: schedule.source,
     };
   }
-
   const openMinutes = parseTime(schedule.openTime);
   const closeMinutes = parseTime(schedule.closeTime);
   const scheduledMinutes = closeMinutes != null && openMinutes != null ? closeMinutes - openMinutes : 0;
   if (scheduledMinutes <= 0) {
     return {
-      status: 'closed',
-      multiplier: 0,
-      reason: 'Cafe has no valid trading window',
-      source: 'schedule',
+      status: 'closed', multiplier: 0, reason: 'Cafe has no valid trading window', source: 'schedule',
+      scheduleSource: schedule.source,
     };
   }
-
-  const closureIntervals = (events || [])
+  const intervals = mergeIntervals((events || [])
     .filter((entry) => entry.type === 'partial_closure')
     .map((event) => {
       const start = parseTime(event.closureWindow?.startTime);
@@ -79,36 +98,29 @@ const getTradingAvailability = (cafe, events, dayOfWeek) => {
       const clippedEnd = Math.min(closeMinutes, end);
       return clippedEnd > clippedStart ? [clippedStart, clippedEnd] : null;
     })
-    .filter(Boolean)
-    .sort((left, right) => left[0] - right[0]);
-
-  let closedMinutes = 0;
-  let activeInterval = null;
-  for (const interval of closureIntervals) {
-    if (!activeInterval) {
-      activeInterval = interval;
-      continue;
-    }
-    if (interval[0] <= activeInterval[1]) {
-      activeInterval[1] = Math.max(activeInterval[1], interval[1]);
-      continue;
-    }
-    closedMinutes += activeInterval[1] - activeInterval[0];
-    activeInterval = interval;
-  }
-  if (activeInterval) closedMinutes += activeInterval[1] - activeInterval[0];
-
-  const multiplier = clamp(1 - Math.min(scheduledMinutes, closedMinutes) / scheduledMinutes, 0, 1);
+    .filter(Boolean));
+  const closedMinutes = intervals.reduce((sum, [from, to]) => sum + (to - from), 0);
+  const salesShare = hourlyClosedShare(hourlyProfile, openMinutes, closeMinutes, intervals);
+  const closedShare = salesShare != null ? salesShare : Math.min(scheduledMinutes, closedMinutes) / scheduledMinutes;
+  const multiplier = Number(clamp(1 - closedShare, 0, 1).toFixed(4));
+  const closedShareMethod = salesShare != null ? 'hourly_sales' : 'minutes';
   if (multiplier < 1) {
     return {
       status: multiplier === 0 ? 'closed' : 'ready',
       multiplier,
-      reason: multiplier === 0 ? 'Partial closures cover the full trading day' : 'Reduced trading hours',
+      reason: multiplier === 0
+        ? 'Partial closures cover the full trading day'
+        : closedShareMethod === 'hourly_sales'
+          ? 'Reduced trading hours, weighted by your hourly sales'
+          : 'Reduced trading hours',
       source: 'event',
+      scheduleSource: schedule.source,
+      closedShareMethod,
     };
   }
-  return { status: 'ready', multiplier: 1, reason: '' };
+  return { status: 'ready', multiplier: 1, reason: '', scheduleSource: schedule.source };
 };
+
 
 /**
  * Words the explanation for a day that is forecasting zero, and says whether
@@ -199,10 +211,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     historyDates.length > 0 ? new Date(Math.min(...historyDates.map((date) => date.getTime()))) : undefined;
   const lastTransactionDate =
     historyDates.length > 0 ? new Date(Math.max(...historyDates.map((date) => date.getTime()))) : undefined;
-  const staleDays =
-    lastTransactionDate != null
-      ? Math.max(0, zonedDayOrdinal(target, timezone) - zonedDayOrdinal(lastTransactionDate, timezone))
-      : undefined;
+
 
   // Get cafe location for weather
   const lat = cafe.location?.lat;
@@ -214,15 +223,16 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   // Fetch signals, weather, and events in parallel
   const targetKey = zonedDateKey(target, timezone);
   const historyKeys = bucketDateKeys(target, settings.history.maxWeeks, timezone);
-  const [signals, weather, eventsByKey, storedSignalsByKey] = await Promise.all([
-    getSignalsForDate(localCalendarDate, { city: cafe.location?.city }),
+  const [signals, weather, eventsByKey, storedSignalsByKey, latestSale] = await Promise.all([
+    getSignalsForDate(localCalendarDate, { city: cafe.location?.city, timezone }),
     hasCoordinates ? getWeatherForecast(lat, lng, localCalendarDate) : Promise.resolve(null),
     loadEventsByDateKey(cafeId, historyKeys[historyKeys.length - 1], zonedDateKey(nextTarget, timezone), timezone),
     loadStoredSignalsByDateKey(cafeId, historyKeys),
+    Transaction.findOne({ cafeId, status: 'approved', date: { $lt: nextTarget } }).sort({ date: -1 }).select('date').lean(),
   ]);
   const events = eventsByKey.get(targetKey) || [];
   const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
-  const trading = getTradingAvailability(cafe, events, targetDayOfWeek);
+
 
   // Group transactions by week and item
   const { itemWeekMap, observedBuckets } = groupByWeekAndItem(
@@ -232,6 +242,11 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     settings.history.maxWeeks
   );
   const observedWeeks = observedBuckets.size;
+  const hourlyProfile = buildHourlyProfile(transactions);
+  const trading = getTradingAvailability(cafe, events, targetDayOfWeek, { hasSalesHistory: observedWeeks > 0, hourlyProfile });
+  const latestSaleDate = latestSale?.date ? new Date(latestSale.date) : undefined;
+  const staleDays = latestSaleDate
+    ? Math.max(0, zonedDayOrdinal(target, timezone) - zonedDayOrdinal(latestSaleDate, timezone)) : undefined;
   const missingWeeks = Math.max(0, settings.history.maxWeeks - observedWeeks);
   const historicalPriceMap = buildHistoricalPriceMap(transactions);
 
@@ -402,6 +417,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         trainingCutoff: target,
         availability: {
           status: availabilityStatus,
+          scheduleSource: trading.scheduleSource,
           reason: availabilityReason,
           contradictsHistory,
         },
@@ -410,6 +426,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
           weather: {
             available: weatherSignal.available,
             temp: weatherSignal.temp,
+            maxTemp: weatherSignal.maxTemp,
             condition: weatherSignal.condition,
             humidity: weatherSignal.humidity,
             isRain: weatherSignal.isRain,
@@ -418,6 +435,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
             unavailableReason: weatherSignal.unavailableReason,
           },
           loadSheddingStage: signals.loadSheddingStage,
+          loadSheddingSource: signals.loadSheddingSource,
           loadSheddingAvailable: signals.loadSheddingAvailable,
           loadSheddingUnavailableReason: signals.loadSheddingUnavailableReason,
           isPublicHoliday: signals.isPublicHoliday,
@@ -448,7 +466,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         trainingData: {
           transactionCount: transactions.length,
           firstTransactionDate,
-          lastTransactionDate,
+          lastTransactionDate, latestSaleDate,
           weeksWithSales: observedWeeks,
           observedWeeks,
           missingWeeks,
@@ -498,5 +516,5 @@ const generateWeekForecast = async (cafeId) => {
 };
 
 module.exports = {
-  FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
+  FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
 };

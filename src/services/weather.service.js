@@ -4,6 +4,8 @@ const axios = require('axios');
 const weatherCache = new Map();
 const pendingWeatherRequests = new Map();
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const RAIN_MIN_MM = 1;
+const RAIN_MIN_CHANCE_PCT = 70;
 
 const unavailableWeatherSignal = (unavailableReason = 'Weather data is unavailable') => ({
   available: false,
@@ -66,15 +68,16 @@ const normaliseDay = (dayData) => {
   const chanceOfRain = rawChanceOfRain !== null && rawChanceOfRain >= 0 && rawChanceOfRain <= 100
     ? rawChanceOfRain
     : null;
-  const isRain = conditionText.toLowerCase().includes('rain') ||
-    conditionText.toLowerCase().includes('drizzle') ||
-    conditionText.toLowerCase().includes('shower') ||
-    (precipMm !== null && precipMm > 0) ||
-    (chanceOfRain !== null && chanceOfRain >= 50);
+  const rawMaxTemp = finiteMetric(day.maxtemp_c);
+  const maxTemp = rawMaxTemp !== null && rawMaxTemp >= -90 && rawMaxTemp <= 70 ? rawMaxTemp : null;
+  const isRain = precipMm !== null
+    ? precipMm >= RAIN_MIN_MM
+    : chanceOfRain !== null && chanceOfRain >= RAIN_MIN_CHANCE_PCT;
 
   return {
     available: true,
     temp,
+    ...(maxTemp !== null ? { maxTemp } : {}),
     condition: conditionText,
     humidity,
     isRain,
@@ -180,4 +183,4 @@ const clearWeatherCache = () => {
   pendingWeatherRequests.clear();
 };
 
-module.exports = { getWeatherForecast, unavailableWeatherSignal, clearWeatherCache };
+module.exports = { getWeatherForecast, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };

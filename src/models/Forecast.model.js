@@ -85,6 +85,7 @@ const forecastSchema = new mongoose.Schema(
       type: Date,
     },
     availability: {
+      scheduleSource: { type: String, enum: ['saved', 'default', 'inferred_from_sales'] },
       // True when the day is configured closed but the weekday has sales history.
       contradictsHistory: { type: Boolean, default: false },
       status: {
@@ -112,6 +113,7 @@ const forecastSchema = new mongoose.Schema(
       weather: {
         available: { type: Boolean },
         temp: { type: Number },
+        maxTemp: { type: Number },
         condition: { type: String },
         humidity: { type: Number },
         isRain: { type: Boolean },
@@ -120,6 +122,7 @@ const forecastSchema = new mongoose.Schema(
         unavailableReason: { type: String },
       },
       loadSheddingStage: { type: Number },
+      loadSheddingSource: { type: String },
       loadSheddingAvailable: { type: Boolean },
       loadSheddingUnavailableReason: { type: String },
       isPublicHoliday: { type: Boolean, default: false },
@@ -174,6 +177,7 @@ const forecastSchema = new mongoose.Schema(
       transactionCount: { type: Number, default: 0 },
       firstTransactionDate: { type: Date },
       lastTransactionDate: { type: Date },
+      latestSaleDate: { type: Date },
       weeksWithSales: { type: Number, default: 0 },
       observedWeeks: { type: Number, default: 0 },
       missingWeeks: { type: Number, default: 0 },

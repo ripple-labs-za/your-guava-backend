@@ -16,12 +16,11 @@ const {
 describe('signals utility', () => {
   describe('isPayday', () => {
     it('returns true for the 1st of the month', () => {
-      expect(isPayday(new Date(2026, 0, 1))).toBe(true); // Jan 1
       expect(isPayday(new Date(2026, 5, 1))).toBe(true); // Jun 1
     });
 
     it('returns true for the 25th of the month', () => {
-      expect(isPayday(new Date(2026, 0, 25))).toBe(true); // Jan 25
+      expect(isPayday(new Date(2026, 0, 23))).toBe(true); // Jan 25 is a Sunday, so the Friday before
       expect(isPayday(new Date(2026, 7, 25))).toBe(true); // Aug 25
     });
 
@@ -289,16 +288,18 @@ describe('signals utility', () => {
       });
     });
 
-    it('marks future-date load-shedding data unavailable', async () => {
+    it('marks an unannounced future day as unknown', async () => {
+      axios.get.mockResolvedValueOnce({
+        data: { status: { capetown: { stage: '0', next_stages: [] }, eskom: { stage: '0', next_stages: [] } } },
+      });
       const future = new Date();
       future.setDate(future.getDate() + 1);
 
-      const signals = await getSignalsForDate(future, { city: 'Cape Town' });
+      const signals = await getSignalsForDate(future, { city: 'Cape Town', timezone: 'Africa/Johannesburg' });
 
       expect(signals.loadSheddingStage).toBeNull();
       expect(signals.loadSheddingAvailable).toBe(false);
-      expect(signals.loadSheddingUnavailableReason).toMatch(/only available for the current date/i);
-      expect(axios.get).not.toHaveBeenCalled();
+      expect(signals.loadSheddingUnavailableReason).toBe('EskomSePush has not published a schedule for this date');
     });
   });
 });

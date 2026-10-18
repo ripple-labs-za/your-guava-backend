@@ -1,7 +1,7 @@
 const axios = require('axios');
+const { zonedDateKey, zonedDateTimeToUtc } = require('./timezone');
 
 // Simple in-memory cache for load shedding status (both reported areas)
-let loadSheddingCache = { stages: null, fetchedAt: null };
 const LOAD_SHEDDING_CACHE_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
@@ -10,28 +10,6 @@ const LOAD_SHEDDING_CACHE_MS = 30 * 60 * 1000; // 30 minutes
  * - 1st of the month
  * - Last business day of the month
  */
-const isPayday = (date) => {
-  const d = new Date(date);
-  const day = d.getDate();
-  const month = d.getMonth();
-  const year = d.getFullYear();
-
-  if (day === 25 || day === 1) return true;
-
-  // Check if it is the last business day of the month
-  const lastDay = new Date(year, month + 1, 0); // last day of month
-  let lastBizDay = new Date(lastDay);
-  // Walk back to the nearest Mon-Fri
-  while (lastBizDay.getDay() === 0 || lastBizDay.getDay() === 6) {
-    lastBizDay.setDate(lastBizDay.getDate() - 1);
-  }
-
-  return (
-    d.getFullYear() === lastBizDay.getFullYear() &&
-    d.getMonth() === lastBizDay.getMonth() &&
-    d.getDate() === lastBizDay.getDate()
-  );
-};
 
 const toDateKey = (date) => {
   const d = new Date(date);
@@ -345,71 +323,97 @@ const loadSheddingAreaForCity = (city = '') =>
  * the Eskom national stage. Returns an explicit availability signal and
  * caches verified stages for 30 minutes.
  */
-const getLoadSheddingStage = async (city) => {
-  const area = loadSheddingAreaForCity(city);
+const LOAD_SHEDDING_SCHEDULE_DAYS = 7;
+const LOAD_SHEDDING_WINDOW = { startHour: 6, endHour: 20 };
+let loadSheddingCache = { status: null, fetchedAt: null };
+
+const parseStage = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const stage = Number(value);
+  return Number.isInteger(stage) && stage >= 0 && stage <= 8 ? stage : null;
+};
+const parseAreaStatus = (area) => ({
+  stage: parseStage(area?.stage),
+  nextStages: (Array.isArray(area?.next_stages) ? area.next_stages : [])
+    .map((entry) => ({ stage: parseStage(entry?.stage), startsAt: new Date(entry?.stage_start_timestamp) }))
+    .filter((entry) => entry.stage !== null && !Number.isNaN(entry.startsAt.getTime()))
+    .sort((left, right) => left.startsAt - right.startsAt),
+});
+
+// One /status call serves every cafe: both areas, current stage and announced changes. Cached 30 minutes on success.
+const fetchLoadSheddingStatus = async () => {
   const now = Date.now();
-  if (
-    loadSheddingCache.fetchedAt &&
-    now - loadSheddingCache.fetchedAt < LOAD_SHEDDING_CACHE_MS &&
-    loadSheddingCache.stages
-  ) {
-    const cachedStage = loadSheddingCache.stages[area];
-    return Number.isFinite(cachedStage)
-      ? { available: true, stage: cachedStage }
-      : {
-          available: false,
-          stage: null,
-          unavailableReason: 'Load-shedding provider returned no stage for this area',
-        };
-  }
+  if (loadSheddingCache.status && now - loadSheddingCache.fetchedAt < LOAD_SHEDDING_CACHE_MS) return loadSheddingCache.status;
+  const response = await axios.get('https://developer.sepush.co.za/business/2.0/status', {
+    headers: { Token: process.env.ESKOMSEPUSH_API_KEY },
+    timeout: 5000,
+  });
+  const status = {
+    capetown: parseAreaStatus(response.data?.status?.capetown),
+    eskom: parseAreaStatus(response.data?.status?.eskom),
+  };
+  loadSheddingCache = { status, fetchedAt: now };
+  return status;
+};
 
+const unknownStage = (unavailableReason, extra = {}) => ({ available: false, stage: null, unavailableReason, ...extra });
+
+// Current stage for the cafe's area (unchanged contract).
+const getLoadSheddingStage = async (city) => {
+  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage('Load-shedding service is not configured');
   try {
-    const apiKey = process.env.ESKOMSEPUSH_API_KEY;
-    if (!apiKey) {
-      return {
-        available: false,
-        stage: null,
-        unavailableReason: 'Load-shedding service is not configured',
-      };
-    }
-
-    const response = await axios.get(
-      'https://developer.sepush.co.za/business/2.0/status',
-      {
-        headers: { Token: apiKey },
-        timeout: 5000,
-      }
-    );
-
-    const parseStage = (value) => {
-      if (value === undefined || value === null || value === '') return null;
-      const stage = Number(value);
-      return Number.isInteger(stage) && stage >= 0 && stage <= 8 ? stage : null;
-    };
-    const stages = {
-      capetown: parseStage(response.data?.status?.capetown?.stage),
-      eskom: parseStage(response.data?.status?.eskom?.stage),
-    };
-    loadSheddingCache = { stages, fetchedAt: now };
-    return Number.isFinite(stages[area])
-      ? { available: true, stage: stages[area] }
-      : {
-          available: false,
-          stage: null,
-          unavailableReason: 'Load-shedding provider returned no stage for this area',
-        };
+    const area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
+    return Number.isFinite(area?.stage)
+      ? { available: true, stage: area.stage }
+      : unknownStage('Load-shedding provider returned no stage for this area');
   } catch (error) {
     console.error('[signals] Load shedding API error:', error.message);
-    return {
-      available: false,
-      stage: null,
-      unavailableReason: 'Load-shedding data is temporarily unavailable',
-    };
+    return unknownStage('Load-shedding data is temporarily unavailable');
   }
 };
 
+// Highest stage in force during [from, to): the stage at `from`, raised by any announced change inside the window.
+const stageDuring = (area, from, to) => {
+  let stage = area.stage;
+  for (const change of area.nextStages) if (change.startsAt <= from) stage = change.stage;
+  let highest = stage;
+  for (const change of area.nextStages) {
+    if (change.startsAt > from && change.startsAt < to) highest = Math.max(highest, change.stage);
+  }
+  return highest;
+};
+
+const dayNumber = (dateKey) => Math.floor(Date.parse(`${dateKey}T00:00:00.000Z`) / 86400000);
+
+const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date()) => {
+  const offset = dayNumber(dateKey) - dayNumber(zonedDateKey(now, timezone));
+  if (offset < 0) return unknownStage('Load-shedding history is not recorded for past dates');
+  if (offset > LOAD_SHEDDING_SCHEDULE_DAYS) return unknownStage('EskomSePush publishes at most 7 days ahead');
+  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage('Load-shedding service is not configured');
+  let area;
+  try {
+    area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
+  } catch (error) {
+    console.error('[signals] Load shedding API error:', error.message);
+    return unknownStage('Load-shedding data is temporarily unavailable');
+  }
+  if (!Number.isFinite(area?.stage)) return unknownStage('Load-shedding provider returned no stage for this area');
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const windowStart = zonedDateTimeToUtc({ year, month, day, hour: LOAD_SHEDDING_WINDOW.startHour }, timezone);
+  const windowEnd = zonedDateTimeToUtc({ year, month, day, hour: LOAD_SHEDDING_WINDOW.endHour }, timezone);
+  if (offset === 0) {
+    const from = new Date(Math.max(windowStart.getTime(), now.getTime()));
+    return { available: true, stage: stageDuring(area, from, windowEnd), source: 'esp_status' };
+  }
+  const dayStart = zonedDateTimeToUtc({ year, month, day }, timezone);
+  const published = area.nextStages.some((change) => change.startsAt >= dayStart);
+  if (!published) return unknownStage('EskomSePush has not published a schedule for this date');
+  return { available: true, stage: stageDuring(area, windowStart, windowEnd), source: 'esp_schedule' };
+};
+
+
 const clearLoadSheddingCache = () => {
-  loadSheddingCache = { stages: null, fetchedAt: null };
+  loadSheddingCache = { status: null, fetchedAt: null };
 };
 
 /**
@@ -419,19 +423,14 @@ const getSignalsForDate = async (date, location = {}) => {
   const d = new Date(date);
   const dayOfWeek = d.getDay();
 
-  const loadShedding = isSameLocalDate(d)
-    ? await getLoadSheddingStage(location.city)
-    : {
-        available: false,
-        stage: null,
-        unavailableReason: 'Load-shedding data is only available for the current date',
-      };
+  const loadShedding = await getLoadSheddingForDate(location.city, toDateKey(d), location.timezone || 'Africa/Johannesburg');
 
   return {
     isPayday: isPayday(d),
     isPublicHoliday: isPublicHoliday(d),
     isSchoolHoliday: isSchoolHoliday(d),
     loadSheddingStage: loadShedding.stage,
+    loadSheddingSource: loadShedding.source || null,
     loadSheddingAvailable: loadShedding.available,
     ...(loadShedding.unavailableReason
       ? { loadSheddingUnavailableReason: loadShedding.unavailableReason }
@@ -440,7 +439,37 @@ const getSignalsForDate = async (date, location = {}) => {
   };
 };
 
+const isBusinessDay = (date) => {
+  const d = new Date(date);
+  return d.getDay() !== 0 && d.getDay() !== 6 && !isPublicHoliday(d);
+};
+
+// At most a long weekend plus a holiday away (Easter is four days), so the walk is bounded.
+const previousBusinessDay = (date) => {
+  let cursor = new Date(date);
+  for (let step = 0; step < 7 && !isBusinessDay(cursor); step += 1) cursor = addDays(cursor, -1);
+  return cursor;
+};
+
+// Employers pay on the 25th, on the last business day, or on the 1st; a 25th or month-end that is not a business day moves to the
+// business day before it. A 1st that is not a business day is already covered by the previous month's month-end.
+const paydayAnchors = (year, month) => {
+  const anchors = [
+    previousBusinessDay(new Date(year, month, 25, 12)),
+    previousBusinessDay(new Date(year, month + 1, 0, 12)),
+  ];
+  const first = new Date(year, month, 1, 12);
+  if (isBusinessDay(first)) anchors.push(first);
+  return anchors;
+};
+
+const isPayday = (date) => {
+  const d = new Date(date);
+  return paydayAnchors(d.getFullYear(), d.getMonth()).some((anchor) => isSameLocalDate(anchor, d));
+};
+
 module.exports = {
+  isBusinessDay, previousBusinessDay, paydayAnchors, getLoadSheddingForDate, LOAD_SHEDDING_SCHEDULE_DAYS,
   isPayday,
   isPublicHoliday,
   getPublicHolidayInfo,

@@ -145,7 +145,20 @@ const tradingHoursInputError = (input) => {
   return null;
 };
 
+const hasSavedTradingHours = (cafe) => Array.isArray(cafe?.tradingHours) && cafe.tradingHours.length === 7;
+
+// The schedule for one weekday and where it came from. A cafe that never saved hours has no schedule of its own, so a default-closed
+// day its sales show it trades is open with the default window. A saved schedule always wins, even when the sales disagree.
+const resolveDaySchedule = (cafe, dayOfWeek, { hasSalesHistory = false } = {}) => {
+  const schedule = getCafeTradingHours(cafe).find((entry) => entry.dayOfWeek === dayOfWeek);
+  if (!schedule) return null;
+  if (hasSavedTradingHours(cafe)) return { ...schedule, source: 'saved' };
+  if (!schedule.isOpen && hasSalesHistory) return { ...schedule, isOpen: true, source: 'inferred_from_sales' };
+  return { ...schedule, source: 'default' };
+};
+
 module.exports = {
+  hasSavedTradingHours, resolveDaySchedule,
   defaultTradingHours,
   tradingHoursInputError,
   normalizeTradingHours,

@@ -360,23 +360,17 @@ const isWeatherAvailable = (weather) =>
     weather.condition.trim()
   );
 
-const isRainy = (weather) =>
-  Boolean(
-    isWeatherAvailable(weather) &&
-    (
-      weather?.isRain ||
-      String(weather?.condition || '').toLowerCase().match(/rain|drizzle|shower|storm/)
-    )
-  );
+const weatherTemperature = (weather) => (Number.isFinite(weather?.maxTemp) ? weather.maxTemp : weather?.temp);
+const isRainy = (weather) => Boolean(isWeatherAvailable(weather) && weather.isRain === true);
 
 const weatherAdjustmentPct = (category, weather, settings) => {
   if (!settings.enabled || !isWeatherAvailable(weather)) return 0;
 
   let pct = 0;
-  if (weather.temp > settings.hotTemp) {
+  if (weatherTemperature(weather) > settings.hotTemp) {
     if (category === 'cold_drink') pct += settings.hotColdDrinkPct;
     if (category === 'coffee') pct += settings.hotCoffeePct;
-  } else if (weather.temp < settings.coldTemp) {
+  } else if (weatherTemperature(weather) < settings.coldTemp) {
     if (category === 'coffee') pct += settings.coldCoffeePct;
     if (category === 'cold_drink') pct += settings.coldColdDrinkPct;
   }
@@ -399,11 +393,11 @@ const weatherSummaryFactor = (weather, settings) => {
   }
 
   const reasons = [];
-  if (weather.temp > settings.hotTemp) {
+  if (weatherTemperature(weather) > settings.hotTemp) {
     reasons.push(
       `hot day: ${formatPct(settings.hotColdDrinkPct)} cold drinks, ${formatPct(settings.hotCoffeePct)} coffee`
     );
-  } else if (weather.temp < settings.coldTemp) {
+  } else if (weatherTemperature(weather) < settings.coldTemp) {
     reasons.push(
       `cold day: ${formatPct(settings.coldCoffeePct)} coffee, ${formatPct(settings.coldColdDrinkPct)} cold drinks`
     );
@@ -546,6 +540,7 @@ const multiplyFactors = (factors) =>
   factors.reduce((product, current) => product * (Number(current.multiplier) || 1), 1);
 
 module.exports = {
+  weatherTemperature,
   DEFAULT_FORECAST_SETTINGS,
   FACTOR_CATALOG,
   getFactorEntitlements,

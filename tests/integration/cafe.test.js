@@ -90,6 +90,17 @@ describe('Cafe API', () => {
   });
 
   describe('Trading hours', () => {
+    it('says whether the trading hours were ever saved', async () => {
+      const before = await request.get('/api/cafe/me').set('Authorization', `Bearer ${token}`);
+      expect(before.body.cafe.tradingHoursSaved).toBe(false);
+
+      const week = before.body.cafe.tradingHours.map((day) => ({ ...day, isOpen: true }));
+      await request.put('/api/cafe/me').set('Authorization', `Bearer ${token}`).send({ tradingHours: week });
+
+      const after = await request.get('/api/cafe/me').set('Authorization', `Bearer ${token}`);
+      expect(after.body.cafe.tradingHoursSaved).toBe(true);
+    });
+    
     it('returns sensible default trading hours when none are set', async () => {
       const res = await request
         .get('/api/cafe/me')

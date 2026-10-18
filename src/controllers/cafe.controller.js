@@ -2,7 +2,7 @@ const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const User = require('../models/User.model');
 const Forecast = require('../models/Forecast.model');
-const { normalizeTradingHours, defaultTradingHours, tradingHoursInputError } = require('../utils/tradingHours');
+const { normalizeTradingHours, defaultTradingHours, tradingHoursInputError, hasSavedTradingHours } = require('../utils/tradingHours');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const { safeTimezone, zonedDayStart, isSupportedTimezone } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
@@ -92,11 +92,12 @@ const getMe = async (req, res, next) => {
     if (!cafe) {
       return res.status(404).json({ success: false, message: 'Cafe not found' });
     }
-    if (!Array.isArray(cafe.tradingHours) || cafe.tradingHours.length !== 7) {
+    const tradingHoursSaved = hasSavedTradingHours(cafe);
+    if (!tradingHoursSaved) {
       cafe.tradingHours = defaultTradingHours();
     }
     const timezoneEditable = !(await Transaction.exists({ cafeId: cafe._id }));
-    return res.status(200).json({ success: true, cafe: { ...cafeDto(cafe), timezoneEditable } });
+    return res.status(200).json({ success: true, cafe: { ...cafeDto(cafe), timezoneEditable, tradingHoursSaved } });
   } catch (error) {
     next(error);
   }

@@ -238,7 +238,19 @@ const buildHistoricalPriceMap = (transactions) => {
   );
 };
 
+// Units sold per local hour across the weekday history. Rows imported without a time are left out (BE-03-T06 marks them hourKnown: false).
+const buildHourlyProfile = (transactions) => {
+  const profile = new Map();
+  for (const tx of transactions || []) {
+    if (tx.hourKnown === false || !Number.isInteger(tx.hour) || tx.hour < 0 || tx.hour > 23) continue;
+    const units = (tx.items || []).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+    if (units > 0) profile.set(tx.hour, (profile.get(tx.hour) || 0) + units);
+  }
+  return profile;
+};
+
 module.exports = {
+  buildHourlyProfile,
   OUTLIER_WINSOR_MULTIPLE, OUTLIER_MIN_OBSERVED_WEEKS, OUTLIER_MIN_MEDIAN_QTY,
   bucketDateKeys, eventDateKey, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
   deFactorItemBuckets, winsoriseBuckets,
