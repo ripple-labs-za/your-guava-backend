@@ -3,7 +3,6 @@
 const Transaction = require('../../models/Transaction.model');
 const Item = require('../../models/Item.model');
 const Forecast = require('../../models/Forecast.model');
-const Event = require('../../models/Event.model');
 const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
 const { getSignalsForDate } = require('../../utils/signals');
@@ -21,10 +20,12 @@ const {
 } = require('./calibration');
 const {
   groupByWeekAndItem, buildHistoricalPriceMap, weightedAverage, forecastConfidence, requiredHistoryWeeks,
+  bucketDateKeys, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
+  deFactorItemBuckets, winsoriseBuckets,
 } = require('./history');
 const { computeSuggestedStockMap } = require('./stock');
 
-const FORECAST_MODEL_VERSION = '2026-07-30.1';
+const FORECAST_MODEL_VERSION = '2026-09-29.1';
 const MAX_STORED_FORECAST_ITEMS = 25;
 
 /**
@@ -211,11 +212,15 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   const localCalendarDate = processLocalCalendarDate(target, timezone);
 
   // Fetch signals, weather, and events in parallel
-  const [signals, weather, events] = await Promise.all([
+  const targetKey = zonedDateKey(target, timezone);
+  const historyKeys = bucketDateKeys(target, settings.history.maxWeeks, timezone);
+  const [signals, weather, eventsByKey, storedSignalsByKey] = await Promise.all([
     getSignalsForDate(localCalendarDate, { city: cafe.location?.city }),
     hasCoordinates ? getWeatherForecast(lat, lng, localCalendarDate) : Promise.resolve(null),
-    Event.find({ cafeId, date: { $gte: target, $lt: nextTarget } }).lean(),
+    loadEventsByDateKey(cafeId, historyKeys[historyKeys.length - 1], zonedDateKey(nextTarget, timezone), timezone),
+    loadStoredSignalsByDateKey(cafeId, historyKeys),
   ]);
+  const events = eventsByKey.get(targetKey) || [];
   const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
   const trading = getTradingAvailability(cafe, events, targetDayOfWeek);
 
@@ -281,10 +286,33 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   let totalPredictedRevenue = 0;
   let totalPredictedQty = 0;
 
+  const noStoredWeather = { available: false, condition: 'Unavailable', unavailableReason: 'No weather stored for this day' };
+  const pastDayMultiplierCache = new Map();
+  const pastDayMultiplier = (category) => (dateKey) => {
+    const cacheKey = `${category}|${dateKey}`;
+    if (pastDayMultiplierCache.has(cacheKey)) return pastDayMultiplierCache.get(cacheKey);
+    const dayEvents = eventsByKey.get(dateKey) || [];
+    const stored = storedSignalsByKey.get(dateKey) || {};
+    const daySignals = historicalCalendarSignals(dateKey, timezone);
+    if (stored.loadSheddingAvailable === true && Number.isFinite(stored.loadSheddingStage)) {
+      daySignals.loadSheddingStage = stored.loadSheddingStage;
+      daySignals.loadSheddingAvailable = true;
+    }
+    const dayWeather = stored.weather && stored.weather.available !== false ? stored.weather : noStoredWeather;
+    const factorProduct = multiplyFactors(
+      buildItemFactors({ category, signals: daySignals, weather: dayWeather, events: dayEvents, settings })
+    );
+    const dayTrading = getTradingAvailability(cafe, dayEvents, targetDayOfWeek);
+    const value = factorProduct * (dayTrading.multiplier > 0 ? dayTrading.multiplier : 1);
+    pastDayMultiplierCache.set(cacheKey, value);
+    return value;
+  };
+
   for (const [itemIndex, name] of forecastItemNames.entries()) {
     const buckets = itemWeekMap.get(name) || Array(settings.history.maxWeeks).fill(null);
-    const baseQty = weightedAverage(buckets, settings.history);
     const category = categoryMap.get(name) || 'other';
+    const baselineBuckets = winsoriseBuckets(deFactorItemBuckets(buckets, historyKeys, pastDayMultiplier(category)));
+    const baseQty = weightedAverage(baselineBuckets, settings.history);
     const factors = buildItemFactors({ category, signals, weather: weatherSignal, events, settings });
     const learningMultiplier = learningEnabled ? calibrationMultiplierForItem(calibration, name, factors) : 1;
     const learningFactor = buildLearningFactor(
@@ -296,21 +324,20 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
       }
     );
     const storedItemFactors = [...factors, learningFactor];
-    const finalQty = Math.max(
-      0,
-      Math.round(baseQty * multiplyFactors(factors) * learningMultiplier * trading.multiplier)
-    );
+    const expectedQty = Math.max(0, baseQty * multiplyFactors(factors) * learningMultiplier * trading.multiplier);
+    const finalQty = Math.round(expectedQty);
 
     // Estimate revenue using item avgPrice if available
     const itemDoc = itemDocMap.get(name);
     const avgPrice = itemDoc?.avgPrice || historicalPriceMap.get(name) || 0;
-    totalPredictedRevenue += finalQty * avgPrice;
-    totalPredictedQty += finalQty;
+    totalPredictedRevenue += expectedQty * avgPrice;
+    totalPredictedQty += expectedQty;
 
     if (itemIndex < MAX_STORED_FORECAST_ITEMS) {
       forecastItems.push({
         itemName: name,
         baseQty: parseFloat(baseQty.toFixed(2)),
+        expectedQty: Number(expectedQty.toFixed(4)),
         predictedQty: finalQty,
         confidence: forecastConfidence(baseQty, observedWeeks),
         factors: storedItemFactors,
@@ -411,7 +438,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         forecastCoverage: {
           itemCount: forecastItemNames.length,
           storedItemCount: forecastItems.length,
-          totalPredictedQty,
+          totalPredictedQty: Number(totalPredictedQty.toFixed(2)),
           includesAllRevenue: true,
           accuracyMethod: 'aggregate_quantity',
           predictedItemNames: forecastItemNames,

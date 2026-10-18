@@ -98,6 +98,7 @@ const forecastSchema = new mongoose.Schema(
       {
         itemName: { type: String },
         baseQty: { type: Number },
+        expectedQty: { type: Number },
         predictedQty: { type: Number },
         // How much weight this single item's number can bear. Driven by volume:
         // low-volume lines are dominated by day-to-day randomness.

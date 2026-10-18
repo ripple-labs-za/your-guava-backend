@@ -450,7 +450,14 @@ describe('history window', () => {
 
   const timezone = 'Africa/Johannesburg';
   const target = new Date('2030-03-06T12:00:00+02:00');
-  const lean = (value) => ({ lean: () => Promise.resolve(value) });
+  const lean = (value) => {
+    const chain = {
+      select: () => chain, sort: () => chain, limit: () => chain, session: () => chain,
+      lean: () => Promise.resolve(value),
+      then: (resolve, reject) => Promise.resolve(value).then(resolve, reject),
+    };
+    return chain;
+  };
 
   // Drives generateForecast against stubbed models and captures the
   // transaction query it issues. Learning is off so no calibration reads run,
@@ -469,6 +476,8 @@ describe('history window', () => {
     jest.spyOn(Event, 'find').mockReturnValue(lean([]));
     jest.spyOn(Item, 'find').mockReturnValue(lean([]));
     jest.spyOn(Forecast, 'findOne').mockReturnValue({ select: () => lean(null) });
+    jest.spyOn(Forecast, 'find').mockReturnValue(lean([]));
+    jest.spyOn(Transaction, 'findOne').mockReturnValue(lean(null));
     jest.spyOn(Forecast, 'findOneAndUpdate').mockImplementation(async (_filter, update) => update.$set);
 
     const forecast = await generateForecast('cafe-1', target);

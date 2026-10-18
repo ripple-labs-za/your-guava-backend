@@ -4,6 +4,7 @@
  * stock in stock.js, actuals and menu-change refresh in actuals.js.
  */
 const history = require('./forecast/history');
+const calibration = require('./forecast/calibration');
 const stock = require('./forecast/stock');
 const generate = require('./forecast/generate');
 const actuals = require('./forecast/actuals');
@@ -18,6 +19,9 @@ module.exports = {
   refreshForecastsAfterMenuChange: actuals.refreshForecastsAfterMenuChange,
   scheduleForecastRefreshAfterMenuChange: actuals.scheduleForecastRefreshAfterMenuChange,
   _test: {
+    winsoriseBuckets: history.winsoriseBuckets,
+    deFactorItemBuckets: history.deFactorItemBuckets,
+    computeForecastCalibration: calibration.computeForecastCalibration,
     buildHistoryWeights: history.buildHistoryWeights,
     groupByWeekAndItem: history.groupByWeekAndItem,
     buildHistoricalPriceMap: history.buildHistoricalPriceMap,

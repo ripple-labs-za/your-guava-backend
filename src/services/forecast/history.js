@@ -1,6 +1,11 @@
 // The history window: required weeks, confidence, weekly grouping, weights, averages and historical prices.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
-const { zonedDayOrdinal } = require('../../utils/timezone');
+const {
+  zonedDayOrdinal, zonedDayStart, addZonedDays, zonedDateKey, processLocalCalendarDate, storedDayKey,
+} = require('../../utils/timezone');
+const Event = require('../../models/Event.model');
+const Forecast = require('../../models/Forecast.model');
+const { isPayday, isPublicHoliday, isSchoolHoliday } = require('../../utils/signals');
 const { demandLines } = require('../../utils/demand');
 
 // How trustworthy a single item's number is, which is almost entirely a
@@ -145,6 +150,71 @@ const weightedAverage = (buckets, historySettings) => {
   return Number((weightedTotal / observedWeight).toFixed(6));
 };
 
+const OUTLIER_WINSOR_MULTIPLE = 1.5;
+const OUTLIER_MIN_OBSERVED_WEEKS = 4;
+const OUTLIER_MIN_MEDIAN_QTY = 3;
+
+const bucketDateKeys = (target, maxWeeks, timezone) =>
+  Array.from({ length: maxWeeks }, (_, bucket) =>
+    zonedDateKey(addZonedDays(target, -7 * (bucket + 1), timezone), timezone));
+
+const eventDateKey = (event, timezone) => event?.dateKey || storedDayKey(event?.date, timezone);
+
+// Cover nominal UTC-midnight dates and legacy cafe-local instants, then key by the owner's day.
+const loadEventsByDateKey = async (cafeId, fromKey, toKeyExclusive, timezone) => {
+  const starts = [new Date(`${fromKey}T00:00:00.000Z`), zonedDayStart(fromKey, timezone)];
+  const ends = [new Date(`${toKeyExclusive}T00:00:00.000Z`), zonedDayStart(toKeyExclusive, timezone)];
+  const events = await Event.find({
+    cafeId,
+    date: { $gte: new Date(Math.min(...starts)), $lt: new Date(Math.max(...ends)) },
+  }).lean();
+  const byKey = new Map();
+  for (const event of events) {
+    const key = eventDateKey(event, timezone);
+    if (!key || key < fromKey || key >= toKeyExclusive) continue;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(event);
+  }
+  return byKey;
+};
+
+const loadStoredSignalsByDateKey = async (cafeId, dateKeys) => {
+  if (dateKeys.length === 0) return new Map();
+  const docs = await Forecast.find({ cafeId, dateKey: { $in: dateKeys } })
+    .select('dateKey signals.weather signals.loadSheddingStage signals.loadSheddingAvailable')
+    .lean();
+  return new Map(docs.map((doc) => [doc.dateKey, doc.signals || {}]));
+};
+
+const historicalCalendarSignals = (dateKey, timezone) => {
+  const local = processLocalCalendarDate(dateKey, timezone);
+  return {
+    isPublicHoliday: isPublicHoliday(local),
+    isSchoolHoliday: isSchoolHoliday(local),
+    isPayday: isPayday(local),
+    loadSheddingStage: null,
+    loadSheddingAvailable: false,
+  };
+};
+
+const deFactorItemBuckets = (buckets, keys, dayMultiplier) =>
+  buckets.map((qty, bucket) => {
+    if (qty == null) return null;
+    const multiplier = dayMultiplier(keys[bucket]);
+    return Number.isFinite(multiplier) && multiplier > 0 ? qty / multiplier : qty;
+  });
+
+const winsoriseBuckets = (buckets) => {
+  const observed = buckets.filter((qty) => qty != null);
+  if (observed.length < OUTLIER_MIN_OBSERVED_WEEKS) return buckets;
+  const sorted = [...observed].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  if (!(median >= OUTLIER_MIN_MEDIAN_QTY)) return buckets;
+  const cap = median * OUTLIER_WINSOR_MULTIPLE;
+  return buckets.map((qty) => (qty == null ? null : Math.min(cap, qty)));
+};
+
 const buildHistoricalPriceMap = (transactions) => {
   const buckets = new Map();
 
@@ -169,6 +239,9 @@ const buildHistoricalPriceMap = (transactions) => {
 };
 
 module.exports = {
+  OUTLIER_WINSOR_MULTIPLE, OUTLIER_MIN_OBSERVED_WEEKS, OUTLIER_MIN_MEDIAN_QTY,
+  bucketDateKeys, eventDateKey, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
+  deFactorItemBuckets, winsoriseBuckets,
   MIN_HISTORY_WEEKS, requiredHistoryWeeks, forecastConfidence, groupByWeekAndItem, buildHistoryWeights, weightedAverage,
   buildHistoricalPriceMap,
 };

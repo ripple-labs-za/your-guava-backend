@@ -4,6 +4,18 @@ const Forecast = require('../../models/Forecast.model');
 const { addZonedDays } = require('../../utils/timezone');
 
 const CALIBRATION_LOOKBACK_DAYS = 60;
+const OVERALL_SHRINK_PRIOR_DAYS = 10;
+
+const appliedLearningMultiplier = (item) => {
+  const learning = (item.factors || []).find((factor) => factor?.key === 'learning');
+  const multiplier = Number(learning?.multiplier);
+  return learning?.active && Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1;
+};
+
+const rawPredictedQty = (item) => {
+  const predicted = Number.isFinite(item.expectedQty) ? item.expectedQty : Number(item.predictedQty);
+  return predicted / appliedLearningMultiplier(item);
+};
 // Sample floors for the learning correction. These were 3, which let a factor
 // swing demand double digits off three observations (payday was applying -11.6%
 // from n=3). A correction is only worth applying once the evidence behind it
@@ -100,39 +112,46 @@ const computeForecastCalibration = async (cafeId, targetDate, timezone) => {
     let dailyPredicted = 0;
     let dailyActual = 0;
     let hasActual = false;
-    const dailyFactors = new Map();
+    const dailyFactorTotals = new Map();
 
     for (const item of forecast.items || []) {
-      if (item.actualQty == null || !Number.isFinite(item.predictedQty) || item.predictedQty <= 0) continue;
+      const predicted = rawPredictedQty(item);
+      if (item.actualQty == null || !Number.isFinite(predicted) || predicted <= 0) continue;
 
       const activeFactors = (item.factors || []).filter((factor) => factor.active && factor.key !== 'learning');
 
-      dailyPredicted += item.predictedQty;
+      dailyPredicted += predicted;
       dailyActual += item.actualQty;
       hasActual = true;
       itemObservations.push({
         actual: item.actualQty,
-        predicted: item.predictedQty,
+        predicted,
         itemName: item.itemName,
       });
       for (const activeFactor of activeFactors) {
-        if (!dailyFactors.has(activeFactor.key)) dailyFactors.set(activeFactor.key, activeFactor);
+        if (!dailyFactorTotals.has(activeFactor.key)) {
+          dailyFactorTotals.set(activeFactor.key, {
+            key: activeFactor.key, label: activeFactor.label, actual: 0, predicted: 0,
+          });
+        }
+        const totals = dailyFactorTotals.get(activeFactor.key);
+        totals.actual += item.actualQty;
+        totals.predicted += predicted;
       }
     }
 
     if (hasActual && dailyPredicted > 0) {
       accumulateTotals(overall, dailyActual, dailyPredicted);
       dailyObservations.push({
-        actual: dailyActual,
-        predicted: dailyPredicted,
-        activeFactors: [...dailyFactors.values()],
+        factorTotals: [...dailyFactorTotals.values()],
       });
     }
   }
 
   const rawOverallRatio = bucketRatio(overall);
+  const overallShrink = overall.sampleSize / (overall.sampleSize + OVERALL_SHRINK_PRIOR_DAYS);
   const overallMultiplier = overall.sampleSize >= MIN_OVERALL_CALIBRATION_SAMPLES
-    ? calibratedMultiplier(rawOverallRatio, 0.5, 0.85, 1.15)
+    ? calibratedMultiplier(rawOverallRatio, overallShrink, 0.85, 1.15)
     : 1;
 
   // Residual = how much this slice deviates AFTER the overall bias is removed,
@@ -151,15 +170,16 @@ const computeForecastCalibration = async (cafeId, targetDate, timezone) => {
   // A factor receives at most one observation per trading day. Counting every
   // item as a separate sample would create false confidence from one outcome.
   for (const observation of dailyObservations) {
-    for (const activeFactor of observation.activeFactors) {
-      if (!factorBuckets.has(activeFactor.key)) {
-        factorBuckets.set(activeFactor.key, {
-          key: activeFactor.key,
-          label: activeFactor.label,
+    for (const totals of observation.factorTotals) {
+      if (totals.predicted <= 0) continue;
+      if (!factorBuckets.has(totals.key)) {
+        factorBuckets.set(totals.key, {
+          key: totals.key,
+          label: totals.label,
           ...newBucket(),
         });
       }
-      accumulateTotals(factorBuckets.get(activeFactor.key), observation.actual, observation.predicted);
+      accumulateTotals(factorBuckets.get(totals.key), totals.actual, totals.predicted);
     }
   }
 
@@ -225,5 +245,6 @@ const calibrationMultiplierForItem = (calibration, itemName, factors) => {
 };
 
 module.exports = {
+  appliedLearningMultiplier, rawPredictedQty, OVERALL_SHRINK_PRIOR_DAYS,
   CALIBRATION_LOOKBACK_DAYS, clamp, buildLearningFactor, computeForecastCalibration, calibrationMultiplierForItem,
 };

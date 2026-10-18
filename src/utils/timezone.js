@@ -198,7 +198,17 @@ const getCafeTimezone = async (cafeId) => {
   return safeTimezone(cafe?.timezone);
 };
 
+// A nominal UTC midnight is a date-only value; other stored dates are instants.
+const storedDayKey = (date, timezone) => {
+  const value = new Date(date);
+  if (Number.isNaN(value.getTime())) return null;
+  const isDateOnly = value.getUTCHours() === 0 && value.getUTCMinutes() === 0 &&
+    value.getUTCSeconds() === 0 && value.getUTCMilliseconds() === 0;
+  return isDateOnly ? value.toISOString().slice(0, 10) : zonedDateKey(value, timezone);
+};
+
 module.exports = {
+  storedDayKey,
   isSupportedTimezone, DEFAULT_TIMEZONE, DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, zonedPartsFormatter, zonedDateTimeToUtc, getZonedDateParts,
   zonedDayStart, zonedDayEnd, addZonedDays, zonedDayOrdinal, zonedDateKey, zonedDayOfWeek, processLocalCalendarDate,
   parseDateOnly, formatDateOnly, inclusiveDateOnlyDays, cafeLocalToday, getCafeTimezone,
