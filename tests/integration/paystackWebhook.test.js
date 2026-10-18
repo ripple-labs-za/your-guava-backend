@@ -75,6 +75,24 @@ describe('Paystack webhook signature', () => {
 });
 
 describe('Paystack webhook settlement', () => {
+  it('holds NGN 99 for a R99 ZAR session without granting credits', async () => {
+    const owner = await createTestUser();
+    await credits(owner, 'hook-currency-mismatch');
+    const lookup = jest.spyOn(axios, 'get').mockResolvedValue({
+      data: verifyResponse('success', {
+        reference: 'hook-currency-mismatch', amountRand: 99, currency: 'NGN', id: 6100099,
+      }),
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postSigned(webhookEvent('charge.success', {
+      reference: 'hook-currency-mismatch', amountRand: 99,
+    }));
+    expect(res.status).toBe(200);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect((await PaymentSession.findOne({ reference: 'hook-currency-mismatch' }).lean()).status).toBe('needs_attention');
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(0);
+  });
+
   it('settles a pending plan payment from a signed charge.success by re-verifying with Paystack', async () => {
     const owner = await createTestUser();
     await session(owner, 'hook-plan', { kind: 'plan', amount: 899, plan: 'growth', billingCycle: 'monthly' });

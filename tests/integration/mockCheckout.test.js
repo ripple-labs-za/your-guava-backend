@@ -27,6 +27,21 @@ const buyCredits = (token, credits, key) => request
 const conflictCode = (res) => res.body.code ?? res.body.details?.code;
 
 describe('mock checkout shares real fulfilment (billing-12)', () => {
+  it('does not replay a mock receipt after mock billing is disabled', async () => {
+    const owner = await createTestUser();
+    const body = { plan: 'growth', billingCycle: 'monthly' };
+    const first = await buyPlan(owner.token, body, 'mock-disabled-replay');
+    expect(first.status).toBe(200);
+    expect(first.body.checkout.provider).toBe('mock');
+    const before = await Organization.findById(owner.user.orgId).lean();
+    process.env.BILLING_MOCK_ENABLED = 'false';
+    const replay = await buyPlan(owner.token, body, 'mock-disabled-replay');
+    expect(replay.status).toBe(503);
+    expect(replay.body.checkout?.provider).not.toBe('mock');
+    expect(await PaymentSession.countDocuments({ orgId: owner.user.orgId })).toBe(1);
+    expect((await Organization.findById(owner.user.orgId).lean()).currentPeriodEnd).toEqual(before.currentPeriodEnd);
+  });
+
   it('replays a paid scheduled downgrade without scheduling or charging again', async () => {
     const owner = await createTestUser();
     await buyPlan(owner.token, { plan: 'growth', billingCycle: 'monthly' }, 'setup-paid-growth');

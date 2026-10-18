@@ -12,7 +12,7 @@ const GATEWAY_RESPONSES = {
  * A Paystack verify body built from the recorded success response. `status` is any Paystack transaction status:
  * success, failed, abandoned, ongoing, pending, processing, queued, reversed.
  */
-const verifyResponse = (status, { reference, amountRand, requestedRand, id } = {}) => {
+const verifyResponse = (status, { reference, amountRand, requestedRand, currency, id } = {}) => {
   const body = clone(verifySuccess);
   body.data.status = status;
   body.data.gateway_response = GATEWAY_RESPONSES[status] || 'The transaction was not completed';
@@ -27,6 +27,7 @@ const verifyResponse = (status, { reference, amountRand, requestedRand, id } = {
     body.data.requested_amount = Math.round(amountRand * 100);
   }
   if (requestedRand != null) body.data.requested_amount = Math.round(requestedRand * 100);
+  if (currency != null) body.data.currency = currency;
   if (id != null) body.data.id = id;
   return body;
 };

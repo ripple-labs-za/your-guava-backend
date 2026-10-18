@@ -1,12 +1,9 @@
-const crypto = require('crypto');
 const axios = require('axios');
-const supertest = require('supertest');
-const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
+const { setup, teardown, clearDB, createTestUser } = require('../setup');
 const Organization = require('../../src/models/Organization.model');
 const PaymentSession = require('../../src/models/PaymentSession.model');
-const { verifyResponse, webhookEvent } = require('../fixtures/paystack');
+const { verifyResponse } = require('../fixtures/paystack');
 
-const request = supertest(app);
 const ENV_KEYS = ['PAYMENT_PROVIDER', 'PAYSTACK_SECRET_KEY'];
 let savedEnv;
 
@@ -26,23 +23,10 @@ afterEach(async () => {
   await clearDB();
 });
 
-const hmac = (raw, key) => crypto.createHmac('sha512', key).update(raw).digest('hex');
-const post = (raw, signature) => {
-  const req = request.post('/api/account/payments/paystack/webhook').set('Content-Type', 'application/json');
-  return (signature ? req.set('x-paystack-signature', signature) : req).send(raw);
-};
-const postSigned = (body) => {
-  const raw = JSON.stringify(body);
-  return post(raw, hmac(raw, process.env.PAYSTACK_SECRET_KEY));
-};
 const session = (owner, reference, fields) => PaymentSession.create({
   orgId: owner.user.orgId, userId: owner.user.id, provider: 'paystack', reference, currency: 'ZAR', ...fields,
 });
 const credits = (owner, reference) => session(owner, reference, { kind: 'credits', amount: 99, credits: 500 });
-const verifyAlways = (status, amountRand, id) => jest.spyOn(axios, 'get').mockImplementation(async (url) => ({
-  data: verifyResponse(status, { reference: decodeURIComponent(String(url).split('/').pop()), amountRand, id }),
-}));
-
 const { reconcilePendingPayments, reconcilePayment } = require('../../src/services/billingPayments.service');
 
 const agedCredits = async (owner, reference) => {
@@ -52,6 +36,19 @@ const agedCredits = async (owner, reference) => {
 };
 
 describe('the sweeper over Paystack sessions whose return and webhook were lost', () => {
+  it('holds a verified amount mismatch without granting credits', async () => {
+    const owner = await createTestUser();
+    await agedCredits(owner, 'sweep-mismatch');
+    const lookup = jest.spyOn(axios, 'get').mockResolvedValue({
+      data: verifyResponse('success', { reference: 'sweep-mismatch', amountRand: 120, id: 6300099 }),
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    await reconcilePendingPayments({ minAgeMs: 0 });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect((await PaymentSession.findOne({ reference: 'sweep-mismatch' }).lean()).status).toBe('needs_attention');
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(0);
+  });
+
   it.each([
     ['success', 'paid', 500],
     ['abandoned', 'pending', 0],
