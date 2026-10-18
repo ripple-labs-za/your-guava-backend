@@ -6,6 +6,7 @@ const PUBLIC_CODE_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
 const errorMiddleware = (err, req, res, next) => {
   let statusCode = err.statusCode || err.status || 500;
   let message = err.message || 'Internal Server Error';
+  let details = err.details;
   const requestId = req.id || req.requestId;
 
   // Map common Mongoose errors to 4xx so client mistakes aren't logged as 500s.
@@ -21,6 +22,10 @@ const errorMiddleware = (err, req, res, next) => {
     statusCode = 409;
     const field = err.keyPattern ? Object.keys(err.keyPattern)[0] : 'field';
     message = `A record with this ${field} already exists.`;
+  } else if (err.type === 'entity.too.large') {
+    statusCode = 413;
+    message = `This request is too large to process. The limit is ${Math.round(err.limit / 1024)} KB.`;
+    details = { code: 'PAYLOAD_TOO_LARGE', limitBytes: err.limit };
   }
 
   if (statusCode >= 500) {
@@ -54,7 +59,7 @@ const errorMiddleware = (err, req, res, next) => {
     message = 'Internal Server Error';
   }
 
-  const exposeDetails = err.details && (err.exposeDetails === true || !(statusCode >= 500 && isHardenedEnvironment()));
+  const exposeDetails = details && (err.exposeDetails === true || !(statusCode >= 500 && isHardenedEnvironment()));
   const publicCode = typeof err?.publicCode === 'string' && PUBLIC_CODE_RE.test(err.publicCode) ? err.publicCode : null;
 
   res.status(statusCode).json({
@@ -62,7 +67,7 @@ const errorMiddleware = (err, req, res, next) => {
     message,
     ...(publicCode ? { code: publicCode } : {}),
     ...(requestId ? { requestId } : {}),
-    ...(exposeDetails ? { details: err.details } : {}),
+    ...(exposeDetails ? { details } : {}),
   });
 };
 

@@ -57,14 +57,15 @@ app.use(
 
 app.use(globalLimiter);
 
-// Body parsers — rawBody is kept for webhook signature verification
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
+// Saved chats can hold 80 x 20,000 characters. Other routes retain the 100 KB default.
+const CHAT_BODY_ROUTES = [
+  /^\/api\/insight-chats(?:\/|$)/i,
+  /^\/api\/forecasts\/insights\/chat(?:\/stream)?\/?$/i,
+];
+const defaultJson = express.json({ limit: '100kb', verify: (req, _res, buf) => { req.rawBody = buf; } });
+const chatJson = express.json({ limit: '2mb' });
+app.use((req, res, next) =>
+  (CHAT_BODY_ROUTES.some((route) => route.test(req.path)) ? chatJson : defaultJson)(req, res, next));
 app.use(express.urlencoded({ extended: true }));
 app.use(ensureRequestBody);
 app.use(cookieParser());
