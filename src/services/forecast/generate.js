@@ -26,7 +26,7 @@ const {
 } = require('./history');
 const { computeSuggestedStockMap, loadStockPairs } = require('./stock');
 
-const FORECAST_MODEL_VERSION = '2026-09-29.2';
+const FORECAST_MODEL_VERSION = '2026-09-29.3';
 const MAX_STORED_FORECAST_ITEMS = 25;
 const SIGNAL_RETRY_AFTER_MS = 15 * 60 * 1000;
 
@@ -371,7 +371,9 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
     const dayTrading = getTradingAvailability(cafe, dayEvents, targetDayOfWeek, {
       hasSalesHistory: observedWeeks > 0, hourlyProfile,
     });
-    const value = factorProduct * (dayTrading.multiplier > 0 ? dayTrading.multiplier : 1);
+    // Less than half a normal day is missing history, not a tiny divisor
+    // that can turn two observed units into forty estimated units.
+    const value = dayTrading.multiplier < 0.5 ? null : factorProduct * dayTrading.multiplier;
     pastDayMultiplierCache.set(cacheKey, value);
     return value;
   };
@@ -392,7 +394,8 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
       }
     );
     const storedItemFactors = [...factors, learningFactor];
-    const expectedQty = Math.max(0, baseQty * multiplyFactors(factors) * learningMultiplier * trading.multiplier);
+    const appliedLearning = learningFactor.active ? learningFactor.multiplier : 1;
+    const expectedQty = Math.max(0, baseQty * multiplyFactors(factors) * appliedLearning * trading.multiplier);
     const storedExpectedQty = Number(expectedQty.toFixed(4));
     // The integer must agree with the expected quantity readers actually receive.
     const finalQty = Math.round(storedExpectedQty);

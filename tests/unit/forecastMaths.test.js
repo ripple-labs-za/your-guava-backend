@@ -264,3 +264,79 @@ describe('learning correction', () => {
     expect(weather).toEqual(expect.objectContaining({ multiplier: 1.2, averageRatio: 1.3462, sampleSize: 12 }));
   });
 });
+
+describe('bounded forecast maths review regressions', () => {
+  it.each([
+    [[20, 20, 20, 5, 5, 5, 5, 5], 17],
+    [[12, 10, 10, 4, 4, 4, 4, 4], 9.5],
+  ])('keeps a sustained recent level %j', async (quantities, expected) => {
+    stubModels({
+      transactions: quantities.map((qty, i) => sale(i + 1, [line('Flat White', qty, 30)])),
+      items: [{ name: 'Flat White', category: 'coffee', avgPrice: 30 }],
+    });
+    const forecast = await generateForecast('cafe-1', TARGET);
+    expect(forecastMath.winsoriseBuckets(quantities)).toEqual(quantities);
+    expect(itemNamed(forecast, 'Flat White').baseQty).toBe(expected);
+  });
+
+  it('uses neighbouring observed weeks across missing buckets when identifying one-off spikes', () => {
+    expect(forecastMath.winsoriseBuckets([20, null, 20, 5, 5, 5, 5, 5]))
+      .toEqual([20, null, 20, 5, 5, 5, 5, 5]);
+    expect(forecastMath.winsoriseBuckets([5, null, 20, null, 5, 5, 5, 5]))
+      .toEqual([5, null, 7.5, null, 5, 5, 5, 5]);
+  });
+
+  it('does not apply learning that its stored factor calls inactive', async () => {
+    stubModels({
+      plan: 'pro',
+      transactions: Array.from({ length: 8 }, (_, i) => sale(i + 1, [line('Flat White', 100, 30)])),
+      items: [{ name: 'Flat White', category: 'coffee', avgPrice: 30 }],
+      calibrationDocs: Array.from({ length: 10 }, (_, i) => ({
+        date: addZonedDays(TARGET, -(i + 1), TZ),
+        items: [{ itemName: 'Flat White', predictedQty: 100, expectedQty: 100, actualQty: 101 }],
+      })),
+    });
+    const forecast = await generateForecast('cafe-1', TARGET);
+    const item = itemNamed(forecast, 'Flat White');
+    expect(item.factors.find((factor) => factor.key === 'learning'))
+      .toEqual(expect.objectContaining({ active: false, multiplier: 1 }));
+    expect(item.expectedQty).toBe(100);
+    const { rawPredictedQty } = require('../../src/services/forecast/calibration');
+    expect(rawPredictedQty(item)).toBe(100);
+  });
+
+  it.each([
+    ['16:30', 2], // 5% open: missing, never inflate 2 into40.
+    ['12:00', 10], // 50% open: remains usable and is divided back to20.
+  ])('handles historical partial closure ending %s with a bounded baseline', async (endTime, recentQty) => {
+    stubModels({
+      plan: 'growth',
+      transactions: Array.from({ length: 8 }, (_, i) => ({
+        ...sale(i + 1, [line('Flat White', i === 0 ? recentQty : 20, 30)]), hourKnown: false,
+      })),
+      items: [{ name: 'Flat White', category: 'coffee', avgPrice: 30 }],
+      events: [{ name: 'Plumber', type: 'partial_closure', date: new Date(Date.UTC(2030, 1, 27)),
+        closureWindow: { startTime: '07:00', endTime } }],
+    });
+    Cafe.findById.mockReturnValue(query({
+      _id: 'cafe-1', orgId: 'org-1', timezone: TZ,
+      tradingHours: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, isOpen: true, openTime: '07:00', closeTime: '17:00' })),
+    }));
+    const forecast = await generateForecast('cafe-1', TARGET);
+    expect(itemNamed(forecast, 'Flat White').baseQty).toBe(20);
+  });
+
+  it('divides stored verified stage4 load shedding out of the history baseline', async () => {
+    stubModels({
+      plan: 'growth',
+      transactions: Array.from({ length: 8 }, (_, i) => sale(i + 1, [line('Flat White', 15.6, 30)])),
+      items: [{ name: 'Flat White', category: 'coffee', avgPrice: 30 }],
+      storedSignals: Array.from({ length: 8 }, (_, i) => ({
+        dateKey: zonedDateKey(weeksAgo(i + 1), TZ),
+        signals: { loadSheddingAvailable: true, loadSheddingStage: 4 },
+      })),
+    });
+    const forecast = await generateForecast('cafe-1', TARGET);
+    expect(itemNamed(forecast, 'Flat White').baseQty).toBe(20);
+  });
+});

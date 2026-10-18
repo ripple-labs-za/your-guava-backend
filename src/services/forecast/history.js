@@ -201,6 +201,8 @@ const deFactorItemBuckets = (buckets, keys, dayMultiplier) =>
   buckets.map((qty, bucket) => {
     if (qty == null) return null;
     const multiplier = dayMultiplier(keys[bucket]);
+    // A mostly-closed observed day cannot establish normal demand.
+    if (multiplier === null) return null;
     return Number.isFinite(multiplier) && multiplier > 0 ? qty / multiplier : qty;
   });
 
@@ -212,7 +214,15 @@ const winsoriseBuckets = (buckets) => {
   const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   if (!(median >= OUTLIER_MIN_MEDIAN_QTY)) return buckets;
   const cap = median * OUTLIER_WINSOR_MULTIPLE;
-  return buckets.map((qty) => (qty == null ? null : Math.min(cap, qty)));
+  let observedIndex = 0;
+  return buckets.map((qty) => {
+    if (qty == null) return null;
+    const index = observedIndex++;
+    // Consecutive high observations are a change in level, even across a
+    // missing week. Only an isolated spike should be capped.
+    const isolated = !(observed[index - 1] > cap) && !(observed[index + 1] > cap);
+    return qty > cap && isolated ? cap : qty;
+  });
 };
 
 const buildHistoricalPriceMap = (transactions) => {
