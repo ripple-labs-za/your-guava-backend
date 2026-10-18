@@ -1,6 +1,7 @@
 // GET /analytics/heatmap.
 // Split by BE-11-T04; the D-023 heatmap exception keeps averages per observed weekday occurrence.
 const mongoose = require('mongoose');
+const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../services/analytics/limits');
 const { saleCount } = require('../../services/analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
@@ -81,9 +82,9 @@ const getHeatmap = async (req, res, next) => {
     ];
 
     const [dayCounts, rawData, coverage] = await Promise.all([
-      Transaction.aggregate(dayCountPipeline),
-      Transaction.aggregate(hourlyTotalsPipeline),
-      Transaction.aggregate(coveragePipeline),
+      Transaction.aggregate(dayCountPipeline, aggregateOptions()),
+      Transaction.aggregate(hourlyTotalsPipeline, aggregateOptions()),
+      Transaction.aggregate(coveragePipeline, aggregateOptions()),
     ]);
     const transactionsWithoutTime = coverage.find((entry) => entry._id === true)?.count || 0;
     const transactionsWithTime = coverage.find((entry) => entry._id === false)?.count || 0;
@@ -140,7 +141,7 @@ const getHeatmap = async (req, res, next) => {
       },
     });
   } catch (error) {
-    next(error);
+    next(isQueryTimeout(error) ? queryTimeoutError() : error);
   }
 };
 

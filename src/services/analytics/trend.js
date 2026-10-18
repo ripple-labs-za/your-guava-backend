@@ -1,3 +1,4 @@
+const { aggregateOptions } = require('./limits');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
 const { getCafeTradingHours } = require('../../utils/tradingHours');
@@ -18,7 +19,7 @@ const approvedRevenueBetween = async (cafeObjectId, fromDay, toDay, timezone, mi
       },
     },
     { $group: { _id: null, revenue: { $sum: '$total' } } },
-  ]);
+  ], aggregateOptions());
   return row ? row.revenue : 0;
 };
 
@@ -48,8 +49,8 @@ const revenueTrend = async ({ cafeObjectId, startDate, endDate, timezone, now = 
         cafeId: cafeObjectId,
         status: 'approved',
         date: { $gte: startDate, $lte: zonedDayEnd(completeEnd, timezone) },
-      }).sort({ date: -1 }).select('date').lean(),
-      Transaction.findOne({ cafeId: cafeObjectId, status: 'approved' }).sort({ date: 1 }).select('date').lean(),
+      }).sort({ date: -1 }).select('date').maxTimeMS(aggregateOptions().maxTimeMS).lean(),
+      Transaction.findOne({ cafeId: cafeObjectId, status: 'approved' }).sort({ date: 1 }).select('date').maxTimeMS(aggregateOptions().maxTimeMS).lean(),
     ]);
   }
 

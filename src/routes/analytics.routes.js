@@ -4,9 +4,11 @@ const authMiddleware = require('../middleware/auth.middleware');
 const { apiCache } = require('../middleware/cache.middleware');
 const { requireActiveCafe } = require('../middleware/requireCafe.middleware');
 const analytics = require('../controllers/analytics.controller');
+const { analyticsLimiter, analyticsRefreshLimiter } = require('../middleware/rateLimit.middleware');
 
 router.use(authMiddleware);
 router.use(requireActiveCafe);
+router.use(analyticsLimiter, analyticsRefreshLimiter);
 
 const analyticsCache = apiCache({ ttlMs: 60000, keyPrefix: 'analytics' });
 

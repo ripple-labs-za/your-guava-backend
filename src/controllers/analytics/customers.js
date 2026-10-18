@@ -1,6 +1,7 @@
 // GET /analytics/customers.
 // Split by BE-11-T04; D-023 defines sales, refunds and observed open-day averages.
 const mongoose = require('mongoose');
+const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../services/analytics/limits');
 const { saleCount, refundCount, grossSales, refundValue, IS_SALE, tenderExpression } = require('../../services/analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
 const { getCafeTimezone, buildDateMatch, analyticsRangeMeta } = require('./range');
@@ -49,7 +50,7 @@ const getCustomers = async (req, res, next) => {
         },
       },
     ];
-    const [stats] = await Transaction.aggregate(pipeline);
+    const [stats] = await Transaction.aggregate(pipeline, aggregateOptions());
     const s = stats || {
       sales: 0, refunds: 0, grossSales: 0, refundValue: 0, saleItems: 0, saleTips: 0, tippedSales: 0,
       cashSales: 0, cardSales: 0, otherSales: 0, unknownTenderSales: 0,
@@ -71,7 +72,7 @@ const getCustomers = async (req, res, next) => {
     return res.status(200).json({ success: true, insights, data: insights, meta: analyticsRangeMeta(req.query, dateMatch, timezone) });
 
   } catch (error) {
-    next(error);
+    next(isQueryTimeout(error) ? queryTimeoutError() : error);
   }
 };
 

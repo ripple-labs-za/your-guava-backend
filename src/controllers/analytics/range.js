@@ -7,7 +7,7 @@ const {
 const { daysInclusive } = require('../../services/analytics/windows');
 
 const DEFAULT_ANALYTICS_RANGE_DAYS = 30;
-const MAX_ANALYTICS_RANGE_DAYS = 1830;
+const { analyticsMaxRangeDays } = require('../../services/analytics/limits');
 
 const localDayBoundaryUtc = (date, timezone, boundary = 'start', deltaDays = 0) => {
   const dayStart = addZonedDays(date, deltaDays, timezone);
@@ -41,13 +41,15 @@ const assertDateRange = (startDate, endDate, timezone) => {
     error.statusCode = 400;
     throw error;
   }
+  const maxDays = analyticsMaxRangeDays();
   if (
     startDate &&
     endDate &&
-    inclusiveLocalDayCount(startDate, endDate, timezone) > MAX_ANALYTICS_RANGE_DAYS
+    inclusiveLocalDayCount(startDate, endDate, timezone) > maxDays
   ) {
-    const error = new Error(`Analytics ranges cannot exceed ${MAX_ANALYTICS_RANGE_DAYS} days`);
+    const error = new Error(`Analytics ranges cannot exceed ${maxDays} days`);
     error.statusCode = 400;
+    error.details = { code: 'ANALYTICS_RANGE_TOO_LONG', maxDays };
     throw error;
   }
 };
@@ -90,6 +92,6 @@ const dateToString = (format, timezone) => ({
 });
 
 module.exports = {
-  DEFAULT_ANALYTICS_RANGE_DAYS, MAX_ANALYTICS_RANGE_DAYS, safeTimezone, getCafeTimezone, localDayBoundaryUtc, inclusiveLocalDayCount,
+  DEFAULT_ANALYTICS_RANGE_DAYS, safeTimezone, getCafeTimezone, localDayBoundaryUtc, inclusiveLocalDayCount,
   parseDateBoundary, buildDateMatch, analyticsRangeMeta, dateToString,
 };

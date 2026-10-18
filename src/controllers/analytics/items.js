@@ -1,6 +1,7 @@
 // GET /analytics/items.
 // Split by BE-11-T04; D-023 defines sales, refunds and observed open-day averages.
 const mongoose = require('mongoose');
+const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../services/analytics/limits');
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
 const { getCafeTradingHours } = require('../../utils/tradingHours');
@@ -34,7 +35,7 @@ const getItems = async (req, res, next) => {
       { $match: matchStage },
       { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
       { $sort: { _id: 1 } },
-    ]);
+    ], aggregateOptions());
     if (presence.length === 0) {
       return res.status(200).json({
         success: true, items: [], data: [], risingItems: [], decliningItems: [],
@@ -77,7 +78,7 @@ const getItems = async (req, res, next) => {
       },
     ];
 
-    const items = await Transaction.aggregate(itemsPipeline);
+    const items = await Transaction.aggregate(itemsPipeline, aggregateOptions());
 
     // Trend: latest 7 local trading days in the selected data vs previous 7 days.
     const trendEnd = zonedDayEnd(lastDay, timezone);
@@ -108,7 +109,7 @@ const getItems = async (req, res, next) => {
       },
     ];
 
-    const trendData = await Transaction.aggregate(trendPipeline);
+    const trendData = await Transaction.aggregate(trendPipeline, aggregateOptions());
 
     // Build trend lookup: itemName -> { current, previous }. A Map, because
     // item names come from POS files: on a plain object, trendMap['__proto__']
@@ -142,7 +143,7 @@ const getItems = async (req, res, next) => {
       },
     });
   } catch (error) {
-    next(error);
+    next(isQueryTimeout(error) ? queryTimeoutError() : error);
   }
 };
 

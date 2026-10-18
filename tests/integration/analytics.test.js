@@ -405,7 +405,7 @@ describe('Analytics API', () => {
       expect(res.body.data).toEqual([{ pair: ['Brownie', 'Flat White'], count: 1 }]);
     });
 
-    it('caps the older-Mongo JavaScript fallback before loading an unbounded dataset', async () => {
+    it('samples the most recent baskets in the older-Mongo fallback instead of failing', async () => {
       jest.spyOn(Transaction, 'aggregate').mockRejectedValueOnce(
         new Error('Unrecognized expression $sortArray')
       );
@@ -421,18 +421,18 @@ describe('Analytics API', () => {
         .get('/api/analytics/combos')
         .set('Authorization', `Bearer ${token}`);
 
-      expect(res.status).toBe(503);
-      expect(res.body.details.code).toBe('COMBO_FALLBACK_RANGE_TOO_LARGE');
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toEqual(expect.objectContaining({ truncated: true, basketsConsidered: 5000 }));
       expect(limit).toHaveBeenCalledWith(5001);
     });
 
-    it('caps pair-generation work in the older-Mongo fallback', async () => {
+    it('stops the older-Mongo fallback at its pair-work budget and says so', async () => {
       jest.spyOn(Transaction, 'aggregate').mockRejectedValueOnce(
         new Error('Unrecognized expression $sortArray')
       );
-      const items = Array.from({ length: 100 }, (_, index) => ({ name: `Item ${index}` }));
+      const items = Array.from({ length: 30 }, (_, index) => ({ name: `Item ${index}` }));
       const lean = jest.fn().mockResolvedValue(
-        Array.from({ length: 21 }, () => ({ items }))
+        Array.from({ length: 600 }, () => ({ items }))
       );
       const limit = jest.fn().mockReturnValue({ lean });
       const sort = jest.fn().mockReturnValue({ limit });
@@ -443,8 +443,8 @@ describe('Analytics API', () => {
         .get('/api/analytics/combos')
         .set('Authorization', `Bearer ${token}`);
 
-      expect(res.status).toBe(503);
-      expect(res.body.details.code).toBe('COMBO_FALLBACK_WORK_LIMIT');
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toEqual(expect.objectContaining({ truncated: true, basketsConsidered: 526 }));
     });
   });
 
@@ -548,7 +548,7 @@ describe('Analytics API', () => {
         defaultedEndDate: false,
       }));
       expect(overlong.status).toBe(400);
-      expect(overlong.body.message).toMatch(/cannot exceed 1830 days/i);
+      expect(overlong.body.message).toMatch(/cannot exceed 400 days/i);
     });
   });
 });

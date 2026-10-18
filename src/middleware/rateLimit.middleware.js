@@ -203,6 +203,46 @@ const uploadLimiter = rateLimit({
   },
 });
 
+// Performance analytics run aggregates over the shared database. Bound them per organisation and user, and give the
+// cache-bypassing refresh=true path a much smaller budget of its own (analytics-ai-9, security-16).
+const ANALYTICS_LIMIT = 60;
+const ANALYTICS_REFRESH_LIMIT = 6;
+const ANALYTICS_WINDOW_MS = 60 * 1000;
+const analyticsKey = (req) => `${req.user?.orgId || 'unknown'}:${req.user?.id || req.ip}`;
+
+const createAnalyticsLimiter = ({ limit = ANALYTICS_LIMIT, skip = limitsOff } = {}) => rateLimit({
+  windowMs: ANALYTICS_WINDOW_MS,
+  limit,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip,
+  keyGenerator: analyticsKey,
+  validate: { keyGeneratorIpFallback: false },
+  message: {
+    success: false,
+    code: 'ANALYTICS_RATE_LIMITED',
+    message: 'Too many Performance requests. Wait a minute and try again.',
+  },
+});
+
+const createAnalyticsRefreshLimiter = ({ limit = ANALYTICS_REFRESH_LIMIT, skip = limitsOff } = {}) => rateLimit({
+  windowMs: ANALYTICS_WINDOW_MS,
+  limit,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req, res) => req.query?.refresh !== 'true' || skip(req, res),
+  keyGenerator: analyticsKey,
+  validate: { keyGeneratorIpFallback: false },
+  message: {
+    success: false,
+    code: 'ANALYTICS_REFRESH_RATE_LIMITED',
+    message: 'Refreshing Performance is limited to a few times a minute. The figures shown are at most a minute old.',
+  },
+});
+
+const analyticsLimiter = createAnalyticsLimiter();
+const analyticsRefreshLimiter = createAnalyticsRefreshLimiter();
+
 // Confirm and remap parse a whole stored file every time, and a failed upload
 // can be confirmed again, so a member could repeat the heaviest work the API
 // does behind nothing but the loose global limiter (security-3).
@@ -225,6 +265,8 @@ const parseLimiter = rateLimit({
 // Exposed so tests can assert the budgets stay in the right relationship to each
 // other without reaching into express-rate-limit internals.
 const getLimiterOptions = (name) => {
+  if (name === 'analytics') return { limit: ANALYTICS_LIMIT, windowMs: ANALYTICS_WINDOW_MS };
+  if (name === 'analyticsRefresh') return { limit: ANALYTICS_REFRESH_LIMIT, windowMs: ANALYTICS_WINDOW_MS };
   if (name === 'login') return { limit: AUTH_LIMITS.login.limit, windowMs: AUTH_LIMITS.login.windowMs };
   if (name === 'chatWrite') return { limit: CHAT_WRITE_LIMIT, windowMs: 60 * 1000 };
   if (name === 'ai') return { limit: AI_LIMIT, windowMs: 60 * 1000 };
@@ -234,6 +276,7 @@ const getLimiterOptions = (name) => {
 };
 
 module.exports = {
+  analyticsLimiter, analyticsRefreshLimiter, createAnalyticsLimiter, createAnalyticsRefreshLimiter,
   createAiLimiter, admitThroughLimiter, admitAiRequest, createChatWriteLimiter, chatWriteLimiter,
   aiLimiter,
   uploadLimiter,

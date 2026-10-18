@@ -1,6 +1,7 @@
 // GET /analytics/revenue.
 // Split by BE-11-T04; summaries and complete-span trends corrected by BE-04.
 const mongoose = require('mongoose');
+const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../services/analytics/limits');
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone } = require('../../utils/timezone');
 const { getCafeTradingHours } = require('../../utils/tradingHours');
@@ -32,7 +33,7 @@ const getRevenue = async (req, res, next) => {
       { $match: match },
       { $group: { _id: dateToString(format, timezone), revenue: netRevenue, transactions: saleCount } },
       { $sort: { _id: 1 } },
-    ]);
+    ], aggregateOptions());
 
     const daily = await buckets('%Y-%m-%d');
     let periodRows = daily;
@@ -79,7 +80,7 @@ const getRevenue = async (req, res, next) => {
       },
     });
   } catch (error) {
-    next(error);
+    next(isQueryTimeout(error) ? queryTimeoutError() : error);
   }
 };
 
