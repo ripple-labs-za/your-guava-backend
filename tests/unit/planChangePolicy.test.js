@@ -52,6 +52,42 @@ describe('D-019 plan change policy (planChangeForPayment)', () => {
     expect(change.currentPeriodEnd).toEqual(at('2026-05-10T00:00:00.000Z'));
   });
 
+  it('starts a new term when the paid period ends at exactly now', () => {
+    const now = at('2026-03-20T00:00:00.000Z');
+    const change = planChangeForPayment(activeOrg({
+      plan: 'pro', billingCycle: 'annual', currentPeriodEnd: now,
+    }), { plan: 'starter', billingCycle: 'monthly' }, now);
+
+    expect(change).toEqual({
+      type: 'new', plan: 'starter', billingCycle: 'monthly', creditDays: 0,
+      effectiveAt: now, currentPeriodStart: now, currentPeriodEnd: at('2026-04-20T00:00:00.000Z'),
+    });
+  });
+
+  it('preserves the paid end when renewing a legacy record with no start date', () => {
+    const now = at('2026-03-20T00:00:00.000Z');
+    const change = planChangeForPayment(activeOrg({
+      plan: 'growth', billingCycle: 'monthly', currentPeriodEnd: at('2026-04-10T00:00:00.000Z'),
+    }), { plan: 'growth', billingCycle: 'monthly' }, now);
+
+    expect(change.type).toBe('renewal');
+    expect(change.currentPeriodStart).toEqual(now);
+    expect(change.currentPeriodEnd).toEqual(at('2026-05-10T00:00:00.000Z'));
+  });
+
+  it('normalizes unknown cycle strings to monthly without losing the live paid term', () => {
+    const now = at('2026-03-20T00:00:00.000Z');
+    const end = at('2026-04-10T00:00:00.000Z');
+    const change = planChangeForPayment(activeOrg({
+      plan: 'growth', billingCycle: 'legacy-cycle', currentPeriodEnd: end,
+    }), { plan: 'growth', billingCycle: 'unknown-cycle' }, now);
+
+    expect(change).toEqual({
+      type: 'renewal', plan: 'growth', billingCycle: 'monthly', creditDays: 0,
+      effectiveAt: now, currentPeriodStart: now, currentPeriodEnd: at('2026-05-10T00:00:00.000Z'),
+    });
+  });
+
   it('upgrades now and credits the unused Starter annual term as Growth days (billing-3 b)', () => {
     const org = activeOrg({
       plan: 'starter',
