@@ -140,4 +140,32 @@ const cafeSchema = new mongoose.Schema(
 cafeSchema.index({ orgId: 1, createdAt: 1 });
 cafeSchema.index({ orgId: 1, archivedAt: 1 });
 
+const { readAndUpgradeSecret } = require('../services/secrets.service');
+
+const CAFE_SECRET_PATHS = Object.freeze([
+  'yocoTokens.accessToken',
+  'yocoTokens.refreshToken',
+  ...['xero', 'quickbooks', 'sage'].flatMap((provider) => [
+    `accountingIntegrations.${provider}.accessToken`,
+    `accountingIntegrations.${provider}.refreshToken`,
+  ]),
+]);
+const SECRET_PATH_SET = new Set(CAFE_SECRET_PATHS);
+
+const valueAt = (cafe, path) => (typeof cafe?.get === 'function'
+  ? cafe.get(path)
+  : path.split('.').reduce((node, key) => (node == null ? undefined : node[key]), cafe));
+
+cafeSchema.static('secretPaths', () => [...CAFE_SECRET_PATHS]);
+
+/**
+ * Reads a stored provider token, re-sealing it under the current key when it is plaintext, a v1
+ * envelope or sealed with the previous key (workforce-integrations-10). The caller must have selected the
+ * path (tokens are select: false).
+ */
+cafeSchema.static('readSecret', function readSecret(cafe, path) {
+  if (!SECRET_PATH_SET.has(path)) throw new TypeError(`Not a stored secret path: ${path}`);
+  return readAndUpgradeSecret({ model: this, filter: { _id: cafe._id }, path, stored: valueAt(cafe, path) });
+});
+
 module.exports = mongoose.model('Cafe', cafeSchema);

@@ -252,7 +252,7 @@ const sync = async (req, res, next) => {
     }
 
     const result = await service.pushSalesSummary(
-      { ...cafe.toObject(), accessToken: decryptSecret(integ.accessToken) },
+      { ...cafe.toObject(), accessToken: await Cafe.readSecret(cafe, `accountingIntegrations.${provider}.accessToken`) },
       summary
     );
 

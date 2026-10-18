@@ -169,7 +169,7 @@ async function getValidToken(cafe) {
 
   const now = new Date();
   if (cafe.yocoTokens.expiresAt && cafe.yocoTokens.expiresAt > now) {
-    return decryptSecret(cafe.yocoTokens.accessToken);
+    return Cafe.readSecret(cafe, 'yocoTokens.accessToken');
   }
 
   // Token expired — refresh it

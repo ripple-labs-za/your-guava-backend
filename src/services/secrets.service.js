@@ -1,87 +1,162 @@
 const crypto = require('crypto');
 
-const ENC_PREFIX = 'enc:v1:';
+const ENC_V1 = 'enc:v1:';
+const ENC_V2 = 'enc:v2:';
 const KEY_LENGTH = 32;
-// scrypt cost for deriving a key from JWT_SECRET. N=2^16 is well above the
-// interactive-login minimum; the result is cached so this runs once per process.
+const IV_LENGTH = 12;
+const TAG_LENGTH = 16;
+const KID_RE = /^[0-9a-f]{8}$/;
+// scrypt cost for a key derived from a passphrase. N=2^16 is well above the interactive-login minimum;
+// results are cached per source, so each distinct key is derived once per process.
 const SCRYPT_PARAMS = { N: 1 << 16, r: 8, p: 1, maxmem: 128 * 1024 * 1024 };
 const SCRYPT_SALT = 'your-guava-token-encryption';
 
-let cachedKey = null;
-let cachedKeySource = null;
+const derived = new Map();
+
+const secretError = (message, code) => Object.assign(new Error(message), { code });
 
 /**
- * Returns the 32-byte AES key used for encrypting stored secrets.
- * Prefers TOKEN_ENCRYPTION_KEY (hex or base64); otherwise derives a
- * stable key from JWT_SECRET so encryption works without extra config.
+ * 'key' sources (TOKEN_ENCRYPTION_KEY, TOKEN_ENCRYPTION_KEY_PREVIOUS) accept 64 hex chars or base64 of 32
+ * bytes as raw key material and scrypt anything else; a 'jwt' source (the development fallback) is
+ * always scrypted. Both rules are exactly what getKey did before key ids, so v1 envelopes still open.
  */
-const getKey = () => {
-  const source = process.env.TOKEN_ENCRYPTION_KEY || process.env.JWT_SECRET;
-  if (!source) {
-    throw new Error('TOKEN_ENCRYPTION_KEY or JWT_SECRET must be set to encrypt secrets');
-  }
-  if (cachedKey && cachedKeySource === source) return cachedKey;
-
-  if (process.env.TOKEN_ENCRYPTION_KEY) {
-    const raw = process.env.TOKEN_ENCRYPTION_KEY;
-    if (/^[0-9a-fA-F]{64}$/.test(raw)) {
-      cachedKey = Buffer.from(raw, 'hex');
-    } else {
-      const decoded = Buffer.from(raw, 'base64');
-      if (decoded.length === KEY_LENGTH) {
-        cachedKey = decoded;
-      } else {
-        cachedKey = crypto.scryptSync(raw, SCRYPT_SALT, KEY_LENGTH, SCRYPT_PARAMS);
-      }
-    }
+const deriveKey = (kind, source) => {
+  const cacheKey = `${kind}:${source}`;
+  const cached = derived.get(cacheKey);
+  if (cached) return cached;
+  let key;
+  if (kind === 'key' && /^[0-9a-fA-F]{64}$/.test(source)) {
+    key = Buffer.from(source, 'hex');
   } else {
-    cachedKey = crypto.scryptSync(source, SCRYPT_SALT, KEY_LENGTH, SCRYPT_PARAMS);
+    const decoded = kind === 'key' ? Buffer.from(source, 'base64') : null;
+    key = decoded && decoded.length === KEY_LENGTH
+      ? decoded
+      : crypto.scryptSync(source, SCRYPT_SALT, KEY_LENGTH, SCRYPT_PARAMS);
   }
-  cachedKeySource = source;
-  return cachedKey;
+  const entry = Object.freeze({ key, kid: crypto.createHash('sha256').update(key).digest('hex').slice(0, 8) });
+  derived.set(cacheKey, entry);
+  return entry;
 };
 
-/**
- * Encrypts a secret string with AES-256-GCM.
- * Output format: enc:v1:<iv>:<authTag>:<ciphertext> (base64url parts).
- * Null/empty values pass through unchanged.
- */
+const currentKey = () => {
+  if (process.env.TOKEN_ENCRYPTION_KEY) return deriveKey('key', process.env.TOKEN_ENCRYPTION_KEY);
+  if (process.env.JWT_SECRET) return deriveKey('jwt', process.env.JWT_SECRET);
+  throw new Error('TOKEN_ENCRYPTION_KEY or JWT_SECRET must be set to encrypt secrets');
+};
+
+/** Current key first; the previous key (decrypt only) second when it is configured and different. */
+const keyring = () => {
+  const current = currentKey();
+  const raw = process.env.TOKEN_ENCRYPTION_KEY_PREVIOUS;
+  if (!raw) return [current];
+  const previous = deriveKey('key', raw);
+  return previous.kid === current.kid ? [current] : [current, previous];
+};
+
+const currentKeyId = () => currentKey().kid;
+
+const isEncrypted = (value) =>
+  typeof value === 'string' && (value.startsWith(ENC_V2) || value.startsWith(ENC_V1));
+
+/** Seals with the current key: enc:v2:<kid>:<iv>:<tag>:<ciphertext>. Null and '' pass through. */
 const encryptSecret = (value) => {
   if (value == null || value === '') return value;
   const plaintext = String(value);
-  if (plaintext.startsWith(ENC_PREFIX)) return plaintext; // already encrypted
-
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getKey(), iv);
+  if (isEncrypted(plaintext)) return plaintext;
+  const { key, kid } = currentKey();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_LENGTH });
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
+  return `${ENC_V2}${kid}:${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
+};
 
-  return `${ENC_PREFIX}${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
+const open = (key, ivPart, tagPart, dataPart) => {
+  const decode = (part) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(part)) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    const bytes = Buffer.from(part, 'base64url');
+    if (bytes.toString('base64url') !== part) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    return bytes;
+  };
+  const iv = decode(ivPart);
+  const tag = decode(tagPart);
+  const ciphertext = decode(dataPart);
+  if (iv.length !== IV_LENGTH || tag.length !== TAG_LENGTH) {
+    throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+  }
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv, {
+    authTagLength: TAG_LENGTH,
+  });
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
 };
 
 /**
- * Decrypts a value produced by encryptSecret.
- * Plaintext (legacy, pre-encryption) values pass through unchanged so
- * existing stored tokens keep working; they are re-encrypted on next write.
+ * Decrypts and says whether the stored value should be re-sealed: plaintext written before encryption
+ * existed, a v1 envelope without a key id, or an envelope sealed with the previous key.
  */
-const decryptSecret = (value) => {
-  if (value == null || value === '') return value;
+const decryptSecretWithStatus = (value) => {
+  if (value == null || value === '') return { value, needsReencrypt: false, reason: null };
   const stored = String(value);
-  if (!stored.startsWith(ENC_PREFIX)) return stored;
 
-  const [ivPart, tagPart, dataPart] = stored.slice(ENC_PREFIX.length).split(':');
-  if (!ivPart || !tagPart || !dataPart) {
-    throw new Error('Malformed encrypted secret');
+  if (stored.startsWith(ENC_V2)) {
+    const parts = stored.slice(ENC_V2.length).split(':');
+    if (parts.length !== 4) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    const [kid, ivPart, tagPart, dataPart] = parts;
+    if (!KID_RE.test(kid || '') || !ivPart || !tagPart || !dataPart) {
+      throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    }
+    const ring = keyring();
+    const match = ring.find((entry) => entry.kid === kid);
+    if (!match) {
+      throw secretError(
+        `No configured key has id ${kid}; set TOKEN_ENCRYPTION_KEY_PREVIOUS to the key that sealed it`,
+        'SECRET_KEY_UNAVAILABLE'
+      );
+    }
+    const plaintext = open(match.key, ivPart, tagPart, dataPart);
+    const isCurrent = match === ring[0];
+    return { value: plaintext, needsReencrypt: !isCurrent, reason: isCurrent ? null : 'previous-key' };
   }
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', getKey(), Buffer.from(ivPart, 'base64url'));
-  decipher.setAuthTag(Buffer.from(tagPart, 'base64url'));
-  return Buffer.concat([
-    decipher.update(Buffer.from(dataPart, 'base64url')),
-    decipher.final(),
-  ]).toString('utf8');
+  if (stored.startsWith(ENC_V1)) {
+    const parts = stored.slice(ENC_V1.length).split(':');
+    if (parts.length !== 3) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    const [ivPart, tagPart, dataPart] = parts;
+    if (!ivPart || !tagPart || !dataPart) throw secretError('Malformed encrypted secret', 'SECRET_MALFORMED');
+    for (const entry of keyring()) {
+      try {
+        return { value: open(entry.key, ivPart, tagPart, dataPart), needsReencrypt: true, reason: 'v1' };
+      } catch (error) {
+        if (error.code === 'SECRET_MALFORMED') throw error;
+      }
+    }
+    throw secretError('No configured key opens this v1 secret', 'SECRET_KEY_UNAVAILABLE');
+  }
+
+  return { value: stored, needsReencrypt: true, reason: 'plaintext' };
 };
 
-const isEncrypted = (value) => typeof value === 'string' && value.startsWith(ENC_PREFIX);
+const decryptSecret = (value) => decryptSecretWithStatus(value).value;
 
-module.exports = { encryptSecret, decryptSecret, isEncrypted };
+/**
+ * Returns the plaintext and, when it needs it, re-seals the stored value under the current key. The
+ * write matches on the value that was read, so a token another request replaced in the meantime is
+ * never overwritten with an older one.
+ */
+const readAndUpgradeSecret = async ({ model, filter, path, stored }) => {
+  const { value, needsReencrypt } = decryptSecretWithStatus(stored);
+  if (needsReencrypt && value) {
+    await model.updateOne({ ...filter, [path]: stored }, { $set: { [path]: encryptSecret(value) } });
+  }
+  return value;
+};
+
+module.exports = {
+  encryptSecret,
+  decryptSecret,
+  decryptSecretWithStatus,
+  readAndUpgradeSecret,
+  isEncrypted,
+  currentKeyId,
+};
