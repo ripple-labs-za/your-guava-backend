@@ -333,3 +333,150 @@ describe('D-019 plan changes through fulfilment', () => {
     expect(res.body.account.organization.plan).toBe('growth');
   });
 });
+
+// Append to planChanges.test.js after the card is next/claimed.
+describe('option A keeps both captured terms under concurrent changes', () => {
+  it.each(['upgrade', 'downgrade'])('%s wins the first write; no paid end is discarded', async (first) => {
+    const owner = await createTestUser();
+    await makeActive(owner.user.orgId, { plan: 'growth', billingCycle: 'monthly', startDays: -10, endDays: 20 });
+    const before = await Organization.findById(owner.user.orgId).lean();
+    const sessions = await Promise.all([
+      ['up', 'pro', 1799], ['down', 'starter', 399],
+    ].map(([reference, plan, amount]) => PaymentSession.create({
+      orgId: owner.user.orgId, userId: owner.user.id, provider: 'onegate', kind: 'plan',
+      reference: `${reference}-${first}`, amount, currency: 'ZAR', plan, billingCycle: 'monthly',
+    })));
+    const [up, down] = sessions;
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(oneGate, 'lookupGatewayTransaction').mockImplementation(async (reference) =>
+      paidTransaction(reference, reference === up.reference ? 1799 : 399));
+
+    // Hold both first snapshots before either write. Then order the writes,
+    // so this proves the version guard rather than hoping for a scheduler race.
+    let releaseReads;
+    const readsReady = new Promise((resolve) => { releaseReads = resolve; });
+    let snapshots = 0;
+    let completedReads = 0;
+    const find = Organization.findById.bind(Organization);
+    jest.spyOn(Organization, 'findById').mockImplementation((...args) => {
+      const query = find(...args);
+      if (String(args[0]) !== String(owner.user.orgId) || snapshots >= 2) return query;
+      snapshots += 1;
+      const select = query.select.bind(query);
+      query.select = (...fields) => Promise.resolve(select(...fields)).then(async (value) => {
+        completedReads += 1;
+        if (completedReads === 2) releaseReads();
+        await readsReady;
+        return value;
+      });
+      return query;
+    });
+
+    let releaseSecond;
+    const firstWritten = new Promise((resolve) => { releaseSecond = resolve; });
+    const update = Organization.findOneAndUpdate.bind(Organization);
+    jest.spyOn(Organization, 'findOneAndUpdate').mockImplementation((filter, fields, options) => {
+      const reference = fields.$addToSet?.fulfilledPaymentReferences;
+      if (![up.reference, down.reference].includes(reference)) return update(filter, fields, options);
+      const isFirst = reference === (first === 'upgrade' ? up.reference : down.reference);
+      return { select: async (...projection) => {
+        if (!isFirst) await firstWritten;
+        const result = await update(filter, fields, options).select(...projection);
+        if (isFirst) releaseSecond();
+        return result;
+      } };
+    });
+
+    await Promise.allSettled(sessions.map((session) => reconcileOneGatePayment(session.reference)));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await Promise.allSettled(sessions.map((session) => reconcileOneGatePayment(session.reference)));
+    }
+    jest.restoreAllMocks();
+    const org = await Organization.findById(owner.user.orgId).select('+fulfilledPaymentReferences').lean();
+    const stored = await PaymentSession.find({ _id: { $in: sessions.map((session) => session._id) } }).lean();
+    for (const session of stored) {
+      expect(['paid', 'needs_attention']).toContain(session.status);
+      expect(org.fulfilledPaymentReferences.includes(session.reference)).toBe(session.status === 'paid');
+    }
+    if (org.pendingPlanChange) expect(org.pendingPlanChange.effectiveAt).toEqual(org.currentPeriodEnd);
+    const paidUpgrade = stored.find((session) => session.reference === up.reference)?.status === 'paid';
+    if (paidUpgrade) {
+      expect(org.plan).toBe('pro');
+      expect(org.currentPeriodEnd.getTime()).toBeGreaterThan(before.currentPeriodEnd.getTime());
+    }
+  });
+});
+
+// Append to planChanges.test.js once the card is next and claimed.
+describe('bounded review credit windows, checkout guards and due boundary', () => {
+  it.each(['upgrade', 'renewal'])('%s handles an existing live credit window', async (kind) => {
+    const owner = await createTestUser();
+    const resetAt = new Date(Date.now() + 20 * DAY);
+    await makeActive(owner.user.orgId, {
+      plan: 'growth', billingCycle: 'monthly', startDays: -10, endDays: 20,
+      extra: { 'aiCredits.included': 1800, 'aiCredits.used': 1700,
+        'aiCredits.bonus': 0, 'aiCredits.bonusUsed': 0, 'aiCredits.resetAt': resetAt },
+    });
+    await payFor(owner, {
+      plan: kind === 'upgrade' ? 'pro' : 'growth', billingCycle: 'monthly',
+      amount: kind === 'upgrade' ? 1799 : 899, reference: `live-window-${kind}`,
+    });
+    const org = await Organization.findById(owner.user.orgId).lean();
+    expect(org.aiCredits.used).toBe(kind === 'upgrade' ? 0 : 1700);
+    if (kind === 'upgrade') {
+      expect(org.aiCredits.included).toBe(6000);
+      expect(org.aiCredits.resetAt).toEqual(addBillingCycle(org.currentPeriodStart, 'monthly'));
+    } else expect(org.aiCredits.resetAt).toEqual(resetAt);
+  });
+
+  it('rejects a hosted checkout conflict before creating a payment session or provider key', async () => {
+    process.env.PAYMENT_PROVIDER = 'onegate';
+    process.env.ONEGATE_API_URL = 'https://payments.onegate.co.za';
+    process.env.ONEGATE_ORGANISATION_ID = '21234';
+    process.env.ONEGATE_API_SALT = 'test-salt';
+    process.env.API_PUBLIC_URL = 'http://api.test';
+    const key = jest.spyOn(oneGate, 'createPaymentKey').mockResolvedValue({
+      key: 'fixture', url: 'https://payments.onegate.co.za/pay/hosted?payment_key=fixture',
+      origin: 'https://payments.onegate.co.za',
+    });
+    const owner = await createTestUser();
+    const end = new Date(Date.now() + 20 * DAY);
+    await makeActive(owner.user.orgId, {
+      plan: 'pro', billingCycle: 'monthly', startDays: -10, endDays: 20,
+      extra: { currentPeriodEnd: end, pendingPlanChange: scheduledStarter(end) },
+    });
+    const response = await request.post('/api/account/checkout')
+      .set('Authorization', `Bearer ${owner.token}`).set('Idempotency-Key', 'hosted-while-pending')
+      .send({ plan: 'growth', billingCycle: 'annual' });
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('PLAN_CHANGE_ALREADY_SCHEDULED');
+    expect(key).not.toHaveBeenCalled();
+    expect(await PaymentSession.countDocuments({ orgId: owner.user.orgId })).toBe(0);
+  });
+
+  it('starts a scheduled change at exactly its effectiveAt and not a millisecond earlier', async () => {
+    const { planChangeIsDue, applyDuePlanChange } = require('../../src/services/billingPayments.service');
+    const instant = new Date('2026-04-10T00:00:00.000Z');
+    const org = { pendingPlanChange: { effectiveAt: instant } };
+    expect(planChangeIsDue(org, instant)).toBe(true);
+    const earlier = new Date(instant.getTime() - 1);
+    expect(planChangeIsDue(org, earlier)).toBe(false);
+    expect(await applyDuePlanChange(org, earlier)).toBeNull();
+  });
+
+  it.each(['plan', 'credits'])('exposes only the coarse held-plan reason for a %s payment', async (kind) => {
+    const owner = await createTestUser();
+    const session = await PaymentSession.create({
+      orgId: owner.user.orgId, userId: owner.user.id, provider: 'onegate', kind,
+      reference: `held-reason-${kind}`, amount: 899, currency: 'ZAR', plan: 'growth',
+      billingCycle: 'monthly', status: 'needs_attention', credits: 500,
+      providerReason: 'A plan change is already scheduled (private internal fields)',
+    });
+    const response = await request.get(`/api/account/payments/${session.reference}`)
+      .set('Authorization', `Bearer ${owner.token}`);
+    expect(response.status).toBe(200);
+    expect(response.body.payment.planChangeConflict).toBe(kind === 'plan');
+    expect(response.body.payment.providerReason).toBeUndefined();
+    expect(JSON.stringify(response.body)).not.toContain('private internal fields');
+  });
+});

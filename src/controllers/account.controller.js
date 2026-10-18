@@ -699,8 +699,10 @@ const getPaymentStatus = async (req, res, next) => {
         reference: session.reference,
         provider: session.provider,
         kind: session.kind,
-          status: session.status,
-          initializationStatus: session.initializationStatus || 'ready',
+        status: session.status,
+        initializationStatus: session.initializationStatus || 'ready',
+        planChangeConflict: session.status === 'needs_attention' && session.kind === 'plan'
+          && /already scheduled/i.test(String(session.providerReason || '')),
         amount: session.amount,
         currency: session.currency,
       },
