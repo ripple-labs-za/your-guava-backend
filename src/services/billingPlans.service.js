@@ -130,7 +130,12 @@ const nextMonthlyAnniversary = (anchor, from = new Date()) => {
   return candidate;
 };
 
+/** One ranking for every reader (billing, forecast factors). Unknown ids, including the legacy 'free', rank as Starter. */
+const PLAN_RANK = { starter: 1, growth: 2, pro: 3 };
+const planRank = (plan) => PLAN_RANK[normalisePlanId(plan)];
+
 module.exports = {
+  PLAN_RANK, planRank,
   PLAN_CONFIG,
   addBillingCycle,
   addUtcMonthsClamped,

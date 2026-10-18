@@ -13,6 +13,19 @@ const paymentMethodSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// D-019: a downgrade or cycle switch is paid now and starts when the current term ends.
+const pendingPlanChangeSchema = new mongoose.Schema(
+  {
+    plan: { type: String, enum: ['starter', 'growth', 'pro'], required: true },
+    billingCycle: { type: String, enum: ['monthly', 'annual'], required: true },
+    effectiveAt: { type: Date, required: true },
+    periodEnd: { type: Date, required: true },
+    reference: { type: String, required: true },
+    scheduledAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const organizationSchema = new mongoose.Schema(
   {
     name: {
@@ -90,6 +103,7 @@ const organizationSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    pendingPlanChange: { type: pendingPlanChangeSchema, default: undefined },
     fulfilledPaymentReferences: {
       type: [String],
       default: [],

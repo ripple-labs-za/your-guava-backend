@@ -6,7 +6,7 @@ const { getPlan, nextMonthlyAnniversary } = require('../billingPlans.service');
 const paymentProvider = require('../paymentProvider.service');
 const { getPlanCapacity } = require('../planCapacity.service');
 const { bonusUsedForCredits } = require('../usage.service');
-const { billingPeriodForPayment } = require('./periods');
+const { planChangeForPayment, isScheduledChange, planChangeIsDue, invalidateFutureForecastsForOrg } = require('./periods');
 const { normalizePaymentIdempotencyKey, generateReference, paymentRequestFingerprint } = require('./sessions');
 
 const cardDetailsFromTransaction = (transaction) => {
@@ -71,6 +71,59 @@ const warnOnOverCapacityPlan = async (orgId, previousPlanId, nextPlanId) => {
   );
 };
 
+const planChangeConflictError = (pending) => {
+  const err = new Error(
+    `A plan change is already scheduled (${pending.plan} ${pending.billingCycle} from ` +
+    `${new Date(pending.effectiveAt).toISOString()}); this payment needs a manual decision`
+  );
+  err.statusCode = 409;
+  err.code = 'PLAN_CHANGE_ALREADY_SCHEDULED';
+  return err;
+};
+
+const immediateChangeUpdate = (org, change, paymentMethod, now) => {
+  const selectedPlan = getPlan(change.plan);
+  const existingResetAt = org.aiCredits?.resetAt ? new Date(org.aiCredits.resetAt) : null;
+  // D-019: a new or upgraded term gets a fresh allowance; a renewal keeps the live window.
+  const resetCredits = change.type !== 'renewal' || !existingResetAt || existingResetAt <= now;
+  const bonusUsed = bonusUsedForCredits(org);
+  return {
+    $set: {
+      plan: selectedPlan.id,
+      billingCycle: change.billingCycle,
+      billingStatus: 'active',
+      subscriptionStartedAt: org.subscriptionStartedAt || now,
+      currentPeriodStart: change.currentPeriodStart,
+      currentPeriodEnd: change.currentPeriodEnd,
+      cancelAtPeriodEnd: false,
+      ...(paymentMethod ? { paymentMethod } : {}),
+      'aiCredits.included': selectedPlan.includedGuavaCredits ?? selectedPlan.includedAiCredits,
+      ...(resetCredits
+        ? {
+            'aiCredits.bonusUsed': bonusUsed,
+            'aiCredits.used': bonusUsed,
+            'aiCredits.resetAt': nextMonthlyAnniversary(change.currentPeriodStart, now),
+          }
+        : {}),
+    },
+  };
+};
+
+const scheduledChangeUpdate = (change, paymentSession, paymentMethod, now) => ({
+  $set: {
+    pendingPlanChange: {
+      plan: change.plan,
+      billingCycle: change.billingCycle,
+      effectiveAt: change.effectiveAt,
+      periodEnd: change.currentPeriodEnd,
+      reference: paymentSession.reference,
+      scheduledAt: now,
+    },
+    cancelAtPeriodEnd: false,
+    ...(paymentMethod ? { paymentMethod } : {}),
+  },
+});
+
 const applyPlanPayment = async (paymentSession, transaction) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const org = await Organization.findById(paymentSession.orgId).select('+fulfilledPaymentReferences');
@@ -80,67 +133,76 @@ const applyPlanPayment = async (paymentSession, transaction) => {
       throw err;
     }
     if (appliedReferences(org).includes(paymentSession.reference)) {
-      return { org, applied: false, planChanged: false };
+      return { org, applied: false, planChanged: false, change: null };
     }
-
-    const selectedPlan = getPlan(paymentSession.plan);
-    const planChanged = org.plan !== selectedPlan.id;
     const now = new Date();
-    const period = billingPeriodForPayment(org, paymentSession.billingCycle, now);
-    // The allowance window runs from the subscription anniversary, so a new
-    // paid period starts a full window rather than a stub that expires at the
-    // next calendar rollover and then grants a second allowance.
-    const resetAt = nextMonthlyAnniversary(period.currentPeriodStart, now);
-    const existingPeriodEnd = org.currentPeriodEnd ? new Date(org.currentPeriodEnd) : null;
-    const existingResetAt = org.aiCredits?.resetAt ? new Date(org.aiCredits.resetAt) : null;
-    const hasLivePaidPeriod =
-      org.billingStatus === 'active' && existingPeriodEnd && existingPeriodEnd > now;
-    const resetCredits =
-      !hasLivePaidPeriod || !existingResetAt || existingResetAt <= now;
-    const bonusUsed = bonusUsedForCredits(org);
+    // A scheduled term whose start has passed is already paid for: start it before judging this payment
+    // against it (the return URL, the webhook and the sweeper do not pass through the auth middleware).
+    if (planChangeIsDue(org, now)) {
+      await applyDuePlanChange(org.toObject(), now);
+      continue;
+    }
+    const pending = org.pendingPlanChange;
+    if (pending?.reference && pending.reference !== paymentSession.reference) throw planChangeConflictError(pending);
+
+    const change = planChangeForPayment(org, paymentSession, now);
     const paymentMethod = cardDetailsFromTransaction(transaction);
-    const creditUpdates = {
-      'aiCredits.included': selectedPlan.includedGuavaCredits ?? selectedPlan.includedAiCredits,
-      ...(resetCredits
-        ? {
-            'aiCredits.bonusUsed': bonusUsed,
-            'aiCredits.used': bonusUsed,
-            'aiCredits.resetAt': resetAt,
-          }
-        : {}),
-    };
+    const update = isScheduledChange(change)
+      ? scheduledChangeUpdate(change, paymentSession, paymentMethod, now)
+      : immediateChangeUpdate(org, change, paymentMethod, now);
 
     const updated = await Organization.findOneAndUpdate(
-      {
-        _id: org._id,
-        __v: org.__v,
-        fulfilledPaymentReferences: { $ne: paymentSession.reference },
-      },
-      {
-        $set: {
-          plan: selectedPlan.id,
-          billingCycle: period.billingCycle,
-          billingStatus: 'active',
-          subscriptionStartedAt: org.subscriptionStartedAt || now,
-          currentPeriodStart: period.currentPeriodStart,
-          currentPeriodEnd: period.currentPeriodEnd,
-          cancelAtPeriodEnd: false,
-          ...(paymentMethod ? { paymentMethod } : {}),
-          ...creditUpdates,
-        },
-        $addToSet: { fulfilledPaymentReferences: paymentSession.reference },
-        $inc: { __v: 1 },
-      },
+      { _id: org._id, __v: org.__v, fulfilledPaymentReferences: { $ne: paymentSession.reference } },
+      { ...update, $addToSet: { fulfilledPaymentReferences: paymentSession.reference }, $inc: { __v: 1 } },
       { new: true, runValidators: true }
     ).select('+fulfilledPaymentReferences');
 
     if (updated) {
-      await warnOnOverCapacityPlan(org._id, org.plan, selectedPlan.id).catch(() => null);
-      return { org: updated, applied: true, planChanged };
+      const planChanged = updated.plan !== org.plan;
+      if (planChanged) await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
+      return { org: updated, applied: true, planChanged, change };
     }
   }
-
   throw new Error('Could not apply plan payment after concurrent billing updates');
+};
+
+/**
+ * Starts a scheduled (already paid) term once its start has passed. Called by the auth middleware on the
+ * first request at or after `effectiveAt`; the filter on the reference makes concurrent callers apply it once.
+ */
+const applyDuePlanChange = async (org, now = new Date()) => {
+  if (!planChangeIsDue(org, now)) return null;
+  const pending = org.pendingPlanChange;
+  const plan = getPlan(pending.plan);
+  const effectiveAt = new Date(pending.effectiveAt);
+  const bonusUsed = bonusUsedForCredits(org);
+  const updated = await Organization.findOneAndUpdate(
+    { _id: org._id, 'pendingPlanChange.reference': pending.reference },
+    {
+      $set: {
+        plan: plan.id,
+        billingCycle: pending.billingCycle,
+        billingStatus: 'active',
+        currentPeriodStart: effectiveAt,
+        currentPeriodEnd: new Date(pending.periodEnd),
+        'aiCredits.included': plan.includedGuavaCredits ?? plan.includedAiCredits,
+        'aiCredits.bonusUsed': bonusUsed,
+        'aiCredits.used': bonusUsed,
+        'aiCredits.resetAt': nextMonthlyAnniversary(effectiveAt, now),
+      },
+      $unset: { pendingPlanChange: 1 },
+      $inc: { __v: 1 },
+    },
+    { new: true, runValidators: true }
+  ).lean();
+  if (!updated) return Organization.findById(org._id).lean();
+  if (updated.plan !== org.plan) {
+    await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
+    invalidateFutureForecastsForOrg(org._id).catch((error) => {
+      console.error('[billing] forecast invalidation after a scheduled plan change failed:', error.message);
+    });
+  }
+  return updated;
 };
 
 const applyCreditPayment = async (paymentSession) => {
@@ -236,5 +298,5 @@ const fulfilMockCreditPurchase = async ({ org, userId, credits, amount, idempote
 };
 
 module.exports = {
-  cardDetailsFromTransaction, applyPlanPayment, applyCreditPayment, fulfilMockCreditPurchase,
+  cardDetailsFromTransaction, applyDuePlanChange, applyPlanPayment, applyCreditPayment, fulfilMockCreditPurchase,
 };

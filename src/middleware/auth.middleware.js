@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { applyDuePlanChange, planChangeIsDue } = require('../services/billingPayments.service');
 const User = require('../models/User.model');
 const Organization = require('../models/Organization.model');
 const { billingAccessForOrganization } = require('../services/usage.service');
@@ -75,8 +76,12 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    const organization = await Organization.findById(liveOrgId).lean();
+    let organization = await Organization.findById(liveOrgId).lean();
     if (!organization) return sessionExpired(res);
+    // D-019: start the paid scheduled term before checking billing access.
+    if (planChangeIsDue(organization)) {
+      organization = (await applyDuePlanChange(organization)) || organization;
+    }
 
     let billing = billingAccessForOrganization(organization);
     if (!billing.allowed && ['trialing', 'active'].includes(organization.billingStatus)) {

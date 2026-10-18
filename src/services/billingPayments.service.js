@@ -9,7 +9,16 @@ const fulfilment = require('./billing/fulfilment');
 const reconcile = require('./billing/reconcile');
 
 module.exports = {
-  billingPeriodForPayment: periods.billingPeriodForPayment,
+  planChangeForPayment: periods.planChangeForPayment,
+  isScheduledChange: periods.isScheduledChange,
+  serialisePlanChange: periods.serialisePlanChange,
+  previewPlanChanges: periods.previewPlanChanges,
+  effectivePaidThrough: periods.effectivePaidThrough,
+  planChangeIsDue: periods.planChangeIsDue,
+  formatBillingDate: periods.formatBillingDate,
+  renewalPeriodEnd: periods.renewalPeriodEnd,
+  applyPlanPayment: fulfilment.applyPlanPayment,
+  applyDuePlanChange: fulfilment.applyDuePlanChange,
   createHostedPaymentSession: sessions.createHostedPaymentSession,
   fulfilMockCreditPurchase: fulfilment.fulfilMockCreditPurchase,
   generateReference: sessions.generateReference,

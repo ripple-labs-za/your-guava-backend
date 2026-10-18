@@ -10,10 +10,10 @@ const {
   getPlan,
   getPlans,
   normalisePlanId,
-  nextMonthlyAnniversary,
 } = require('../services/billingPlans.service');
 const {
-  billingPeriodForPayment,
+  applyPlanPayment, generateReference, planChangeForPayment,
+  previewPlanChanges, serialisePlanChange, formatBillingDate,
   createHostedPaymentSession,
   fulfilMockCreditPurchase,
   getCreditPack,
@@ -24,7 +24,6 @@ const {
 const {
   billingAccessForOrganization,
   billingRequiredError,
-  bonusUsedForCredits,
   creditSnapshot,
   refreshCreditWindow,
   usageSummary,
@@ -60,6 +59,22 @@ const billingNotConfigured = (res) =>
     code: 'BILLING_PROVIDER_NOT_CONFIGURED',
     message: 'Card payments are not configured. Set PAYMENT_PROVIDER and its credentials before accepting paid plan or credit purchases.',
   });
+
+const planChangeAlreadyScheduled = (res, pending) => {
+  const planName = getPlan(pending.plan).name;
+  return res.status(409).json({
+    success: false,
+    code: 'PLAN_CHANGE_ALREADY_SCHEDULED',
+    message: `${planName} (${pending.billingCycle}) is already paid for and starts on ` +
+      `${formatBillingDate(pending.effectiveAt)}. You can change plan again after it starts.`,
+    pendingPlanChange: {
+      plan: pending.plan,
+      billingCycle: pending.billingCycle,
+      effectiveAt: pending.effectiveAt,
+      periodEnd: pending.periodEnd,
+    },
+  });
+};
 
 const hostedPaymentResponse = ({ res, field, session, account, extra = {} }) => {
   const initializationStatus = session.initializationStatus || 'ready';
@@ -171,6 +186,15 @@ const buildAccountPayload = async (userId) => {
       currentPeriodStart: org.currentPeriodStart,
       currentPeriodEnd: org.currentPeriodEnd,
       cancelAtPeriodEnd: org.cancelAtPeriodEnd,
+      pendingPlanChange: org.pendingPlanChange
+        ? {
+            plan: org.pendingPlanChange.plan,
+            billingCycle: org.pendingPlanChange.billingCycle,
+            effectiveAt: org.pendingPlanChange.effectiveAt,
+            periodEnd: org.pendingPlanChange.periodEnd,
+          }
+        : null,
+
       createdAt: org.createdAt,
     },
     usage: {
@@ -191,6 +215,7 @@ const buildAccountPayload = async (userId) => {
       ...(isOwner ? { creditLedger: usageLedger } : {}),
     },
     plans: isOwner ? getPlans() : [],
+    planChanges: isOwner ? previewPlanChanges(org) : [],
   };
 };
 
@@ -343,47 +368,36 @@ const updateProfile = async (req, res, next) => {
 };
 
 const mockCheckout = async ({ req, org, selectedPlan, billingCycle, paymentMethod }) => {
-  const planChanged = org.plan !== selectedPlan.id;
-  const now = new Date();
-  const period = billingPeriodForPayment(org, billingCycle, now);
-  org.plan = selectedPlan.id;
-  org.billingCycle = period.billingCycle;
-  org.billingStatus = 'active';
-  org.subscriptionStartedAt = org.subscriptionStartedAt || now;
-  org.currentPeriodStart = period.currentPeriodStart;
-  org.currentPeriodEnd = period.currentPeriodEnd;
-  org.cancelAtPeriodEnd = false;
-  org.mockCustomerId = org.mockCustomerId || `mock_cus_${org._id.toString().slice(-8)}`;
-  org.paymentMethod = {
-    brand: paymentMethod?.brand || 'visa',
-    last4: paymentMethod?.last4 || '4242',
-    expiresAt: paymentMethod?.expiresAt || '12/30',
-    provider: 'mock',
-  };
-  const bonusUsed = bonusUsedForCredits(org);
-  org.aiCredits = {
-    included: selectedPlan.includedGuavaCredits ?? selectedPlan.includedAiCredits,
-    bonus: org.aiCredits?.bonus || 0,
-    bonusUsed,
-    used: bonusUsed,
-    // Same window rule as a real payment: one allowance per subscription month.
-    resetAt: nextMonthlyAnniversary(period.currentPeriodStart, now),
-  };
-  await org.save();
-
-  if (planChanged) {
-    await invalidateFutureForecastsForOrg(org._id);
-  }
-  clearApiCache({ orgId: org._id });
-
+  const reference = generateReference('plan');
+  const { planChanged, change } = await applyPlanPayment(
+    { orgId: org._id, reference, plan: selectedPlan.id, billingCycle },
+    null
+  );
+  await Organization.updateOne(
+    { _id: org._id },
+    {
+      $set: {
+        mockCustomerId: org.mockCustomerId || `mock_cus_${org._id.toString().slice(-8)}`,
+        paymentMethod: {
+          brand: paymentMethod?.brand || 'visa',
+          last4: paymentMethod?.last4 || '4242',
+          expiresAt: paymentMethod?.expiresAt || '12/30',
+          provider: 'mock',
+        },
+      },
+    }
+  );
+  if (planChanged) await invalidateFutureForecastsForOrg(org._id);
+  clearApiCache({ orgId: org._id }); // BE-04-T05 scoped form (bare throws); keep one call, do not add a second
   const account = await buildAccountPayload(req.user.id);
   return {
     checkout: {
       provider: 'mock',
-      receiptId: `mock_rcpt_${Date.now()}`,
-      amount: org.billingCycle === 'annual' ? selectedPlan.priceAnnual : selectedPlan.priceMonthly,
+      receiptId: reference,
+      amount: billingCycle === 'annual' ? selectedPlan.priceAnnual : selectedPlan.priceMonthly,
       currency: 'ZAR',
       status: 'paid',
+      planChange: change ? serialisePlanChange(change) : null,
     },
     account,
   };
@@ -405,10 +419,12 @@ const checkout = async (req, res, next) => {
     if (!org) {
       return res.status(404).json({ success: false, message: 'Organization not found' });
     }
+    if (org.pendingPlanChange?.effectiveAt) return planChangeAlreadyScheduled(res, org.pendingPlanChange);
+    const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
+    const planChange = serialisePlanChange(planChangeForPayment(org, { plan: selectedPlan.id, billingCycle: cycle }));
     await assertPlanChangeCapacity(org._id, org.plan, selectedPlan.id);
 
     if (paymentProvider.isHostedCheckoutEnabled()) {
-      const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
       const amount = cycle === 'annual' ? selectedPlan.priceAnnual : selectedPlan.priceMonthly;
       const session = await createHostedPaymentSession({
         org,
@@ -426,6 +442,7 @@ const checkout = async (req, res, next) => {
         field: 'checkout',
         session,
         account,
+        extra: { planChange },
       });
     }
 
@@ -435,7 +452,7 @@ const checkout = async (req, res, next) => {
       req,
       org,
       selectedPlan,
-      billingCycle,
+      billingCycle: cycle,
       paymentMethod,
     });
 
@@ -445,6 +462,10 @@ const checkout = async (req, res, next) => {
       account,
     });
   } catch (error) {
+    if (error?.code === 'PLAN_CHANGE_ALREADY_SCHEDULED') {
+      const fresh = await Organization.findById(req.user.orgId).lean();
+      if (fresh?.pendingPlanChange) return planChangeAlreadyScheduled(res, fresh.pendingPlanChange);
+    }
     if (error?.code === 'PLAN_LIMIT_EXCEEDED') {
       return res.status(409).json({
         success: false,

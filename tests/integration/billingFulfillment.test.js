@@ -38,7 +38,7 @@ const backdateSession = (sessionId, createdAt) =>
   );
 
 describe('captured payment fulfilment', () => {
-  it('applies a captured downgrade even when the org has outgrown the new plan', async () => {
+  it('schedules a captured downgrade even when the org has outgrown the new plan', async () => {
     const owner = await createTestUser();
     await Organization.updateOne(
       { _id: owner.user.orgId },
@@ -78,8 +78,12 @@ describe('captured payment fulfilment', () => {
 
     const org = await Organization.findById(owner.user.orgId).lean();
     expect(reconciled.status).toBe('paid');
-    expect(org.plan).toBe('growth');
-    expect(org.billingStatus).toBe('active');
+    expect(org.plan).toBe('pro');
+    expect(org.pendingPlanChange).toEqual(expect.objectContaining({ plan: 'growth', billingCycle: 'monthly' }));
+    const { applyDuePlanChange } = require('../../src/services/billingPayments.service');
+    const applied = await applyDuePlanChange(org, new Date(org.currentPeriodEnd.getTime() + 1000));
+    expect(applied.plan).toBe('growth');
+    expect(applied.billingStatus).toBe('active');
   });
 
   it('moves a payment that cannot be fulfilled to a terminal, visible state', async () => {
