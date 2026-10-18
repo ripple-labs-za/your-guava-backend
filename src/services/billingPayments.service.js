@@ -27,6 +27,9 @@ module.exports = {
   normalizePaymentIdempotencyKey: sessions.normalizePaymentIdempotencyKey,
   normalizePaymentReference: sessions.normalizePaymentReference,
   paymentRequestFingerprint: sessions.paymentRequestFingerprint,
+  reconcilePayment: reconcile.reconcilePayment,
+  reconcilePendingPayments: reconcile.reconcilePendingPayments,
+  providerLabel: reconcile.providerLabel,
   reconcileOneGatePayment: reconcile.reconcileOneGatePayment,
   reconcilePendingOneGatePayments: reconcile.reconcilePendingOneGatePayments,
 };

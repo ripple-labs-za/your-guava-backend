@@ -52,7 +52,7 @@ jest.mock('../../src/models/Item.model', () => ({ init: mockItemInit }));
 jest.mock('../../src/models/Improvement.model', () => ({ init: mockImprovementInit }));
 jest.mock('../../src/models/LeaveBalance.model', () => ({ init: mockLeaveBalanceInit }));
 jest.mock('../../src/services/billingPayments.service', () => ({
-  reconcilePendingOneGatePayments: mockPaymentReconciliation,
+  reconcilePendingPayments: mockPaymentReconciliation,
 }));
 jest.mock('../../src/services/usage.service', () => ({
   reconcileStaleUsageReservations: mockUsageReconciliation,

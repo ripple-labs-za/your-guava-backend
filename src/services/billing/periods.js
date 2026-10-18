@@ -2,7 +2,7 @@
 // Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
 const Cafe = require('../../models/Cafe.model');
 const { invalidatePlanningForecasts } = require('../forecast/generate');
-const { getPlan, getPlans, addBillingCycle, planRank } = require('../billingPlans.service');
+const { getPlan, getPlans, addBillingCycle, addUtcMonthsClamped, planRank } = require('../billingPlans.service');
 const { DEFAULT_TIMEZONE } = require('../../utils/timezone');
 
 const invalidateFutureForecastsForOrg = async (orgId) => {
@@ -26,8 +26,20 @@ const hasLivePaidPeriod = (org, now) => {
   const end = org?.currentPeriodEnd ? new Date(org.currentPeriodEnd) : null;
   return org?.billingStatus === 'active' && Boolean(end) && end > now;
 };
-// BE-07-T04 replaces this with the anchor rule; until then a renewal chains from the current end.
-const renewalPeriodEnd = (_anchor, existingEnd, cycle) => addBillingCycle(existingEnd, cycle);
+// Measure clamped month ends from the subscription anniversary, as credit windows do.
+// Upgrade credit can put an end off that cadence; preserve that extension instead.
+const renewalPeriodEnd = (anchor, existingEnd, cycle) => {
+  const months = cycle === 'annual' ? 12 : 1;
+  const end = new Date(existingEnd);
+  const start = anchor ? new Date(anchor) : null;
+  if (start && !Number.isNaN(start.getTime())) {
+    const elapsed = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + end.getUTCMonth() - start.getUTCMonth();
+    if (elapsed >= 1 && addUtcMonthsClamped(start, elapsed).getTime() === end.getTime()) {
+      return addUtcMonthsClamped(start, elapsed + months);
+    }
+  }
+  return addUtcMonthsClamped(end, months);
+};
 
 /**
  * What a plan payment buys, decided from the organisation as it is at `now` (D-019).

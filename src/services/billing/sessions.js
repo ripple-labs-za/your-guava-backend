@@ -87,10 +87,11 @@ const initializeHostedPaymentSession = async (paymentSession, org) => {
   const leaseStartedAt = new Date(paymentSession.initializationStartedAt);
   try {
     const provider = paymentProvider.requireProvider();
-    // Paystack opens checkout against a customer email; OneGate does not take
-    // one. Only pay for the lookup when the active provider needs it.
+    // Receipts go to the billing contact. Normalize raw legacy data as well as
+    // documents written through the schema's lowercase/trim setters.
+    const billingEmail = typeof org.billingEmail === 'string' ? org.billingEmail.trim().toLowerCase() : '';
     const email = provider.requiresCustomerEmail
-      ? (await User.findById(paymentSession.userId).select('email').lean())?.email
+      ? billingEmail || (await User.findById(paymentSession.userId).select('email').lean())?.email
       : undefined;
 
     const paymentKey = await provider.createPaymentKey({

@@ -29,7 +29,7 @@ const User = require('./models/User.model');
 const Item = require('./models/Item.model');
 const Improvement = require('./models/Improvement.model');
 const LeaveBalance = require('./models/LeaveBalance.model');
-const { reconcilePendingOneGatePayments } = require('./services/billingPayments.service');
+const { reconcilePendingPayments } = require('./services/billingPayments.service');
 const { reconcileStaleUsageReservations } = require('./services/usage.service');
 
 const PORT = process.env.PORT || 5000;
@@ -87,7 +87,7 @@ const runPaymentReconciliation = () => {
   if (!paymentProvider.isHostedCheckoutEnabled()) return Promise.resolve();
   paymentReconciliationPromise = (async () => {
     try {
-      const summary = await reconcilePendingOneGatePayments();
+      const summary = await reconcilePendingPayments();
       if (summary.paid > 0 || summary.failed > 0 || summary.errors > 0) {
         console.log('[billing] pending payment reconciliation:', summary);
       }

@@ -8,6 +8,12 @@ const { invalidateFutureForecastsForOrg } = require('./periods');
 const { normalizePaymentReference, invalidPaymentReference, paymentSessionNotFound } = require('./sessions');
 const { applyPlanPayment, applyCreditPayment, cardDetailsFromTransaction, revokeUnusedPackCredits } = require('./fulfilment');
 
+const PROVIDER_LABELS = { paystack: 'Paystack', onegate: 'OneGate', mock: 'mock billing' };
+const providerLabel = (name) => {
+  const key = String(name || '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, key) ? PROVIDER_LABELS[key] : 'the payment provider';
+};
+
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const DEFAULT_RECONCILIATION_AGE_MS = 2 * 60 * 1000;
 const DEFAULT_RECONCILIATION_BATCH_SIZE = 20;
@@ -262,7 +268,7 @@ const releaseProcessingSession = (sessionId, processingStartedAt, status = 'pend
     { new: true, runValidators: true }
   );
 
-const reconcileOneGatePayment = async (reference, webhookPayload = null, options = {}) => {
+const reconcilePayment = async (reference, webhookPayload = null, options = {}) => {
   const { session: paymentSession, claimed } = await claimPaymentSession(
     reference,
     webhookPayload,
@@ -294,7 +300,7 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
         'Provider transaction did not match payment session',
         observedFields(transaction)
       );
-      const err = new Error('Payment could not be verified with the provider yet');
+      const err = new Error(`Payment could not be verified with ${providerLabel(paymentSession.provider)} yet`);
       err.statusCode = 202;
       throw err;
     }
@@ -393,7 +399,7 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
   }
 };
 
-const reconcilePendingOneGatePayments = async ({
+const reconcilePendingPayments = async ({
   now = new Date(),
   minAgeMs = DEFAULT_RECONCILIATION_AGE_MS,
   limit = DEFAULT_RECONCILIATION_BATCH_SIZE,
@@ -478,7 +484,7 @@ const reconcilePendingOneGatePayments = async ({
       cursor += 1;
       const candidate = sessions[index];
       try {
-        const reconciled = await reconcileOneGatePayment(candidate.reference);
+        const reconciled = await reconcilePayment(candidate.reference);
         if (reconciled?.status === 'paid') summary.paid += 1;
         else if (['failed', 'cancelled'].includes(reconciled?.status)) summary.failed += 1;
         else summary.pending += 1;
@@ -496,5 +502,9 @@ const reconcilePendingOneGatePayments = async ({
 
 module.exports = {
   isPaidTransaction, isFailedTransaction, validateTransactionForSession, claimPaymentSession, recordFulfillmentFailure, releaseProcessingSession,
-  reconcileOneGatePayment, reconcilePendingOneGatePayments, reconcilePaidSession,
+  reconcilePayment, reconcilePendingPayments, reconcilePaidSession,
+  providerLabel,
+  // Deprecated compatibility aliases; new callers use the provider-neutral names.
+  reconcileOneGatePayment: reconcilePayment,
+  reconcilePendingOneGatePayments: reconcilePendingPayments,
 };

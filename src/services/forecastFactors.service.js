@@ -1,3 +1,5 @@
+const { normalisePlanId, planRank } = require('./billingPlans.service');
+
 const DEFAULT_FORECAST_SETTINGS = {
   history: {
     maxWeeks: 8,
@@ -44,13 +46,6 @@ const DEFAULT_FORECAST_SETTINGS = {
   learning: {
     enabled: true,
   },
-};
-
-const PLAN_ORDER = {
-  free: 0,
-  starter: 1,
-  growth: 2,
-  pro: 3,
 };
 
 const FACTOR_CATALOG = [
@@ -112,10 +107,8 @@ const FACTOR_CATALOG = [
   },
 ];
 
-const normalisePlanId = (plan) => (PLAN_ORDER[plan] != null ? plan : 'starter');
-
-const planAllows = (plan, requiredPlan) =>
-  PLAN_ORDER[normalisePlanId(plan)] >= PLAN_ORDER[normalisePlanId(requiredPlan)];
+// Legacy 'free' organisations receive the same Starter entitlements as billing.
+const planAllows = (plan, requiredPlan) => planRank(plan) >= planRank(requiredPlan);
 
 const getFactorEntitlements = (plan = 'starter') => {
   const normalisedPlan = normalisePlanId(plan);

@@ -18,7 +18,7 @@ const {
   fulfilMockCreditPurchase,
   getCreditPack,
   invalidateFutureForecastsForOrg,
-  reconcileOneGatePayment,
+  reconcilePayment,
   normalizePaymentReference,
 } = require('../services/billingPayments.service');
 const {
@@ -53,6 +53,12 @@ const mockBillingEnabled = () =>
   process.env.NODE_ENV !== 'production' &&
   String(process.env.BILLING_MOCK_ENABLED || '').trim().toLowerCase() === 'true';
 
+/** The active card-payment provider, visible to every account role. */
+const activeBillingProvider = () => {
+  if (paymentProvider.isHostedCheckoutEnabled()) return paymentProvider.providerName();
+  return mockBillingEnabled() ? 'mock' : null;
+};
+
 const billingNotConfigured = (res) =>
   res.status(503).json({
     success: false,
@@ -80,7 +86,7 @@ const hostedPaymentResponse = ({ res, field, session, account, extra = {} }) => 
   const initializationStatus = session.initializationStatus || 'ready';
   const status = initializationStatus === 'initializing' ? 'initializing' : session.status;
   const payment = {
-    provider: paymentProvider.providerName() || 'mock',
+    provider: session.provider || paymentProvider.providerName() || 'mock',
     reference: session.reference,
     amount: session.amount,
     currency: session.currency,
@@ -199,6 +205,7 @@ const buildAccountPayload = async (userId) => {
 
       createdAt: org.createdAt,
     },
+    billing: { provider: activeBillingProvider() },
     usage: {
       seats: {
         used: seatCount,
@@ -577,7 +584,7 @@ const handlePaystackReturn = async (req, res) => {
 
   if (reference) {
     try {
-      const session = await reconcileOneGatePayment(reference);
+      const session = await reconcilePayment(reference);
       if (session?.status) status = session.status;
     } catch (error) {
       // A 202 means "not settled yet", which is a legitimate pending outcome.
@@ -624,7 +631,7 @@ const handlePaystackWebhook = async (req, res, next) => {
 
     const event = typeof req.body?.event === 'string' ? req.body.event.slice(0, 64) : '';
     try {
-      await reconcileOneGatePayment(reference, { reference, status: event }, {
+      await reconcilePayment(reference, { reference, status: event }, {
         recheckPaid: /^(refund\.|charge\.dispute\.)/.test(event),
       });
     } catch (error) {
@@ -652,7 +659,7 @@ const handleOneGateWebhook = async (req, res, next) => {
     // from the outbound provider lookup, never from this body -- so every
     // outcome, including an unknown reference, is acknowledged identically.
     try {
-      await reconcileOneGatePayment(reference, req.body);
+      await reconcilePayment(reference, req.body);
     } catch (error) {
       if (![202, 404, 400].includes(error?.statusCode)) {
         console.error('[billing] onegate webhook reconciliation failed:', error.message);
