@@ -148,6 +148,16 @@ describe('a stalled provider fails in bounded time with a named error', () => {
     expect(refresh.error).toMatchObject({ name: 'OutboundTimeoutError', service });
   });
 
+  it('Xero: a stalled connections lookup rejects instead of returning a token without its tenant', async () => {
+    axios.post.mockResolvedValue({ data: { access_token: 'access-1', refresh_token: 'refresh-1', expires_in: 3600 } });
+    axios.get.mockImplementation((_url, config) => stallUntilAborted(config?.signal));
+    const start = process.hrtime.bigint();
+    const outcome = await settleWithin(xero.exchangeCodeForTokens('code-1', {}), 2000);
+    expect(outcome).not.toBe(PENDING);
+    expect(outcome.error).toMatchObject({ name: 'OutboundTimeoutError', service: 'xero', statusCode: 504 });
+    expect(elapsedMs(start)).toBeLessThan(1000);
+  });
+
   it('Yoco: stalled token and orders calls reject with the named error', async () => {
     axios.post.mockImplementation((_url, _body, config) => stallUntilAborted(config?.signal));
     axios.get.mockImplementation((_url, config) => stallUntilAborted(config?.signal));

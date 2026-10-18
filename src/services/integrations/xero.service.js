@@ -17,7 +17,7 @@
  * enhancement can auto-select the single tenant or let the user pick).
  */
 
-const { outboundGet, outboundPost } = require('../../utils/http');
+const { outboundGet, outboundPost, isOutboundTimeout } = require('../../utils/http');
 
 const AUTHORIZE_URL = 'https://login.xero.com/identity/connect/authorize';
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
@@ -90,6 +90,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
         tenantId = connections[0].tenantId || null;
       }
     } catch (err) {
+      if (isOutboundTimeout(err)) throw err;
       console.warn('[xero] Could not fetch tenantId from /connections:', err?.message);
     }
   }
