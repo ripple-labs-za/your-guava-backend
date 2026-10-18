@@ -3,7 +3,7 @@
 const Cafe = require('../../models/Cafe.model');
 const Forecast = require('../../models/Forecast.model');
 const { getPlan, getPlans, addBillingCycle, planRank } = require('../billingPlans.service');
-const { zonedDayStart, safeTimezone } = require('../../utils/timezone');
+const { zonedDayStart, safeTimezone, DEFAULT_TIMEZONE } = require('../../utils/timezone');
 
 const invalidateFutureForecastsForOrg = async (orgId) => {
   const cafes = await Cafe.find({ orgId }).select('_id timezone').lean();
@@ -111,7 +111,7 @@ const planChangeIsDue = (org, now = new Date()) =>
   Boolean(org?.pendingPlanChange?.effectiveAt) && new Date(org.pendingPlanChange.effectiveAt) <= now;
 
 const formatBillingDate = (value) => new Intl.DateTimeFormat('en-ZA', {
-  day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Johannesburg',
+  day: 'numeric', month: 'long', year: 'numeric', timeZone: DEFAULT_TIMEZONE,
 }).format(new Date(value));
 
 module.exports = { invalidateFutureForecastsForOrg, planChangeForPayment, isScheduledChange, serialisePlanChange, previewPlanChanges, effectivePaidThrough, planChangeIsDue, formatBillingDate, renewalPeriodEnd };
