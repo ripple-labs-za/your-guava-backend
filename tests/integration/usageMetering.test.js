@@ -98,6 +98,7 @@ describe('Guava Credit reservation lease breach', () => {
     let finishRetry;
     const retry = meterGuavaCredits({ ...request, run: () => new Promise((resolve) => { finishRetry = resolve; }) });
     await waitFor(() => finishRetry);
+    await waitFor(() => finishOld);
     finishOld();
     await old;
     const live = await UsageLedger.findById(held._id).lean();
@@ -133,6 +134,7 @@ describe('Guava Credit reservation lease breach', () => {
     const recovery = await reconcileStaleUsageReservations({ leaseMs: 60_000 });
     expect(recovery.refunded).toBe(1);
 
+    await waitFor(() => finishRun);
     finishRun({ answer: 'delivered anyway' });
     const outcome = await metered;
 
@@ -166,6 +168,7 @@ describe('Guava Credit reservation lease breach', () => {
 
     // Whichever side wins the row, the customer is charged for the answer once:
     // never twice, and never not at all.
+    await waitFor(() => finishRun);
     const recovery = reconcileStaleUsageReservations({ leaseMs: 60_000 });
     finishRun({ answer: 'raced' });
     const [outcome] = await Promise.all([metered, recovery]);
