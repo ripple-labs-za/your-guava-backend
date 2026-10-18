@@ -334,7 +334,6 @@ describe('D-019 plan changes through fulfilment', () => {
   });
 });
 
-// Append to planChanges.test.js after the card is next/claimed.
 describe('option A keeps both captured terms under concurrent changes', () => {
   it.each(['upgrade', 'downgrade'])('%s wins the first write; no paid end is discarded', async (first) => {
     const owner = await createTestUser();
@@ -407,7 +406,6 @@ describe('option A keeps both captured terms under concurrent changes', () => {
   });
 });
 
-// Append to planChanges.test.js once the card is next and claimed.
 describe('bounded review credit windows, checkout guards and due boundary', () => {
   it.each(['upgrade', 'renewal'])('%s handles an existing live credit window', async (kind) => {
     const owner = await createTestUser();
