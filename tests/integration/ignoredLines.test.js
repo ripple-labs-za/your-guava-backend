@@ -12,16 +12,25 @@ const { generateForecast, updateForecastActuals, _test: forecastInternals } = re
 const { buildBusinessContext, buildSummaryStats } = require('../../src/services/anthropic.service');
 const { reconcileTransactionItems } = require('../../src/services/menuItems.service');
 
+const createdOrgIds = [];
+const createCacheTestUser = async (...args) => {
+  const owner = await createTestUser(...args);
+  createdOrgIds.push(owner.user.orgId);
+  return owner;
+};
+const clearTestCaches = () => createdOrgIds.forEach((orgId) => clearApiCache({ orgId }));
+
 const request = supertest(app);
 const ZONE = 'Africa/Johannesburg';
 
 beforeAll(setup);
 afterAll(teardown);
 afterEach(async () => {
-  clearApiCache();
+  clearTestCaches();
   jest.restoreAllMocks();
   delete process.env.ACCOUNTING_INTEGRATIONS_ENABLED;
   await clearDB();
+  createdOrgIds.length = 0;
 });
 
 const nineAm = (daysAgo) => {
@@ -34,7 +43,7 @@ const nineAm = (daysAgo) => {
  * then the owner ignores Delivery Fee through the real API — the flow gap-1 describes.
  */
 const seedAndIgnore = async () => {
-  const owner = await createTestUser();
+  const owner = await createCacheTestUser();
   const cafeId = owner.user.activeCafeId;
   const latte = await Item.create({ cafeId, name: 'Latte', normalizedName: 'latte', category: 'coffee', reviewStatus: 'matched', expectedPrice: 38 });
   const fee = await Item.create({ cafeId, name: 'Delivery Fee', normalizedName: 'delivery fee', reviewStatus: 'needs_review', expectedPrice: 10 });
@@ -51,7 +60,7 @@ const seedAndIgnore = async () => {
   }));
   const ignored = await request.post(`/api/items/${fee._id}/resolve`).set('Authorization', `Bearer ${owner.token}`).send({ action: 'ignore' });
   expect(ignored.status).toBe(200);
-  clearApiCache();
+  clearTestCaches();
   return { ...owner, cafeId, orgId: owner.user.orgId, latte, fee };
 };
 
