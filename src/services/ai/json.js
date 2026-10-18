@@ -1,6 +1,10 @@
 // Model output: validated insight strings and the provider diagnostics attached to a response.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
-const { modelId } = require('./prompts');
+const { modelFor, usageCostUsd } = require('../../config/ai');
+const OPERATION_FEATURE = {
+  ask_guava_chat: 'chat', insight_refresh: 'insights',
+  import_column_mapping: 'columnMapping', menu_item_ai_review: 'menuReview',
+};
 
 // Every text block, in order. A response that leads with a thinking or tool block, or splits
 // its answer across two text blocks, still yields the whole answer (analytics-ai-10).
@@ -14,20 +18,24 @@ const firstBlockText = joinTextBlocks;
 
 const stripJsonFences = (text) => text.replace(/```json|```/g, '').trim();
 
-const providerDiagnostics = (response, startedAt, operation) => ({
-  operation,
-  model: response?.model || modelId(),
-  providerRequestId: response?.id,
-  inputTokens: Number(response?.usage?.input_tokens) || 0,
-  outputTokens: Number(response?.usage?.output_tokens) || 0,
-  // Without these two, a regression that drops the cache hit rate to zero —
-  // the whole business context re-billed at full input price on every turn —
-  // is invisible in the ledger.
-  cacheCreationInputTokens: Number(response?.usage?.cache_creation_input_tokens) || 0,
-  cacheReadInputTokens: Number(response?.usage?.cache_read_input_tokens) || 0,
-  stopReason: response?.stop_reason,
-  latencyMs: Math.max(0, Date.now() - startedAt),
-});
+const providerDiagnostics = (response, startedAt, operation) => {
+  const feature = Object.hasOwn(OPERATION_FEATURE, operation) ? OPERATION_FEATURE[operation] : 'chat';
+  const diagnostics = {
+    operation,
+    model: response?.model || modelFor(feature),
+    providerRequestId: response?.id,
+    inputTokens: Number(response?.usage?.input_tokens) || 0,
+    outputTokens: Number(response?.usage?.output_tokens) || 0,
+    // Without these two, a regression that drops the cache hit rate to zero —
+    // the whole business context re-billed at full input price on every turn —
+    // is invisible in the ledger.
+    cacheCreationInputTokens: Number(response?.usage?.cache_creation_input_tokens) || 0,
+    cacheReadInputTokens: Number(response?.usage?.cache_read_input_tokens) || 0,
+    stopReason: response?.stop_reason,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+  };
+  return { ...diagnostics, estimatedCostUsd: usageCostUsd(diagnostics) };
+};
 
 /**
  * Reduces a parsed provider response to the insight strings we will store.

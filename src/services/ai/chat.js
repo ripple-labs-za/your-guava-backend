@@ -3,9 +3,10 @@
 const { withUsageDiagnostics } = require('../usage.service');
 const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const {
-  modelId, fencedJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
+  fencedJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
 } = require('./prompts');
 const { providerDiagnostics } = require('./json');
+const { requestSettings } = require('../../config/ai');
 const Cafe = require('../../models/Cafe.model');
 const { buildBusinessContext, cafeAccessError } = require('./context');
 
@@ -120,7 +121,6 @@ const buildBusinessChatRequest = async ({ cafeId, orgId, authorizedCafeIds, mess
   }
 
   const context = await buildBusinessContext({ cafeId, orgId, authorizedCafeIds });
-  const model = modelId();
 
   // The context is tens of KB and barely changes between turns; the operator's
   // question is a line of text that changes every turn. Prompt caching is a
@@ -150,9 +150,7 @@ const buildBusinessChatRequest = async ({ cafeId, orgId, authorizedCafeIds, mess
     contextStats: buildContextStats(context),
     truncatedInput: truncatedMessages > 0,
     request: {
-      model,
-      max_tokens: 1400,
-      temperature: 0.3,
+      ...requestSettings('chat'),
       system: CHAT_SYSTEM_PROMPT,
       messages: requestMessages,
     },

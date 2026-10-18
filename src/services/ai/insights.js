@@ -11,10 +11,11 @@ const { withUsageDiagnostics, creditSnapshot, meterGuavaCredits } = require('../
 const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const { safeTimezone, zonedDayStart, addZonedDays, zonedDateKey } = require('../../utils/timezone');
 const {
-  modelId, missingInsightsKeyResponse, buildSummaryStats, MAX_FORECAST_ITEMS_IN_PROMPT, insufficientInsightDataResponse,
+  missingInsightsKeyResponse, buildSummaryStats, MAX_FORECAST_ITEMS_IN_PROMPT, insufficientInsightDataResponse,
   INSIGHTS_SYSTEM_PROMPT, insightsUserPrompt,
 } = require('./prompts');
 const { extractJson, validatedInsightStrings, providerDiagnostics } = require('./json');
+const { requestSettings } = require('../../config/ai');
 const { insightDatasetIsTooThin, invalidateBusinessContext } = require('./context');
 const { throwIfAborted, waitWithAbort } = require('./stream');
 
@@ -135,9 +136,7 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   const startedAt = Date.now();
   const message = await withAnthropicErrors(() => client.messages.create(
     {
-      model: modelId(),
-      max_tokens: 1024,
-      temperature: 0.2,
+      ...requestSettings('insights'),
       system: INSIGHTS_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: insightsUserPrompt({
         summary, forecastSummary,

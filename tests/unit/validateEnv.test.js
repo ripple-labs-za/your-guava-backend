@@ -1,6 +1,7 @@
 const validateEnv = require('../../src/config/validateEnv');
 
 const KEYS = [
+  'ANTHROPIC_MODEL', 'AI_MODEL_CHAT', 'AI_MODEL_INSIGHTS', 'AI_MODEL_COLUMN_MAPPING', 'AI_MODEL_MENU_REVIEW',
   'RATE_LIMITS_ENABLED',
   'BACKGROUND_JOBS_INLINE',
   'ORIGIN_CHECKS_ENABLED',
@@ -93,6 +94,13 @@ const setProductionPaystackEnv = () => {
 };
 
 describe('validateEnv', () => {
+  it('rejects production startup when an AI feature has no request rules', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.AI_MODEL_CHAT = 'claude-sonnet-4';
+    expect(() => validateEnv()).toThrow(/AI_MODEL_CHAT \(or ANTHROPIC_MODEL\) names unknown model claude-sonnet-4/);
+  });
+
   it('rejects a Paystack currency other than ZAR', () => {
     process.env.NODE_ENV = 'development';
     process.env.JWT_SECRET = 'dev-secret';

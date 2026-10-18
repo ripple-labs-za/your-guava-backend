@@ -4,7 +4,8 @@ const crypto = require('crypto');
 const { withUsageDiagnostics, meterGuavaCredits } = require('../usage.service');
 const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const { isValidEmail } = require('../../utils/email');
-const { modelId, COLUMN_MAPPING_SYSTEM_PROMPT, columnMappingUserPrompt } = require('./prompts');
+const { COLUMN_MAPPING_SYSTEM_PROMPT, columnMappingUserPrompt } = require('./prompts');
+const { requestSettings } = require('../../config/ai');
 const { extractJson, validatedMappingProposal, providerDiagnostics } = require('./json');
 const { headersLookHeaderless, summarizeMappingSamples } = require('./pii');
 
@@ -67,9 +68,7 @@ const proposeColumnMappingWithClaude = async (headers, sampleSummary, { requestI
 
   const startedAt = Date.now();
   const message = await withAnthropicErrors(() => client.messages.create({
-    model: modelId(),
-    max_tokens: 512,
-    temperature: 0,
+    ...requestSettings('columnMapping'),
     system: COLUMN_MAPPING_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: columnMappingUserPrompt(headers, sampleSummary) }],
   }), 'proposeColumnMapping', { requestId });

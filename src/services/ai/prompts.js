@@ -6,9 +6,9 @@ const { getCafeTradingHours } = require('../../utils/tradingHours');
 const { zonedDateKey, zonedDayOfWeek, zonedDayStart, getZonedDateParts } = require('../../utils/timezone');
 const { demandLines } = require('../../utils/demand');
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-// Read at call time, as every site did; BE-05-T08 replaces the body with its model config.
-const modelId = () => process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+const { DEFAULT_MODEL, modelFor } = require('../../config/ai');
+// Compatibility export for callers that need the chat model id only.
+const modelId = () => modelFor('chat');
 
 const MAX_FORECAST_ITEMS_IN_PROMPT = 15;
 
