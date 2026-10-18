@@ -79,6 +79,40 @@ describe('forecast performance', () => {
       });
     });
 
+    it('K-user: a second owner can build a day the first owner was refunded for at the same price', async () => {
+      const User = require('../../src/models/User.model');
+      const jwt = require('jsonwebtoken');
+      const other = await User.create({
+        name: 'Second Owner', email: 'second-refunded-history@example.test', password: 'password123',
+        role: 'owner', orgId: user.orgId, cafeIds: [cafe._id], activeCafeId: cafe._id,
+      });
+      const otherToken = jwt.sign({
+        id: String(other._id), orgId: String(user.orgId), cafeId: String(cafe._id),
+        role: 'owner', tokenVersion: 0,
+      }, process.env.JWT_SECRET);
+      const write = jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValueOnce(new Error('transient write failure'));
+      const first = await request.get(url).set('Authorization', `Bearer ${token}`);
+      write.mockRestore();
+      expect(first.status).toBe(500);
+      const retry = await request.get(url).set('Authorization', `Bearer ${otherToken}`);
+      expect(retry.status).toBe(200);
+      expect(retry.body.meta).toEqual(expect.objectContaining({ generated: 1, pendingDays: 0 }));
+      expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(1);
+    });
+
+    it('K-unique: a same-user same-price retry after a refund reuses the refunded attempt row', async () => {
+      const write = jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValueOnce(new Error('transient write failure'));
+      const first = await request.get(url).set('Authorization', `Bearer ${token}`);
+      write.mockRestore();
+      expect(first.status).toBe(500);
+      const retry = await request.get(url).set('Authorization', `Bearer ${token}`);
+      expect(retry.status).toBe(200);
+      const rows = await UsageLedger.find({ orgId: user.orgId, featureKey: 'history_backfill_day' }).lean();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual(expect.objectContaining({ status: 'committed', credits: 1 }));
+      expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(1);
+    });
+
     it('allows a refunded missing-day attempt to retry at the changed price', async () => {
       const priorPrice = process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
       try {
