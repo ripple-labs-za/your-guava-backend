@@ -59,7 +59,9 @@ describe('accounting providers are checked against the real list', () => {
       'accountingIntegrations.xero.expiresAt': new Date(Date.now() + 3600 * 1000),
     } });
     await Transaction.create({
-      cafeId, date: new Date(), dayOfWeek: 1, hour: 9, total: 40, status: 'approved',
+      // Accounting sends closed cafe-local days; keep this prototype-key fixture
+      // inside that window instead of today's still-open day (BE-09-T02).
+      cafeId, date: new Date(Date.now() - 2 * 86400000), dayOfWeek: 1, hour: 9, total: 40, status: 'approved',
       items: [{ name: '__proto__', quantity: 1, unitPrice: 10 }, { name: 'constructor', quantity: 3, unitPrice: 10 }],
     });
 
