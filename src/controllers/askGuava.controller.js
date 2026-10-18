@@ -164,8 +164,8 @@ const refreshGeneratedInsights = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       ...result,
-      requiresRefresh: false,
-      cacheStatus: result.cacheStatus === 'unconfigured' ? 'unconfigured' : 'fresh',
+      requiresRefresh: Boolean(result.requiresRefresh),
+      cacheStatus: result.cacheStatus || 'fresh',
       guavaCredits,
       aiCredits: guavaCredits,
       meta: { replayed, coalesced },

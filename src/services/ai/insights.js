@@ -1,6 +1,6 @@
 const { getCafeTradingHours } = require('../../utils/tradingHours');
 // Insights: the cache, the refresh lease and de-duplication, and generation.
-// Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
+// Renewed leases and completed-day windows keep paid refreshes honest.
 const crypto = require('crypto');
 const Transaction = require('../../models/Transaction.model');
 const Forecast = require('../../models/Forecast.model');
@@ -20,7 +20,6 @@ const { throwIfAborted, waitWithAbort } = require('./stream');
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const REFRESH_DEDUPE_MS = 30 * 1000;
-const REFRESH_LEASE_MS = 75 * 1000;
 const REFRESH_WAIT_MS = 80 * 1000;
 const REFRESH_POLL_MS = 250;
 
@@ -93,7 +92,7 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   const transactions = await Transaction.find({
     cafeId,
     status: 'approved',
-    date: { $gte: fourteenDaysAgo },
+    date: { $gte: fourteenDaysAgo, $lt: today },
   })
     .sort({ date: 1 })
     .lean();
@@ -139,7 +138,11 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
       max_tokens: 1024,
       temperature: 0.2,
       system: INSIGHTS_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: insightsUserPrompt({ summary, forecastSummary }) }],
+      messages: [{ role: 'user', content: insightsUserPrompt({
+        summary, forecastSummary,
+        windowStart: zonedDateKey(fourteenDaysAgo, timezone),
+        windowEnd: zonedDateKey(addZonedDays(today, -1, timezone), timezone),
+      }) }],
     },
     { signal }
   ), 'generateInsights', { requestId });
@@ -236,6 +239,11 @@ const performInsightsRefresh = async ({
     run: () => generateInsights(cafeId, { signal, requestId }),
   });
   const result = metered.result;
+  // A lost-response retry returns its paid result without making pre-import data fresh.
+  if (metered.replayed && priorInvalidatedAt &&
+      new Date(result.generatedAt) <= new Date(priorInvalidatedAt)) {
+    return { ...metered, result: { ...result, cacheStatus: 'stale', requiresRefresh: true }, replayed: true };
+  }
   const written = await GeneratedInsight.findOneAndUpdate(
     { cafeId, invalidatedAt: priorInvalidatedAt },
     {
@@ -274,6 +282,60 @@ const performInsightsRefresh = async ({
   return { ...metered, replayed: Boolean(metered.replayed) };
 };
 
+const clampInteger = (value, fallback, min, max) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+};
+
+// Long enough for one provider attempt; the heartbeat keeps it alive for as long as the holder really runs.
+const insightRefreshLeaseMs = () => clampInteger(process.env.AI_INSIGHT_LEASE_MS, 60_000, 1_000, 300_000);
+
+const claimRefreshLease = async ({ cafeId, token, leaseMs }) => {
+  const now = new Date();
+  const lease = await GeneratedInsight.findOneAndUpdate(
+    {
+      cafeId,
+      $or: [
+        { 'refreshLease.expiresAt': { $exists: false } },
+        { 'refreshLease.expiresAt': null },
+        { 'refreshLease.expiresAt': { $lte: now } },
+      ],
+    },
+    { $set: { refreshLease: { token, expiresAt: new Date(now.getTime() + leaseMs) } } },
+    { new: true }
+  ).lean();
+  return lease?.refreshLease?.token === token;
+};
+
+/** Renews the lease every third of its length while the holder runs; returns the stop function. */
+const startLeaseHeartbeat = ({ cafeId, token, leaseMs }) => {
+  const timer = setInterval(() => {
+    GeneratedInsight.updateOne(
+      { cafeId, 'refreshLease.token': token },
+      { $set: { 'refreshLease.expiresAt': new Date(Date.now() + leaseMs) } }
+    ).catch((error) => console.error(`[insights] refresh lease renewal failed: ${error.name}`));
+  }, Math.max(250, Math.floor(leaseMs / 3)));
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
+
+/**
+ * Waits for another holder: returns its result when it lands, or { leaseFree: true } as soon as the lease is
+ * released or lapses (the caller then tries to claim it), or { timedOut: true } at the deadline.
+ */
+const waitForLeaseChange = async ({ cafeId, startedAt, deadline, signal }) => {
+  while (Date.now() < deadline) {
+    await waitWithAbort(REFRESH_POLL_MS, signal);
+    const current = await cachedInsightEntry(cafeId);
+    if (current?.generatedAt && new Date(current.generatedAt) >= startedAt && !insightEntryIsInvalidated(current)) {
+      return { entry: current };
+    }
+    const expiresAt = current?.refreshLease?.expiresAt;
+    if (!expiresAt || new Date(expiresAt) <= new Date()) return { leaseFree: true };
+  }
+  return { timedOut: true };
+};
+
 const refreshInsights = async (options) => {
   throwIfAborted(options.signal);
   const recent = await cachedInsightEntry(options.cafeId);
@@ -301,57 +363,32 @@ const refreshInsights = async (options) => {
     if (error?.code !== 11000) throw error;
   }
 
-  const lease = await GeneratedInsight.findOneAndUpdate(
-    {
-      cafeId: options.cafeId,
-      $or: [
-        { 'refreshLease.expiresAt': { $exists: false } },
-        { 'refreshLease.expiresAt': null },
-        { 'refreshLease.expiresAt': { $lte: startedAt } },
-      ],
-    },
-    {
-      $set: {
-        refreshLease: {
-          token: leaseToken,
-          expiresAt: new Date(startedAt.getTime() + REFRESH_LEASE_MS),
-        },
-      },
-    },
-    { new: true }
-  ).lean();
-
-  if (!lease || lease.refreshLease?.token !== leaseToken) {
-    const deadline = Date.now() + REFRESH_WAIT_MS;
-    while (Date.now() < deadline) {
-      await waitWithAbort(REFRESH_POLL_MS, options.signal);
-      const current = await cachedInsightEntry(options.cafeId);
-      if (
-        current?.generatedAt &&
-        new Date(current.generatedAt) >= startedAt &&
-        !insightEntryIsInvalidated(current)
-      ) {
-        return {
-          result: { insights: current.insights, generatedAt: current.generatedAt },
-          guavaCredits: await currentCreditSnapshot(options.orgId),
-          replayed: true,
-          coalesced: true,
-        };
-      }
-      if (!current?.refreshLease?.expiresAt || new Date(current.refreshLease.expiresAt) <= new Date()) {
-        break;
-      }
+  const leaseMs = insightRefreshLeaseMs();
+  const deadline = Date.now() + REFRESH_WAIT_MS;
+  while (!(await claimRefreshLease({ cafeId: options.cafeId, token: leaseToken, leaseMs }))) {
+    const outcome = await waitForLeaseChange({ cafeId: options.cafeId, startedAt, deadline, signal: options.signal });
+    if (outcome.entry) {
+      return {
+        result: { insights: outcome.entry.insights, generatedAt: outcome.entry.generatedAt },
+        guavaCredits: await currentCreditSnapshot(options.orgId),
+        replayed: true,
+        coalesced: true,
+      };
     }
-    const error = new Error('An insight refresh is already in progress');
-    error.statusCode = 409;
-    error.code = 'INSIGHT_REFRESH_IN_PROGRESS';
-    throw error;
+    if (outcome.timedOut) {
+      throw Object.assign(new Error('An insight refresh is already in progress'), {
+        statusCode: 409, code: 'INSIGHT_REFRESH_IN_PROGRESS', details: { code: 'INSIGHT_REFRESH_IN_PROGRESS' },
+      });
+    }
+    throwIfAborted(options.signal);
   }
 
+  const stopHeartbeat = startLeaseHeartbeat({ cafeId: options.cafeId, token: leaseToken, leaseMs });
   try {
     const result = await performInsightsRefresh(options);
     return { ...result, coalesced: false };
   } finally {
+    stopHeartbeat();
     await GeneratedInsight.updateOne(
       { cafeId: options.cafeId, 'refreshLease.token': leaseToken },
       { $unset: { refreshLease: 1 } }

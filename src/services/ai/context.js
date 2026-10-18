@@ -45,11 +45,12 @@ const MIN_INSIGHT_TRANSACTIONS = 1;
 const insightDatasetIsTooThin = async (cafeId) => {
   const cafe = await Cafe.findById(cafeId).select('timezone').lean();
   const timezone = safeTimezone(cafe?.timezone);
-  const since = addZonedDays(zonedDayStart(new Date(), timezone), -14, timezone);
+  const today = zonedDayStart(new Date(), timezone);
+  const since = addZonedDays(today, -14, timezone);
   const approved = await Transaction.countDocuments({
     cafeId,
     status: 'approved',
-    date: { $gte: since },
+    date: { $gte: since, $lt: today },
   });
   return approved < MIN_INSIGHT_TRANSACTIONS;
 };

@@ -53,7 +53,7 @@ const seedSales = async (cafeId, count = 3) => {
   const rows = Array.from({ length: count }, (_, index) => ({
     cafeId,
     receiptId: `ask-guava-${index}`,
-    date: new Date(Date.now() - (index + 1) * 3_600_000),
+    date: new Date(Date.now() - 36 * 3_600_000 - index * 3_600_000),
     status: 'approved',
     total: 40 + index,
     items: [{ name: 'Flat White', quantity: 1, unitPrice: 40 + index }],
@@ -393,7 +393,7 @@ describe('Insight refresh data and privacy guards', () => {
     await Transaction.create({
       cafeId: owner.user.activeCafeId,
       receiptId: 'insight-injection',
-      date: new Date(),
+      date: new Date(Date.now() - 36 * 3_600_000),
       status: 'approved',
       total: 40,
       items: [{

@@ -27,7 +27,7 @@ const seedRecentSales = (cafeId) =>
   Transaction.create({
     cafeId,
     receiptId: 'insight-refresh-seed',
-    date: new Date(),
+    date: new Date(Date.now() - 36 * 3_600_000),
     status: 'approved',
     total: 45,
     items: [{ name: 'Flat White', quantity: 1, unitPrice: 45 }],
@@ -250,5 +250,161 @@ describe('explicit insight refresh', () => {
     }));
     const org = await Organization.findById(owner.user.orgId).lean();
     expect(org.aiCredits.used).toBe(3);
+  });
+});
+
+describe('insight refresh lease, replay and window', () => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitFor = async (probe, attempts = 500) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const value = await probe();
+      if (value) return value;
+      await sleep(10);
+    }
+    throw new Error('Timed out waiting for the expected state');
+  };
+  const refresh = (owner, key) => request
+    .post('/api/forecasts/insights/refresh')
+    .set('Authorization', `Bearer ${owner.token}`)
+    .set('Idempotency-Key', key)
+    .send({})
+    .then((response) => response);
+  const insightsReply = (insights) => ({
+    id: 'msg_insights', model: 'test-model', usage: { input_tokens: 400, output_tokens: 60 },
+    stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(insights) }],
+  });
+  const overloaded = () => Object.assign(new Error('529 overloaded'), {
+    status: 529, error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+  });
+
+  afterEach(() => {
+    delete process.env.AI_INSIGHT_LEASE_MS;
+    jest.restoreAllMocks();
+  });
+
+  it('renews the refresh lease while a slow provider call runs, so a second tab coalesces instead of paying again', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    process.env.AI_INSIGHT_LEASE_MS = '1000';
+    const owner = await createTestUser();
+    await UsageLedger.init();
+    await seedRecentSales(owner.user.activeCafeId);
+    mockAnthropicMessageCreate.mockImplementation(async () => {
+      await sleep(2_500);
+      return insightsReply(['Slow but sure.']);
+    });
+
+    const holder = refresh(owner, 'slow-holder');
+    const leased = await waitFor(() => GeneratedInsight.findOne({ 'refreshLease.token': { $exists: true } }).lean());
+    const firstExpiry = new Date(leased.refreshLease.expiresAt).getTime();
+    await sleep(1_500);
+    const renewed = await GeneratedInsight.findOne({ cafeId: owner.user.activeCafeId }).lean();
+    expect(new Date(renewed.refreshLease.expiresAt).getTime()).toBeGreaterThan(firstExpiry);
+
+    const [first, second] = await Promise.all([holder, refresh(owner, 'second-tab')]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.meta.coalesced).toBe(true);
+    expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(1);
+    const org = await Organization.findById(owner.user.orgId).lean();
+    expect(org.aiCredits.used).toBe(10);
+  }, 15_000);
+
+  it('lets a waiting refresh run once the holder fails, instead of reporting a false 409', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const owner = await createTestUser();
+    await UsageLedger.init();
+    await seedRecentSales(owner.user.activeCafeId);
+    mockAnthropicMessageCreate
+      .mockImplementationOnce(async () => { await sleep(300); throw overloaded(); })
+      .mockImplementationOnce(async () => insightsReply(['Second tab wins.']));
+
+    const holder = refresh(owner, 'holder-fails');
+    await waitFor(() => GeneratedInsight.findOne({ 'refreshLease.token': { $exists: true } }).lean());
+    const [first, second] = await Promise.all([holder, refresh(owner, 'waiter-runs')]);
+
+    expect(first.status).toBe(503);
+    expect(second.status).toBe(200);
+    expect(second.body.insights).toEqual(['Second tab wins.']);
+    expect(second.body.meta.coalesced).toBe(false);
+    expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('never republishes a pre-import analysis when a lost-response refresh is retried after an import', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    await UsageLedger.init();
+    await seedRecentSales(owner.user.activeCafeId);
+    const { invalidateInsights } = require('../../src/services/anthropic.service');
+    mockAnthropicMessageCreate.mockResolvedValue(insightsReply(['Before the import.']));
+
+    const original = await refresh(owner, 'lost-response');
+    expect(original.status).toBe(200);
+    await invalidateInsights(owner.user.activeCafeId); // an import committed while the response was lost
+
+    const retry = await refresh(owner, 'lost-response');
+    expect(retry.status).toBe(200);
+    expect(retry.body.meta.replayed).toBe(true);
+    expect(retry.body.cacheStatus).toBe('stale');
+    expect(retry.body.requiresRefresh).toBe(true);
+    const read = await request.get('/api/forecasts/insights').set('Authorization', `Bearer ${owner.token}`);
+    expect(read.body.cacheStatus).toBe('stale');
+    expect(read.body.requiresRefresh).toBe(true);
+    expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a cafe with no sales as insufficient data, not as a fresh analysis', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+
+    const response = await refresh(owner, 'no-sales');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({
+      cacheStatus: 'insufficient_data', requiresRefresh: true, insufficientData: true,
+    }));
+    expect(mockAnthropicMessageCreate).not.toHaveBeenCalled();
+  });
+
+  it('treats a cafe whose only sales are from today as having nothing to analyse yet', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    await Transaction.create({
+      cafeId: owner.user.activeCafeId, receiptId: 'today-only', date: new Date(), status: 'approved', total: 45,
+      items: [{ name: 'Flat White', quantity: 1, unitPrice: 45 }],
+    });
+
+    const response = await refresh(owner, 'today-only');
+
+    expect(response.body.cacheStatus).toBe('insufficient_data');
+    expect(mockAnthropicMessageCreate).not.toHaveBeenCalled();
+  });
+
+  it('analyses the 14 completed days before today and leaves the partial day out', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    const Cafe = require('../../src/models/Cafe.model');
+    const cafe = await Cafe.findById(owner.user.activeCafeId).lean();
+    const timeZone = cafe.timezone || 'Africa/Johannesburg';
+    const todayKey = new Intl.DateTimeFormat('en-CA', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+    await Transaction.create([
+      { cafeId: cafe._id, receiptId: 'today-partial', date: new Date(), status: 'approved', total: 900,
+        items: [{ name: 'Flat White', quantity: 20, unitPrice: 45 }] },
+      { cafeId: cafe._id, receiptId: 'yesterday', date: new Date(Date.now() - 36 * 3_600_000), status: 'approved', total: 6000,
+        items: [{ name: 'Flat White', quantity: 130, unitPrice: 46 }] },
+      { cafeId: cafe._id, receiptId: 'too-old', date: new Date(Date.now() - 16 * 24 * 3_600_000), status: 'approved', total: 10,
+        items: [{ name: 'Flat White', quantity: 1, unitPrice: 10 }] },
+    ]);
+    mockAnthropicMessageCreate.mockResolvedValue(insightsReply(['Steady week.']));
+
+    const response = await refresh(owner, 'window-check');
+
+    expect(response.status).toBe(200);
+    const prompt = mockAnthropicMessageCreate.mock.calls[0][0].messages[0].content;
+    expect(prompt).toContain('"totalTransactions": 1');
+    expect(prompt).not.toContain(`"${todayKey}"`);
+    expect(prompt).toMatch(/14 completed days/);
   });
 });
