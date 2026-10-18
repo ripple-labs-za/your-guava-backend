@@ -251,7 +251,13 @@ describe('Leave cycles, adjustments and cancellation (BE-08-T02)', () => {
       const locked = await moveStart('2025-02-03');
       expect(locked.status).toBe(409);
       expect(locked.body.code).toBe('STAFF_START_DATE_LOCKED');
-      expect(locked.body.message).toMatch(/adjustment/);
+      expect(locked.body.message).toMatch(/an owner's adjustment to a leave total is already recorded/);
+      expect(locked.body.message).not.toMatch(/cancel the approved leave/);
+
+      await bookAndApprove('2025-05-05', '2025-05-06');
+      const both = await moveStart('2025-02-03');
+      expect(both.body.message).toMatch(/approved leave and an owner's adjustment to a leave total are already recorded/);
+      expect(both.body.message).toMatch(/cancel the approved leave first/);
     });
 
     it('allows an adjustment below the days already taken and warns about it', async () => {

@@ -23,10 +23,11 @@ const assertStartDateMovable = async ({ cafeId, staffId, startDate, session }) =
   if (!approved && !adjusted) return;
 
   const recorded = [approved && 'approved leave', adjusted && "an owner's adjustment to a leave total"].filter(Boolean).join(' and ');
+  const verb = approved && adjusted ? 'are' : 'is';
   throw new WorkforceError(
     409,
     'STAFF_START_DATE_LOCKED',
-    `${staff.name}'s start date stays ${formatDateOnly(staff.startDate)}: ${recorded} is already recorded against the leave ` +
+    `${staff.name}'s start date stays ${formatDateOnly(staff.startDate)}: ${recorded} ${verb} already recorded against the leave ` +
       'cycles that run from it, and a new start date would move that leave into different cycles.' +
       (approved ? ' If the date was entered wrongly, cancel the approved leave first.' : '')
   );
