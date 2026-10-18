@@ -50,11 +50,11 @@ describe('analytics movers and heatmap open hours', () => {
     expect(res.body.meta.decliningItems).toEqual([{ name: 'Muffin', trend: -50 }]); // Brownie is under the floor
     expect(res.body.meta.newItems).toEqual([{ name: 'Iced Matcha', currentQty: 20 }]); // Scone (12) is under the floor
     expect(res.body.meta.moverFloor).toEqual({
-      minAvgPerDay: 2, windowDays: 7, minQty: 14, eligibleCount: 3, busiestQty: 52,
+      windowDays: 7, minQty: 14, eligibleCount: 3, belowFloorCount: 3, busiestQty: 52,
     });
     const byName = Object.fromEntries(res.body.items.map((item) => [item.name, item]));
     expect(byName['Iced Matcha']).toEqual(expect.objectContaining({ trend: null, isNew: true }));
-    expect(byName.Scone).toEqual(expect.objectContaining({ trend: null, isNew: true }));
+    expect(byName.Scone).toEqual(expect.objectContaining({ trend: null, isNew: false }));
     expect(byName.Latte).toEqual(expect.objectContaining({ trend: 30, isNew: false }));
   });
 

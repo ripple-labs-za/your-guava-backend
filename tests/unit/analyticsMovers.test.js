@@ -45,10 +45,10 @@ describe('rankMovers', () => {
 
   it('reports the floor and how close the busiest line came', () => {
     const { moverFloor } = rankMovers(trendMapOf({ Coke: [1, 8], Tea: [3, 9] }));
-    expect(moverFloor).toEqual({ minAvgPerDay: 2, windowDays: 7, minQty: 14, eligibleCount: 0, busiestQty: 9 });
+    expect(moverFloor).toEqual({ windowDays: 7, minQty: 14, eligibleCount: 0, belowFloorCount: 2, busiestQty: 9 });
   });
 
-  it('treats exactly 2 a day as enough', () => {
+  it('treats exactly 14 in a week as enough', () => {
     expect(rankMovers(trendMapOf({ Latte: [7, 14] })).risingItems).toEqual([{ name: 'Latte', trend: 100 }]);
   });
 });
@@ -62,3 +62,8 @@ describe('itemTrend', () => {
     expect(itemTrend({ current: 52, previous: 40 })).toBe(30);
   });
 });
+
+it('caps a refund-heavy current week at a complete decline', () => {
+  expect(itemTrend({ previous: 20, current: -3 })).toBe(-100);
+});
+

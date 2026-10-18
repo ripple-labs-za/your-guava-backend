@@ -5,7 +5,7 @@ const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../s
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
 const { getCafeTradingHours } = require('../../utils/tradingHours');
-const { rankMovers, itemTrend } = require('../../services/analytics/movers');
+const { rankMovers, itemTrend, MOVER_MIN_QTY_PER_WEEK } = require('../../services/analytics/movers');
 const { saleCount } = require('../../services/analytics/semantics');
 const { openDaysBetween, shiftDay } = require('../../services/analytics/windows');
 const Transaction = require('../../models/Transaction.model');
@@ -125,7 +125,7 @@ const getItems = async (req, res, next) => {
 
     const itemsWithTrend = items.map((item) => {
       const qty = trendMap.get(item.name) || { current: 0, previous: 0 };
-      return { ...item, trend: itemTrend(qty), isNew: qty.previous === 0 && qty.current > 0 };
+      return { ...item, trend: itemTrend(qty), isNew: qty.previous === 0 && qty.current >= MOVER_MIN_QTY_PER_WEEK };
     });
     const { risingItems, decliningItems, newItems, moverFloor } = rankMovers(trendMap);
 
