@@ -240,8 +240,10 @@ const performInsightsRefresh = async ({
   });
   const result = metered.result;
   // A lost-response retry returns its paid result without making pre-import data fresh.
-  if (metered.replayed && priorInvalidatedAt &&
-      new Date(result.generatedAt) <= new Date(priorInvalidatedAt)) {
+  if (metered.replayed && (
+    (priorInvalidatedAt && new Date(result.generatedAt) <= new Date(priorInvalidatedAt)) ||
+    (recent?.generatedAt && new Date(recent.generatedAt) > new Date(result.generatedAt))
+  )) {
     return { ...metered, result: { ...result, cacheStatus: 'stale', requiresRefresh: true }, replayed: true };
   }
   const written = await GeneratedInsight.findOneAndUpdate(

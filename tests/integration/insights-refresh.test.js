@@ -277,6 +277,54 @@ describe('insight refresh lease, replay and window', () => {
     status: 529, error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
   });
 
+  it('never overwrites a newer post-import refresh when an older paid key is replayed', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    await UsageLedger.init();
+    await seedRecentSales(owner.user.activeCafeId);
+    const { invalidateInsights } = require('../../src/services/anthropic.service');
+    mockAnthropicMessageCreate
+      .mockResolvedValueOnce(insightsReply(['Before the import.']))
+      .mockResolvedValueOnce(insightsReply(['New post-import analysis.']));
+    expect((await refresh(owner, 'old-paid-key')).status).toBe(200);
+    await invalidateInsights(owner.user.activeCafeId);
+    expect((await refresh(owner, 'new-paid-key')).body.insights).toEqual(['New post-import analysis.']);
+    // Expire the short coalescing window without waiting 30 seconds or faking Mongo timers.
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 31_000);
+    const replay = await refresh(owner, 'old-paid-key');
+    expect(replay.body.cacheStatus).toBe('stale');
+    expect(replay.body.requiresRefresh).toBe(true);
+    expect(replay.body.meta.replayed).toBe(true);
+    const read = await request.get('/api/forecasts/insights').set('Authorization', `Bearer ${owner.token}`);
+    expect(read.body.insights).toEqual(['New post-import analysis.']);
+    expect(read.body.cacheStatus).toBe('fresh');
+    expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(2);
+    expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(20);
+  });
+
+  it.each([false, true])('stops the lease heartbeat after provider failure=%s', async (fails) => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    process.env.AI_INSIGHT_LEASE_MS = '1000';
+    const owner = await createTestUser();
+    await seedRecentSales(owner.user.activeCafeId);
+    const intervals = jest.spyOn(global, 'setInterval');
+    const cleared = jest.spyOn(global, 'clearInterval');
+    if (fails) {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockAnthropicMessageCreate.mockRejectedValue(overloaded());
+    } else mockAnthropicMessageCreate.mockResolvedValue(insightsReply(['Completed.']));
+    const response = await refresh(owner, `heartbeat-${fails}`);
+    const index = intervals.mock.calls.findIndex((call) => call[1] === 333);
+    const timer = intervals.mock.results[index]?.value;
+    try {
+      expect(response.status).toBe(fails ? 503 : 200);
+      expect(timer).toBeDefined();
+      expect(cleared).toHaveBeenCalledWith(timer);
+    } finally {
+      if (timer) clearInterval(timer);
+    }
+  });
+
   afterEach(() => {
     delete process.env.AI_INSIGHT_LEASE_MS;
     jest.restoreAllMocks();
