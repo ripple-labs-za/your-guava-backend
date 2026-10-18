@@ -20,6 +20,12 @@ describe('Railway deploy policy', () => {
 
   it('gives the 10 s graceful shutdown room before the platform kills the container', () => {
     expect(railway.deploy.drainingSeconds).toBeGreaterThanOrEqual(15);
+    const source = fs.readFileSync(path.join(ROOT, 'src/server.js'), 'utf8');
+    const expression = source.match(/const DEFAULT_SHUTDOWN_TIMEOUT_MS = ([\d\s*]+);/);
+    expect(expression).not.toBeNull();
+    const defaultMs = expression[1].split('*').reduce((total, value) => total * Number(value.trim()), 1);
+    expect(defaultMs).toBeGreaterThan(0);
+    expect(defaultMs + 5000).toBeLessThanOrEqual(railway.deploy.drainingSeconds * 1000);
   });
 
   it('still gates deploys on readiness', () => {

@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const { globalLimiter } = require('./middleware/rateLimit.middleware');
 const { configureTrustProxy } = require('./config/proxy');
 const { workforceEnabled } = require('./config/flags');
+const { isDraining } = require('./utils/lifecycle');
 const {
   requestContext,
   requestLogger,
@@ -41,6 +42,13 @@ configureTrustProxy(app);
 
 app.use(requestContext);
 app.use(requestLogger);
+// Keep-alive clients can send another request after server.close() begins.
+// Refuse that work before parsing bodies, authenticating or touching the DB.
+app.use((req, res, next) => {
+  if (!isDraining()) return next();
+  res.set('Connection', 'close');
+  return res.status(503).json({ success: false, status: 'draining', requestId: req.id });
+});
 app.use(helmet());
 
 // CORS — mounted before the rate limiter so a 429 still carries

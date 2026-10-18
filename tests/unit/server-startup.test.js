@@ -189,6 +189,58 @@ describe('server startup cleanup', () => {
     });
   const nextTick = () => new Promise((resolve) => setImmediate(resolve));
 
+  it.each([1400, 6000])('drains a reused keep-alive socket after a %i ms request without waiting for idle timeout', async (requestMs) => {
+    const http = require('http');
+    const previousPort = process.env.PORT;
+    process.env.PORT = '0';
+    let requestStarted;
+    const started = new Promise((resolve) => { requestStarted = resolve; });
+    const sockets = new Set();
+    const realServer = http.createServer((req, res) => {
+      sockets.add(req.socket);
+      if (req.url === '/slow') {
+        requestStarted();
+        setTimeout(() => res.end('finished'), requestMs);
+      } else res.end('warm');
+    });
+    // A long keep-alive timeout makes the regression independent of Node defaults.
+    realServer.keepAliveTimeout = 15000;
+    mockListen.mockImplementationOnce((port) => realServer.listen(port, '127.0.0.1'));
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const get = (path) => new Promise((resolve, reject) => {
+      const req = http.get({ hostname: '127.0.0.1', port: realServer.address().port, path, agent }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+    });
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    let stopping;
+    try {
+      const { start, shutdown } = require('../../src/server');
+      await start();
+      expect(await get('/warm')).toBe(200);
+      const slow = get('/slow');
+      await started;
+      expect(sockets.size).toBe(1);
+      const began = Date.now();
+      stopping = shutdown('SIGTERM', { exitProcess: true });
+      expect(await slow).toBe(200);
+      await stopping;
+      expect(Date.now() - began).toBeLessThan(requestMs + 1500);
+      expect(mockDisconnect).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      agent.destroy();
+      realServer.closeAllConnections();
+      await stopping;
+      if (realServer.listening) await new Promise((resolve) => realServer.close(resolve));
+      if (previousPort === undefined) delete process.env.PORT;
+      else process.env.PORT = previousPort;
+    }
+  }, 20000);
+
   it('drains in-flight requests and registered background work before disconnecting Mongo', async () => {
     const server = makeListeningServer();
     let finishInFlight;

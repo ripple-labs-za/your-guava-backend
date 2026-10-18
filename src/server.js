@@ -272,6 +272,7 @@ const shutdown = (signal = 'shutdown', { exitProcess = false, exitCode } = {}) =
     );
     let timedOut = false;
     let timeoutHandle;
+    let idleConnectionSweep;
     const timeout = new Promise((resolve) => {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
@@ -282,8 +283,21 @@ const shutdown = (signal = 'shutdown', { exitProcess = false, exitCode } = {}) =
     });
     const closeResources = (async () => {
       if (httpServer) {
-        if (typeof httpServer.closeIdleConnections === 'function') httpServer.closeIdleConnections();
-        await new Promise((resolve) => httpServer.close(() => resolve()));
+        const server = httpServer;
+        const closeIdle = () => {
+          if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+        };
+        // A request active at SIGTERM becomes idle later. Reap it then too,
+        // rather than waiting for keepAliveTimeout to consume the drain budget.
+        idleConnectionSweep = setInterval(closeIdle, 50);
+        idleConnectionSweep.unref();
+        try {
+          const closed = new Promise((resolve) => server.close(() => resolve()));
+          closeIdle();
+          await closed;
+        } finally {
+          clearInterval(idleConnectionSweep);
+        }
       }
       await Promise.allSettled(
         [cleanupPromise, paymentReconciliationPromise, usageReconciliationPromise, billingReminderPromise].filter(Boolean)
@@ -292,8 +306,12 @@ const shutdown = (signal = 'shutdown', { exitProcess = false, exitCode } = {}) =
       if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
     })();
 
-    await Promise.race([closeResources, timeout]);
-    clearTimeout(timeoutHandle);
+    try {
+      await Promise.race([closeResources, timeout]);
+    } finally {
+      clearTimeout(timeoutHandle);
+      clearInterval(idleConnectionSweep);
+    }
     if (timedOut) {
       logger.error('shutdown_timeout', { signal, timeoutMs, pendingBackground: pendingBackgroundWork() });
     } else {

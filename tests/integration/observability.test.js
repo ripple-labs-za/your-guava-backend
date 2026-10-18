@@ -13,6 +13,40 @@ afterAll(teardown);
 afterEach(clearDB);
 
 describe('Observability', () => {
+  it('refuses new work on a reused socket with 503 Connection close while draining', async () => {
+    const http = require('http');
+    const lifecycle = require('../../src/utils/lifecycle');
+    const server = http.createServer(app);
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const sockets = new Set();
+    server.on('connection', (socket) => sockets.add(socket));
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const get = (path) => new Promise((resolve, reject) => {
+      const req = http.get({ host: '127.0.0.1', port: server.address().port, path, agent }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+    });
+    try {
+      expect((await get('/api/health')).status).toBe(200);
+      lifecycle.markDraining();
+      const response = await get('/api/health');
+      expect(sockets.size).toBe(1);
+      expect(response.status).toBe(503);
+      expect(response.headers.connection).toBe('close');
+      expect(response.headers['x-request-id']).toBeDefined();
+      const unknown = await request.post('/api/not-a-route').set('Content-Type', 'application/json').send('{');
+      expect(unknown.status).toBe(503);
+      expect(unknown.headers.connection).toBe('close');
+    } finally {
+      lifecycle.resetLifecycleForTests();
+      agent.destroy();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 it('issues its own request id and echoes a well-formed client id separately', async () => {
   const res = await request.get('/api/health').set('X-Request-Id', 'launch-smoke-req-001');
   expect(res.status).toBe(200);
