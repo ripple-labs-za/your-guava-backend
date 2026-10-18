@@ -51,10 +51,17 @@ const cycleWindow = (type, employmentStart, onDate) => {
   });
 };
 
-const inWindow = (date, window) => {
+// The one rule for "in this cycle": a request is charged to the cycle that
+// contains its start date. The approval gate and the balance views both use it.
+const inCycle = (date, window) => {
   const time = new Date(date).getTime();
   return time <= window.end.getTime() && (window.countsFrom === null || time >= window.countsFrom.getTime());
 };
+
+const daysInCycle = (requests, window) =>
+  requests
+    .filter((request) => request.type === window.type && inCycle(request.startDate, window))
+    .reduce((sum, request) => sum + (request.days || 0), 0);
 
 // The owner's latest adjustment for this cycle, else the stored per-cycle default.
 const cycleTotal = (balance, type, cycleStart) => {
@@ -67,14 +74,14 @@ const cycleTotal = (balance, type, cycleStart) => {
   return Number.isFinite(stored) ? stored : LEAVE_CYCLE_RULES[type].defaultTotal;
 };
 
-// A request is charged to the cycle that contains its start date.
+// A person's approved leave of one type is a handful of rows a year, so the
+// cycle is chosen by inCycle rather than by a second copy of the rule in a query.
 const usedDaysInCycle = async ({ cafeId, staffId, type, window, session = null }) => {
-  const startDate = window.countsFrom ? { $gte: window.countsFrom, $lte: window.end } : { $lte: window.end };
-  const rows = await LeaveRequest.find({ cafeId, staffId, type, status: 'approved', startDate })
-    .select('days')
+  const rows = await LeaveRequest.find({ cafeId, staffId, type, status: 'approved' })
+    .select('type startDate days')
     .session(session)
     .lean();
-  return rows.reduce((sum, row) => sum + (row.days || 0), 0);
+  return daysInCycle(rows, window);
 };
 
 // Every write that depends on a person's balance takes this first, inside its
@@ -140,10 +147,7 @@ const balanceViews = async ({ cafeId, staff, balances, onDate, includeAdjustment
     const mine = approved.filter((request) => String(request.staffId) === id);
     const perType = CYCLE_TYPES.map((type) => {
       const window = cycleWindow(type, member.startDate, onDate);
-      const used = mine
-        .filter((request) => request.type === type && inWindow(request.startDate, window))
-        .reduce((sum, request) => sum + (request.days || 0), 0);
-      return [type, cycleBalance(balance, window, used)];
+      return [type, cycleBalance(balance, window, daysInCycle(mine, window))];
     });
     const adjustments = includeAdjustments
       ? [...(balance.adjustments || [])]

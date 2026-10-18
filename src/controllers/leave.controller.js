@@ -334,7 +334,13 @@ const adjustBalance = async (req, res, next) => {
     const member = await Staff.findOne({ _id: staffId, cafeId }).select('name role isActive startDate').lean();
     const balances = await LeaveBalance.find({ staffId, cafeId }).lean();
     const [balance] = await balanceViews({ cafeId, staff: [member], balances, onDate, includeAdjustments: true });
-    return res.status(200).json({ success: true, adjustment: adjustmentView(adjustment), balance });
+    // Allowed (the owner corrects by hand), but never silent: the form shows this.
+    const { used } = balance[body.type];
+    const warning = used > total
+      ? `${used} days already taken in this cycle exceed the new total of ${total}, so the balance shows ${total - used} ` +
+        'until leave is cancelled or the total is raised.'
+      : undefined;
+    return res.status(200).json({ success: true, adjustment: adjustmentView(adjustment), balance, ...(warning ? { warning } : {}) });
   } catch (error) {
     if (sendWorkforceError(res, error)) return undefined;
     return next(error);

@@ -1,6 +1,9 @@
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, createTestManager, app } = require('../setup');
 const LeaveBalance = require('../../src/models/LeaveBalance.model');
+const LeaveRequest = require('../../src/models/LeaveRequest.model');
+const { cafeToday } = require('../../src/services/workforce/cafeCalendar');
+const { formatDateOnly } = require('../../src/utils/timezone');
 
 const request = supertest(app);
 
@@ -123,14 +126,25 @@ describe('Leave cycles, adjustments and cancellation (BE-08-T02)', () => {
     expect(asManager.status).toBe(403);
   });
 
-  it('cancels an approved request and returns its days to the cycle', async () => {
+  it('cancels an approved request and returns its days to the cycle, so they can be booked again', async () => {
     const leave = await bookAndApprove('2026-02-02', '2026-02-06');
-    expect((await balanceOn('2026-03-01')).annual.used).toBe(5);
+    await bookAndApprove('2026-03-02', '2026-03-06');
+    await bookAndApprove('2026-05-04', '2026-05-08');
+    expect((await balanceOn('2026-06-01')).annual).toMatchObject({ used: 15, remaining: 0 });
+    const whileFull = await requestLeave({ startDate: '2026-06-01', endDate: '2026-06-05' });
+    expect(whileFull.status).toBe(400);
+    expect(whileFull.body.code).toBe('LEAVE_INSUFFICIENT_BALANCE');
 
     const cancelled = await auth(request.put(`/api/leave/${leave._id}/cancel`)).send({ reason: 'Approved in error' });
     expect(cancelled.status).toBe(200);
     expect(cancelled.body.leaveRequest).toMatchObject({ status: 'cancelled', cancelReason: 'Approved in error' });
-    expect((await balanceOn('2026-03-01')).annual.used).toBe(0);
+    expect((await balanceOn('2026-06-01')).annual).toMatchObject({ used: 10, remaining: 5 });
+
+    const rebooked = await requestLeave({ startDate: '2026-06-01', endDate: '2026-06-05' });
+    expect(rebooked.status).toBe(201);
+    const approved = await auth(request.put(`/api/leave/${rebooked.body.leaveRequest._id}/approve`));
+    expect(approved.status).toBe(200);
+    expect((await balanceOn('2026-06-01')).annual).toMatchObject({ used: 15, remaining: 0 });
 
     const again = await auth(request.put(`/api/leave/${leave._id}/cancel`)).send({});
     expect(again.status).toBe(409);
@@ -156,5 +170,109 @@ describe('Leave cycles, adjustments and cancellation (BE-08-T02)', () => {
     expect(results.map((res) => res.status).sort()).toEqual([200, 400]);
     expect(results.find((res) => res.status === 400).body.code).toBe('LEAVE_INSUFFICIENT_BALANCE');
     expect((await balanceOn('2026-04-01')).annual.used).toBe(10);
+  });
+
+  // BE-08-T02 fix-back: the cycle boundary, the start-date lock, the adjustment
+  // warning and the default start date. Cycle 0 for a 2025-01-06 start runs to
+  // 2026-01-05; cycle 1 starts on the anniversary, 2026-01-06.
+  describe('cycle boundary and the start date', () => {
+    const approve = (leaveRequest) => auth(request.put(`/api/leave/${leaveRequest._id}/approve`));
+    const adjust = (body) => auth(request.put(`/api/leave/balances/${staffId}`)).send({ type: 'annual', reason: 'Boundary check', ...body });
+    const moveStart = (startDate, extra = {}) => auth(request.put(`/api/staff/${staffId}`)).send({ startDate, ...extra });
+
+    it('charges the last day of a cycle to that cycle and the anniversary to the next, in the views and at approval', async () => {
+      // One day per cycle, so every boundary comparison changes an outcome.
+      expect((await adjust({ total: 1, onDate: '2025-06-01' })).status).toBe(200);
+      expect((await adjust({ total: 1, onDate: '2026-06-01' })).status).toBe(200);
+      const lastDay = await requestLeave({ startDate: '2026-01-05', endDate: '2026-01-05' });
+      const weekBefore = await requestLeave({ startDate: '2025-12-29', endDate: '2025-12-29' });
+      const anniversary = await requestLeave({ startDate: '2026-01-06', endDate: '2026-01-06' });
+      const dayAfter = await requestLeave({ startDate: '2026-01-07', endDate: '2026-01-07' });
+      expect([lastDay, weekBefore, anniversary, dayAfter].map((res) => res.status)).toEqual([201, 201, 201, 201]);
+
+      expect((await approve(lastDay.body.leaveRequest)).status).toBe(200);
+      expect((await balanceOn('2026-01-05')).annual).toMatchObject({ used: 1, remaining: 0, cycleEnd: '2026-01-05' });
+      expect((await balanceOn('2026-01-06')).annual).toMatchObject({ used: 0, remaining: 1, cycleStart: '2026-01-06' });
+
+      const intoFullCycle = await approve(weekBefore.body.leaveRequest);
+      expect(intoFullCycle.status).toBe(400);
+      expect(intoFullCycle.body.code).toBe('LEAVE_INSUFFICIENT_BALANCE');
+
+      expect((await approve(anniversary.body.leaveRequest)).status).toBe(200);
+      expect((await balanceOn('2026-01-06')).annual).toMatchObject({ used: 1, remaining: 0 });
+      expect((await balanceOn('2026-01-05')).annual).toMatchObject({ used: 1, remaining: 0 });
+
+      const afterAnniversary = await approve(dayAfter.body.leaveRequest);
+      expect(afterAnniversary.status).toBe(400);
+      expect(afterAnniversary.body.code).toBe('LEAVE_INSUFFICIENT_BALANCE');
+    });
+
+    it('refuses a request across the anniversary when it is made and when a pending one is approved', async () => {
+      const across = await requestLeave({ startDate: '2026-01-05', endDate: '2026-01-06' });
+      expect(across.status).toBe(400);
+      expect(across.body.code).toBe('LEAVE_CROSSES_CYCLE');
+
+      // A pending request saved before cycles were enforced.
+      const pending = await LeaveRequest.create({
+        staffId,
+        cafeId: owner.user.activeCafeId,
+        type: 'annual',
+        startDate: new Date('2026-01-05T00:00:00.000Z'),
+        endDate: new Date('2026-01-06T00:00:00.000Z'),
+        days: 2,
+      });
+      const res = await approve(pending);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('LEAVE_CROSSES_CYCLE');
+      expect((await LeaveRequest.findById(pending._id).lean()).status).toBe('pending');
+    });
+
+    it('lets the start date move until approved paid leave is recorded, then refuses and says why', async () => {
+      expect((await moveStart('2025-01-13')).status).toBe(200);
+      await requestLeave({ startDate: '2025-03-03', endDate: '2025-03-07' }); // pending
+      await bookAndApprove('2025-04-07', '2025-04-07', 'unpaid'); // unpaid is outside the cycles
+      expect((await moveStart('2025-01-06')).status).toBe(200);
+
+      await bookAndApprove('2025-05-05', '2025-05-06');
+      const locked = await moveStart('2025-02-03');
+      expect(locked.status).toBe(409);
+      expect(locked.body.code).toBe('STAFF_START_DATE_LOCKED');
+      expect(locked.body.message).toMatch(/approved leave/);
+      expect(locked.body.message).toMatch(/2025-01-06/);
+
+      // Saving the form with the same date is not a change.
+      const same = await moveStart('2025-01-06', { name: 'Cycle Barista Renamed' });
+      expect(same.status).toBe(200);
+      expect(same.body.staff).toMatchObject({ name: 'Cycle Barista Renamed', startDate: '2025-01-06T00:00:00.000Z' });
+    });
+
+    it('locks the start date once an adjustment is recorded', async () => {
+      expect((await adjust({ total: 7.5, onDate: '2025-03-01' })).status).toBe(200);
+      const locked = await moveStart('2025-02-03');
+      expect(locked.status).toBe(409);
+      expect(locked.body.code).toBe('STAFF_START_DATE_LOCKED');
+      expect(locked.body.message).toMatch(/adjustment/);
+    });
+
+    it('allows an adjustment below the days already taken and warns about it', async () => {
+      await bookAndApprove('2026-02-02', '2026-02-13');
+      const below = await adjust({ total: 5, onDate: '2026-03-01' });
+      expect(below.status).toBe(200);
+      expect(below.body.balance.annual).toMatchObject({ total: 5, used: 10, remaining: -5 });
+      expect(below.body.warning).toBe(
+        '10 days already taken in this cycle exceed the new total of 5, so the balance shows -5 until leave is cancelled or the total is raised.'
+      );
+
+      const above = await adjust({ total: 12, onDate: '2026-03-01' });
+      expect(above.status).toBe(200);
+      expect(above.body.warning).toBeUndefined();
+    });
+
+    it("starts a new staff member on the cafe's today when no start date is sent", async () => {
+      const res = await auth(request.post('/api/staff')).send({ name: 'No Start Date', hourlyRate: 60 });
+      expect(res.status).toBe(201);
+      const today = formatDateOnly(await cafeToday(owner.user.activeCafeId));
+      expect(res.body.staff.startDate).toBe(`${today}T00:00:00.000Z`);
+    });
   });
 });

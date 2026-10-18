@@ -7,6 +7,7 @@ const { balanceViews } = require('../services/workforce/leaveCycles');
 const { cafeToday } = require('../services/workforce/cafeCalendar');
 const { parseWorkDays } = require('../services/workforce/input');
 const { sendWorkforceError } = require('../services/workforce/errors');
+const { assertStartDateMovable } = require('../services/workforce/startDateLock');
 
 // Pay is owner-only information. Managers get the roster without hourlyRate.
 const staffDto = (staff, user) => {
@@ -37,6 +38,9 @@ const create = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'startDate must use YYYY-MM-DD' });
     }
     const workDays = parseWorkDays(req.body.workDays);
+    // The cafe's date, not the server's clock: a hire recorded between 00:00 and
+    // 02:00 SAST would otherwise start a day early, and so would every cycle.
+    const employmentStart = parsedStartDate || (await cafeToday(cafeId));
 
     let staff;
     await session.withTransaction(async () => {
@@ -47,7 +51,7 @@ const create = async (req, res, next) => {
         phone,
         role,
         hourlyRate: parsedRate,
-        startDate: parsedStartDate,
+        startDate: employmentStart,
         ...(workDays ? { workDays } : {}),
       }], { session });
       await LeaveBalance.create([{ staffId: staff._id, cafeId }], { session });
@@ -109,6 +113,7 @@ const getOne = async (req, res, next) => {
 
 // PUT /api/staff/:id — Update staff details
 const update = async (req, res, next) => {
+  const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
     const { id } = req.params;
@@ -124,22 +129,26 @@ const update = async (req, res, next) => {
     }
     const workDays = parseWorkDays(req.body.workDays);
 
-    const staff = await Staff.findOneAndUpdate(
-      { _id: id, cafeId },
-      {
-        $set: {
-          ...(name !== undefined && { name: String(name).trim() }),
-          ...(email !== undefined && { email }),
-          ...(phone !== undefined && { phone }),
-          ...(role !== undefined && { role }),
-          ...(hourlyRate !== undefined && { hourlyRate: parsedRate }),
-          ...(startDate !== undefined && { startDate: parsedStartDate }),
-          ...(isActive !== undefined && { isActive }),
-          ...(workDays !== undefined && { workDays }),
+    let staff;
+    await session.withTransaction(async () => {
+      if (startDate !== undefined) await assertStartDateMovable({ cafeId, staffId: id, startDate: parsedStartDate, session });
+      staff = await Staff.findOneAndUpdate(
+        { _id: id, cafeId },
+        {
+          $set: {
+            ...(name !== undefined && { name: String(name).trim() }),
+            ...(email !== undefined && { email }),
+            ...(phone !== undefined && { phone }),
+            ...(role !== undefined && { role }),
+            ...(hourlyRate !== undefined && { hourlyRate: parsedRate }),
+            ...(startDate !== undefined && { startDate: parsedStartDate }),
+            ...(isActive !== undefined && { isActive }),
+            ...(workDays !== undefined && { workDays }),
+          },
         },
-      },
-      { new: true, runValidators: true }
-    );
+        { new: true, runValidators: true, session }
+      );
+    });
 
     if (!staff) {
       return res.status(404).json({ success: false, message: 'Staff member not found' });
@@ -149,6 +158,8 @@ const update = async (req, res, next) => {
   } catch (error) {
     if (sendWorkforceError(res, error)) return undefined;
     return next(error);
+  } finally {
+    await session.endSession();
   }
 };
 
