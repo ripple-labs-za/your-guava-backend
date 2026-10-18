@@ -132,6 +132,23 @@ describe('a sync refreshes what was derived from the old data', () => {
 });
 
 describe('webhooks route by a stored business id or not at all', () => {
+  it.each([
+    ['America/Bogota', '2026-04-02T03:30:00Z', 22, 3],
+    ['Pacific/Kiritimati', '2026-04-01T11:00:00Z', 1, 4],
+  ])('pins the cafe weekday across a UTC date boundary in %s', async (timezone, created_at, hour, dayOfWeek) => {
+    const cafe = await connectedCafe({ timezone });
+    await syncOrders(cafe._id, [order({ created_at })]);
+    expect(await Transaction.findOne({ cafeId: cafe._id }).lean()).toMatchObject({ hour, dayOfWeek });
+  });
+  it('excludes an archived connection when the business reconnects to another cafe', async () => {
+    const archived = await connectedCafe({ yocoBusinessId: 'moved-business', archivedAt: new Date() });
+    const current = await connectedCafe({ yocoBusinessId: 'moved-business' });
+    axios.get.mockResolvedValue({ data: order({ id: 'moved-order' }) });
+    expect(await processWebhookEvent({ event_type: 'payment.created', order_id: 'moved-order', business_id: 'moved-business' }))
+      .toMatchObject({ status: 'synced' });
+    expect(await Transaction.countDocuments({ cafeId: archived._id })).toBe(0);
+    expect(await Transaction.countDocuments({ cafeId: current._id })).toBe(1);
+  });
   it.each([null, '', 123, { $ne: null }, [], 'x'.repeat(129), 'x'.repeat(10_000)])(
     'refuses malformed business identifiers before looking up a cafe', async (business_id) => {
       const find = jest.spyOn(Cafe, 'find');

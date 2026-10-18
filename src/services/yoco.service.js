@@ -213,7 +213,7 @@ const yocoMaxPages = () => {
 };
 
 /** Fetch a bounded number of pages and report any truncation to the caller. */
-async function fetchAllOrders(accessToken, startDate, endDate, { signal } = {}) {
+async function fetchAllOrders(accessToken, startDate, endDate, { signal, onPage } = {}) {
   const maxPages = yocoMaxPages();
   const orders = [];
   const seenCursors = new Set();
@@ -237,7 +237,9 @@ async function fetchAllOrders(accessToken, startDate, endDate, { signal } = {}) 
     const result = await fetchOrders(accessToken, params, { signal });
     signal?.throwIfAborted();
     pages += 1;
-    if (Array.isArray(result?.data)) orders.push(...result.data);
+    const pageOrders = Array.isArray(result?.data) ? result.data : [];
+    if (onPage) await onPage(pageOrders, pages);
+    else orders.push(...pageOrders);
     cursor = typeof result?.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null;
     if (cursor && seenCursors.has(cursor)) {
       truncated = 'cursor_repeated';
@@ -250,6 +252,58 @@ async function fetchAllOrders(accessToken, startDate, endDate, { signal } = {}) 
     logger.warn('yoco_sync_truncated', { reason: truncated, pages });
   }
   return { orders, pages, truncated };
+}
+
+// A manual history import has many bounded provider calls and gets its own
+// overall budget. Every completed page is committed before the next is fetched.
+const yocoSyncTotalMs = () => {
+  const raw = process.env.YOCO_SYNC_TOTAL_MS;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return 120000;
+  return Math.max(100, Math.min(Number(raw), 600000));
+};
+
+async function syncHistory(cafe, range) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  const progress = { imported: 0, skipped: 0, errors: 0, totalOrders: 0, pages: 0, lastDateCovered: null };
+  let timer;
+  const deadline = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = Object.assign(new Error('Yoco sync did not finish in time. Retry to continue importing your orders.'), {
+        code: 'UPSTREAM_TIMEOUT', statusCode: 504, exposeMessage: true,
+      });
+      controller.abort(error);
+      reject(error);
+    }, yocoSyncTotalMs());
+    timer.unref?.();
+  });
+  const work = async () => {
+    const token = await getValidToken(cafe);
+    signal.throwIfAborted();
+    const { truncated } = await fetchAllOrders(token, range.start, range.end, {
+      signal,
+      onPage: async (orders, pages) => {
+        const synced = await syncOrders(cafe._id, orders, { signal });
+        for (const key of ['imported', 'skipped', 'errors']) progress[key] += synced[key];
+        progress.totalOrders += orders.length;
+        progress.pages = pages;
+        const last = orders.at(-1);
+        const date = new Date(last?.created_at || last?.closed_at);
+        if (!Number.isNaN(date.getTime())) progress.lastDateCovered = date.toISOString();
+      },
+    });
+    signal.throwIfAborted();
+    await Cafe.findByIdAndUpdate(cafe._id, { dataUploaded: true, lastSyncAt: new Date() });
+    return { ...progress, truncated };
+  };
+  try {
+    return await Promise.race([work(), deadline]);
+  } catch (error) {
+    if (error.code === 'UPSTREAM_TIMEOUT') error.syncProgress = { ...progress, truncated: 'deadline' };
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -426,7 +480,7 @@ async function processWebhookEvent(payload = {}) {
     logger.warn('yoco_webhook_rejected', { reason: 'missing_business_id' });
     return { status: 'rejected', reason: 'missing_business_id' };
   }
-  const cafes = await Cafe.find({ yocoBusinessId: businessId, yocoConnected: true })
+  const cafes = await Cafe.find({ yocoBusinessId: businessId, yocoConnected: true, archivedAt: null })
     .select('+yocoTokens.accessToken +yocoTokens.refreshToken')
     .limit(2);
   if (cafes.length !== 1) {
@@ -473,7 +527,8 @@ const claimsOf = (idToken) => {
  */
 const businessIdFromTokens = (tokens) => {
   const claims = claimsOf(tokens?.id_token);
-  const candidate = claims?.authorized_business_id ?? tokens?.business_id ?? claims?.business_id ?? claims?.ext?.business_id;
+  const candidate = tokens?.authorized_business_id ?? claims?.authorized_business_id
+    ?? tokens?.business_id ?? claims?.business_id ?? claims?.ext?.business_id;
   return isYocoId(candidate) ? candidate : null;
 };
 
@@ -510,6 +565,8 @@ module.exports = {
   getValidToken,
   fetchOrders,
   fetchAllOrders,
+  syncHistory,
+  yocoSyncTotalMs,
   parseSyncRange,
   syncOrders,
   subscribeWebhook,

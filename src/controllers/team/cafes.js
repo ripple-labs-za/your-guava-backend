@@ -181,6 +181,10 @@ const archiveCafe = async (req, res, next) => {
 
       cafe.archivedAt = new Date();
       cafe.archivedByUserId = req.user.id;
+      cafe.yocoConnected = false;
+      cafe.yocoTokens = undefined;
+      cafe.yocoBusinessId = undefined;
+      cafe.yocoWebhookSubscriptionId = undefined;
       await cafe.save({ session });
       await User.updateMany({ orgId: req.user.orgId, cafeIds: cafe._id }, { $pull: { cafeIds: cafe._id } }, { session });
       // Anyone whose default was this cafe moves to their first remaining one; their tabs reload onto it (BE-02-T04).

@@ -8,10 +8,8 @@ const Cafe = require('../models/Cafe.model');
 const {
   getAuthorizationUrl,
   exchangeCode,
-  getValidToken,
-  fetchAllOrders,
   parseSyncRange,
-  syncOrders,
+  syncHistory,
   businessIdFromTokens,
   registerWebhookIfPublic,
   isYocoId,
@@ -22,7 +20,6 @@ const {
 } = require('../services/yoco.service');
 const { encryptSecret } = require('../services/secrets.service');
 const { activeCafeId } = require('../utils/tenancy');
-const { withDeadline } = require('../utils/http');
 
 // GET /api/yoco/auth — Get OAuth authorization URL
 router.get('/auth', authMiddleware, ownerOnly, (req, res) => {
@@ -96,17 +93,7 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
     if (range.error) {
       return res.status(400).json({ success: false, code: 'INVALID_SYNC_RANGE', message: range.error });
     }
-    // One deadline for the entire sync; individual page calls must not renew it.
-    const result = await withDeadline('yoco', async (signal) => {
-      const token = await getValidToken(cafe);
-      signal.throwIfAborted();
-      const { orders, pages, truncated } = await fetchAllOrders(token, range.start, range.end, { signal });
-      signal.throwIfAborted();
-      const synced = await syncOrders(cafe._id, orders, { signal });
-      signal.throwIfAborted();
-      await Cafe.findByIdAndUpdate(cafe._id, { dataUploaded: true, lastSyncAt: new Date() });
-      return { ...synced, totalOrders: orders.length, pages, truncated };
-    });
+    const result = await syncHistory(cafe, range);
 
     res.json({
       success: true,
@@ -114,6 +101,9 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
       dateRange: { start: range.start.toISOString(), end: range.end.toISOString() },
     });
   } catch (error) {
+    if (error.syncProgress) {
+      return res.status(504).json({ success: false, code: 'UPSTREAM_TIMEOUT', message: error.message, ...error.syncProgress });
+    }
     next(error);
   }
 });
@@ -126,7 +116,7 @@ router.post('/webhook', async (req, res) => {
     return res.status(401).json({ received: false, message: 'Invalid webhook signature' });
   }
 
-  if (!isYocoId(req.body?.business_id)) {
+  if (req.body?.event_type === 'payment.created' && !isYocoId(req.body?.business_id)) {
     logger.warn('yoco_webhook_rejected', { reason: 'missing_business_id' });
     return res.status(400).json({
       received: false,

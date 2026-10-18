@@ -158,6 +158,7 @@ describe('the webhook endpoint', () => {
       'yocoTokens.expiresAt': new Date(Date.now() + 3_600_000),
     } });
     process.env.OUTBOUND_YOCO_TIMEOUT_MS = '100';
+    process.env.YOCO_SYNC_TOTAL_MS = '100';
     process.env.YOCO_SYNC_MAX_PAGES = '3';
     let page = 0;
     axios.get.mockImplementation(async () => {
@@ -193,5 +194,85 @@ describe('the webhook endpoint', () => {
     const cafe = await Cafe.findById(cafeId).lean();
     expect(cafe.yocoBusinessId).toBeUndefined();
     expect(cafe.yocoWebhookSubscriptionId).toBeUndefined();
+  });
+});
+
+describe('reviewed sync progress and webhook shapes', () => {
+  const Transaction = require('../../src/models/Transaction.model');
+  const { encryptSecret } = require('../../src/services/secrets.service');
+  const sale = (n) => ({ id: `progress-${n}`, created_at: `2026-04-0${n}T08:00:00Z`,
+    line_items: [{ item_type: 'product', name: 'Flat White', quantity: 1, unit_price: { amount: 3800 } }],
+    amounts: { gross_amount: { amount: 3800 } }, payments: [{ payment_method: 'card' }] });
+  const connect = async () => {
+    const owner = await ownerWithCafe();
+    await Cafe.findByIdAndUpdate(owner.cafeId, { $set: { yocoConnected: true,
+      'yocoTokens.accessToken': encryptSecret('progress-access'),
+      'yocoTokens.expiresAt': new Date(Date.now() + 3600000) } });
+    return owner;
+  };
+  it('completes eighty healthy pages beyond the per-call deadline', async () => {
+    const { token, cafeId } = await connect();
+    process.env.OUTBOUND_YOCO_TIMEOUT_MS = '1000';
+    let page = 0;
+    axios.get.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      page += 1;
+      return { data: { data: page === 80 ? [sale(1)] : [], next_cursor: page < 80 ? `healthy-${page}` : null } };
+    });
+    const res = await yocoRequest.post('/api/yoco/sync').set('Authorization', `Bearer ${token}`).send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ pages: 80, imported: 1, truncated: null });
+    expect(await Transaction.countDocuments({ cafeId })).toBe(1);
+  });
+  it('reports a committed prefix on deadline and a retry progresses beyond that prefix', async () => {
+    const { token, cafeId } = await connect();
+    process.env.YOCO_SYNC_TOTAL_MS = '54321';
+    process.env.OUTBOUND_YOCO_TIMEOUT_MS = '5000';
+    // Trigger the real total-deadline callback once two pages are committed;
+    // database speed on the shared host must not decide whether the prefix exists.
+    const nativeTimeout = global.setTimeout;
+    let fireDeadline;
+    const timerSpy = jest.spyOn(global, 'setTimeout').mockImplementation((fn, ms, ...args) => {
+      if (ms === 54321) fireDeadline = fn;
+      return nativeTimeout(fn, ms, ...args);
+    });
+    axios.get.mockResolvedValueOnce({ data: { data: [sale(1)], next_cursor: 'second' } })
+      .mockResolvedValueOnce({ data: { data: [sale(2)], next_cursor: 'third' } })
+      .mockImplementationOnce(() => { fireDeadline(); return new Promise(() => {}); });
+    let res;
+    try {
+      res = await yocoRequest.post('/api/yoco/sync').set('Authorization', `Bearer ${token}`).send({});
+    } finally {
+      timerSpy.mockRestore();
+    }
+    expect(res.status).toBe(504);
+    expect(res.body).toMatchObject({ truncated: 'deadline', imported: 2, pages: 2,
+      lastDateCovered: new Date(sale(2).created_at).toISOString() });
+    expect(await Transaction.countDocuments({ cafeId })).toBe(2);
+    axios.get.mockReset();
+    axios.get.mockResolvedValueOnce({ data: { data: [sale(1), sale(2)], next_cursor: 'third' } })
+      .mockResolvedValueOnce({ data: { data: [sale(3)], next_cursor: null } });
+    const retry = await yocoRequest.post('/api/yoco/sync').set('Authorization', `Bearer ${token}`).send({});
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ imported: 1, skipped: 2 });
+    expect(await Transaction.countDocuments({ cafeId })).toBe(3);
+  });
+  it('prefers the authorized business on the token response to the id-token claim', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    axios.post.mockResolvedValue(tokenResponse({ authorized_business_id: 'response-business',
+      id_token: idTokenWith({ authorized_business_id: 'claim-business' }) }));
+    const res = await yocoRequest.post('/api/yoco/callback').set('Authorization', `Bearer ${token}`)
+      .send({ code: 'selected', state: createOAuthState(cafeId) });
+    expect(res.status).toBe(200);
+    expect((await Cafe.findById(cafeId).lean()).yocoBusinessId).toBe('response-business');
+  });
+  it('refuses a signed object business id before any provider lookup', async () => {
+    const res = await signedWebhook({ event_type: 'payment.created', order_id: 'order-1', business_id: { $ne: null } });
+    expect(res.status).toBe(400);
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+  it('acknowledges ignored signed event types without a business id', async () => {
+    expect((await signedWebhook({ event_type: 'payment.updated', order_id: 'order-1' })).status).toBe(200);
+    expect(axios.get).not.toHaveBeenCalled();
   });
 });
