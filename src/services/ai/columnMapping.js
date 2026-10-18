@@ -73,7 +73,7 @@ const proposeColumnMappingWithClaude = async (headers, sampleSummary, { requestI
     system: COLUMN_MAPPING_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: columnMappingUserPrompt(headers, sampleSummary) }],
   }), 'proposeColumnMapping', { requestId });
-  const parsed = validatedMappingProposal(extractJson(responseText(message), 'object'));
+  const parsed = validatedMappingProposal(extractJson(responseText(message), 'object', validatedMappingProposal));
   if (!parsed) {
     const error = new Error('AI column mapper returned invalid JSON');
     error.statusCode = 502;

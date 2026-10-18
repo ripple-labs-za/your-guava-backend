@@ -151,7 +151,7 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   // block 0 turned any response that led with a non-text block — or split the
   // JSON array across two text blocks — into a 502 the owner sees as a provider
   // outage, when the provider had in fact answered.
-  const parsed = extractJson(responseText(message), 'array');
+  const parsed = extractJson(responseText(message), 'array', validatedInsightStrings);
   const insights = validatedInsightStrings(parsed);
   if (!insights) {
     const truncated = message?.stop_reason === 'max_tokens';

@@ -188,9 +188,19 @@ const createMeteredReservation = async ({ idempotencyKey, credits, ...payload })
   };
 };
 
+// A refunded row can be reserved again with the same key. Every settlement must
+// belong to the captured attempt, including callbacks arriving after a sweep.
+// Older rows predate replayCount; treat their absent counter as attempt zero.
+const usageAttemptFilter = (ledger) => ({
+  _id: ledger._id,
+  ...(ledger.replayCount
+    ? { replayCount: ledger.replayCount }
+    : { $or: [{ replayCount: 0 }, { replayCount: { $exists: false } }] }),
+});
+
 const finishUsage = (ledger, status, { resultPayload, providerDiagnostics, recoveryReason } = {}) =>
   UsageLedger.findOneAndUpdate(
-    { _id: ledger._id, status: 'reserved' },
+    { ...usageAttemptFilter(ledger), status: 'reserved' },
     {
       $set: {
         status,
@@ -216,7 +226,7 @@ const finishUsage = (ledger, status, { resultPayload, providerDiagnostics, recov
  */
 const commitAfterLeaseBreach = async (ledger, orgId, { resultPayload, providerDiagnostics }) => {
   const claimed = await UsageLedger.findOneAndUpdate(
-    { _id: ledger._id, status: 'refunded', recoveryReason: 'stale_reservation' },
+    { ...usageAttemptFilter(ledger), status: 'refunded', recoveryReason: 'stale_reservation' },
     {
       $set: {
         status: 'committed',
@@ -267,7 +277,7 @@ const refundAndFinishUsage = async ({
   // A reconciler may already have released this hold. Count its provider usage without refunding twice.
   if (consumed) {
     const recovered = await UsageLedger.updateOne(
-      { _id: ledger._id, status: 'refunded', recoveryReason: 'stale_reservation' },
+      { ...usageAttemptFilter(ledger), status: 'refunded', recoveryReason: 'stale_reservation' },
       { $set: { providerDiagnostics, recoveryReason: 'operation_failed' }, $inc: { providerConsumedRuns: 1 } }
     );
     if (recovered.matchedCount === 1) return;
@@ -292,7 +302,7 @@ const refundAndFinishUsage = async ({
 
       const consumed = Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
       const finished = await UsageLedger.updateOne(
-        { _id: ledger._id, status: 'reserved' },
+        { ...usageAttemptFilter(ledger), status: 'reserved' },
         {
           $set: {
             status: 'refunded',

@@ -78,10 +78,10 @@ const closingIndex = (text, start) => {
 };
 
 /**
- * The first JSON array (or object) in a model reply that parses. Prose before or after it, code fences and
+ * The first JSON array (or object) in a model reply that parses and passes an optional validator. Prose, code fences and
  * bracketed asides are skipped. Bounded: at most 20 candidates over the first 100,000 characters.
  */
-const extractJson = (text, expect = 'array') => {
+const extractJson = (text, expect = 'array', validate) => {
   const opener = OPENERS[expect];
   const source = String(text || '').slice(0, MAX_JSON_SCAN_CHARS);
   let from = 0;
@@ -91,7 +91,8 @@ const extractJson = (text, expect = 'array') => {
     const end = closingIndex(source, start);
     if (end !== -1) {
       try {
-        return JSON.parse(source.slice(start, end + 1));
+        const candidate = JSON.parse(source.slice(start, end + 1));
+        if (!validate || validate(candidate)) return candidate;
       } catch {
         // not this candidate
       }

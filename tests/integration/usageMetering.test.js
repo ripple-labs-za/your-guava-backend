@@ -75,6 +75,42 @@ describe('metered Guava Credit amounts', () => {
 });
 
 describe('Guava Credit reservation lease breach', () => {
+  it.each(['failure', 'success', 'delivered failure'])('a swept attempt finishing with %s cannot settle its retry reservation', async (outcome) => {
+    const owner = await createTestUser();
+    const request = {
+      orgId: owner.user.orgId, userId: owner.user.id,
+      featureKey: 'ask_guava_chat', idempotencyKey: 'swept-attempt-retry',
+    };
+    let finishOld;
+    const old = meterGuavaCredits({ ...request, run: (meter) => new Promise((resolve, reject) => {
+      finishOld = () => {
+        if (outcome === 'success') return resolve({ answer: 'obsolete answer' });
+        if (outcome === 'delivered failure') {
+          meter.markDelivered();
+          meter.recordPartialResult({ answer: 'obsolete partial', interrupted: true });
+        }
+        reject(new Error('obsolete provider failure'));
+      };
+    }) }).catch((error) => error);
+    const held = await waitFor(() => UsageLedger.findOne({ idempotencyKey: request.idempotencyKey }).lean());
+    await UsageLedger.updateOne({ _id: held._id }, { $set: { reservedAt: new Date(Date.now() - 600_000) } });
+    expect((await reconcileStaleUsageReservations({ leaseMs: 60_000 })).refunded).toBe(1);
+    let finishRetry;
+    const retry = meterGuavaCredits({ ...request, run: () => new Promise((resolve) => { finishRetry = resolve; }) });
+    await waitFor(() => finishRetry);
+    finishOld();
+    await old;
+    const live = await UsageLedger.findById(held._id).lean();
+    // Release the retry before asserting so a regression cannot leave an unsettled test promise.
+    finishRetry({ answer: 'retry answer' });
+    const retryOutcome = await retry.catch((error) => error);
+    expect(live).toMatchObject({ status: 'reserved', replayCount: 1 });
+    expect(live.resultPayload).toBeUndefined();
+    expect(retryOutcome.result).toEqual({ answer: 'retry answer' });
+    expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(3);
+    expect((await UsageLedger.findById(held._id)).resultPayload).toEqual({ answer: 'retry answer' });
+  });
+
   it('keeps the delivered answer and re-charges when the reconciler refunded mid-run', async () => {
     const owner = await createTestUser();
     let finishRun;

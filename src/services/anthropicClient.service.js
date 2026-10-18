@@ -58,16 +58,22 @@ const providerRequestIdOf = (error) =>
 
 const SSE_ERROR_PREFIX = 'SSE Error: ';
 const MAX_SSE_ERROR_CHARS = 2_000;
-// SDK 0.30 turns a mid-stream `error` event into an APIConnectionError whose message is "SSE Error: <json>".
+// SDK 0.30 puts raw JSON in message and "SSE Error: <json>" in cause.message.
+// Later SDKs may keep only the prefixed message. Never fall back to logging either raw body.
 const sseErrorBody = (error) => {
-  const message = typeof error?.message === 'string' ? error.message : '';
-  if (!message.startsWith(SSE_ERROR_PREFIX)) return null;
-  try {
-    const parsed = JSON.parse(message.slice(SSE_ERROR_PREFIX.length, SSE_ERROR_PREFIX.length + MAX_SSE_ERROR_CHARS));
-    return parsed?.error ?? parsed;
-  } catch {
-    return null;
+  for (const message of [error?.cause?.message, error?.message]) {
+    if (typeof message !== 'string') continue;
+    const text = message.startsWith(SSE_ERROR_PREFIX) ? message.slice(SSE_ERROR_PREFIX.length) : message;
+    if (text.length > MAX_SSE_ERROR_CHARS) continue;
+    try {
+      const parsed = JSON.parse(text);
+      const body = parsed?.error ?? parsed;
+      if (typeof body?.type === 'string') return body;
+    } catch {
+      // Try the other SDK shape.
+    }
   }
+  return null;
 };
 
 const MAX_UPSTREAM_MESSAGE_CHARS = 200;
@@ -80,7 +86,7 @@ const upstreamErrorSummary = (error) => {
   const type = body?.type || error?.name || null;
   const detail = body
     ? body.message
-    : (status == null && error?.error === undefined ? error?.message : null);
+    : (['Connection error.', 'Request timed out.', 'Request was aborted.'].includes(error?.message) ? error.message : null);
   const message = [type, typeof detail === 'string' ? detail : null].filter(Boolean).join(': ');
   return { status, type, message: message ? message.slice(0, MAX_UPSTREAM_MESSAGE_CHARS) : null };
 };

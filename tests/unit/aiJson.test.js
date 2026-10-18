@@ -4,10 +4,18 @@ jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
   messages: { create: mockAnthropicMessageCreate },
 })));
 
-const { extractJson, validatedMappingProposal } = require('../../src/services/ai/json');
+const { extractJson, validatedMappingProposal, validatedInsightStrings } = require('../../src/services/ai/json');
 const { _resetMappingCache, proposeColumnMapping } = require('../../src/services/anthropic.service');
 
 describe('extractJson', () => {
+  it('skips parseable asides until a candidate passes the insight schema', () => {
+    expect(extractJson('Your top items [1] then ["Sales are rising"]', 'array', validatedInsightStrings))
+      .toEqual(['Sales are rising']);
+  });
+  it('skips an object that does not satisfy the mapping schema', () => {
+    expect(extractJson('Aside: {"note":1} then {"mapping":{"date":"When"}}', 'object', validatedMappingProposal))
+      .toEqual({ mapping: { date: 'When' } });
+  });
   it.each([
     ['a preamble and a trailing sentence', 'Here you go:\n["a","b"]\nThanks!', 'array', ['a', 'b']],
     ['code fences', '```json\n{"a":1}\n```', 'object', { a: 1 }],

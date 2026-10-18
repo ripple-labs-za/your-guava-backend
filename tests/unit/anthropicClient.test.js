@@ -124,6 +124,15 @@ describe('Anthropic upstream error wrapping', () => {
 });
 
 describe('provider error classification', () => {
+  it('reads a real SDK stream error cause without keeping the raw JSON body', () => {
+    const { APIError } = require('@anthropic-ai/sdk');
+    const raw = JSON.stringify({ type: 'overloaded_error', message: 'Overloaded' });
+    const sdkError = APIError.generate(undefined, `SSE Error: ${raw}`, raw, {});
+    expect(asUpstreamAiError(sdkError).upstreamMessage).toBe('overloaded_error: Overloaded');
+    const unparseable = APIError.generate(undefined, undefined, 'raw provider payload', undefined);
+    unparseable.cause = new Error('private raw body');
+    expect(asUpstreamAiError(unparseable).upstreamMessage).not.toMatch(/raw|private|payload/);
+  });
   let logSpy;
   beforeEach(() => { logSpy = jest.spyOn(console, 'error').mockImplementation(() => {}); });
   afterEach(() => { jest.restoreAllMocks(); });
