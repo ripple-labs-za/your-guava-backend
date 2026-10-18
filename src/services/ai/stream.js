@@ -1,7 +1,10 @@
 // Ask Guava, streaming: the abort helpers and the streamed answer.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const { withUsageDiagnostics } = require('../usage.service');
-const { createAnthropicClient, withAnthropicErrors } = require('../anthropicClient.service');
+const {
+  createAnthropicClient, withAnthropicErrors, readStreamEvents, streamLimits,
+  isAbortError, logProviderFailure, asUpstreamAiError,
+} = require('../anthropicClient.service');
 const { missingChatKeyResponse, TRUNCATED_ANSWER_MARKER } = require('./prompts');
 const { providerDiagnostics } = require('./json');
 const { buildBusinessChatRequest } = require('./chat');
@@ -50,6 +53,7 @@ const streamBusinessChatResponse = async ({
   onDelta,
   signal,
   meter,
+  requestId,
 }) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     const fallback = missingChatKeyResponse();
@@ -87,18 +91,18 @@ const streamBusinessChatResponse = async ({
   try {
     const stream = await withAnthropicErrors(
       () => client.messages.create({ ...request, stream: true }, { signal: upstream.signal }),
-      'streamBusinessChatResponse'
+      'streamBusinessChatResponse', { requestId }
     );
-    for await (const event of stream) {
+    for await (const event of readStreamEvents(stream, { ...streamLimits(), onTimeout: (timeout) => upstream.abort(timeout) })) {
       if (event.type === 'message_start') {
         streamResponse.id = event.message?.id;
         streamResponse.model = event.message?.model;
-        streamResponse.usage.input_tokens = Number(event.message?.usage?.input_tokens) || 0;
+        Object.assign(streamResponse.usage, event.message?.usage || {});
         recordUsage();
       }
       if (event.type === 'message_delta') {
         streamResponse.stop_reason = event.delta?.stop_reason;
-        streamResponse.usage.output_tokens = Number(event.usage?.output_tokens) || 0;
+        Object.assign(streamResponse.usage, event.usage || {});
         recordUsage();
       }
       if (event.type === 'message_stop') sawMessageStop = true;
@@ -110,13 +114,16 @@ const streamBusinessChatResponse = async ({
     }
     // SDK 0.30.1 ends the iterator quietly when its request is aborted (streaming.js swallows AbortError), so an
     // aborted stream can look finished here.
-    if (upstream.signal.aborted && !sawMessageStop) throwIfAborted(upstream.signal);
-  if (!answer.trim()) {
-    const error = new Error('AI chat provider returned an empty response');
-    error.statusCode = 502;
-    error.code = 'AI_INVALID_RESPONSE';
-    throw error;
-  }
+    if (upstream.signal.aborted && !sawMessageStop) {
+      if (upstream.signal.reason?.code === 'AI_PROVIDER_TIMEOUT') throw upstream.signal.reason;
+      throwIfAborted(upstream.signal);
+    }
+    if (!answer.trim()) {
+      const error = new Error('AI chat provider returned an empty response');
+      error.statusCode = 502;
+      error.code = 'AI_INVALID_RESPONSE';
+      throw error;
+    }
 
   } catch (error) {
     if (meter?.isDelivered?.()) {
@@ -128,7 +135,9 @@ const streamBusinessChatResponse = async ({
         ...(truncatedInput ? { truncatedInput: true } : {}),
       });
     }
-    throw error;
+    if (isAbortError(error) || error?.wrappedProviderError) throw error;
+    logProviderFailure('streamBusinessChatResponse', error, { requestId });
+    throw asUpstreamAiError(error);
   } finally {
     signal?.removeEventListener('abort', onClientAbort);
   }

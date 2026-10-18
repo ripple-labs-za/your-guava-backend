@@ -54,7 +54,7 @@ const errorMiddleware = (err, req, res, next) => {
     message = 'Internal Server Error';
   }
 
-  const exposeDetails = err.details && !(statusCode >= 500 && isHardenedEnvironment());
+  const exposeDetails = err.details && (err.exposeDetails === true || !(statusCode >= 500 && isHardenedEnvironment()));
   const publicCode = typeof err?.publicCode === 'string' && PUBLIC_CODE_RE.test(err.publicCode) ? err.publicCode : null;
 
   res.status(statusCode).json({

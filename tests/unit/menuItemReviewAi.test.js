@@ -146,4 +146,19 @@ describe('menu item AI review hardening', () => {
     expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(1);
     expect(result.source).toBe('ai');
   });
+it('reads the suggestion after a leading non-text block', async () => {
+  mockAnthropicMessageCreate.mockResolvedValue({
+    ...aiResponse({}),
+    content: [
+      { type: 'thinking', thinking: '' },
+      { type: 'text', text: 'Suggestion: {"action":"confirm","category":"coffee","confidence":0.8,"reason":"A standalone drink."}' },
+    ],
+  });
+
+  const result = await suggestMenuItemReview('cafe-1', ITEM, [], usageContext);
+
+  expect(result.source).toBe('ai');
+  expect(result.aiUnavailableReason).toBeUndefined();
+});
+
 });

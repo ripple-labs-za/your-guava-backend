@@ -9,8 +9,8 @@ const joinTextBlocks = (message) => (message?.content || [])
   .join('')
   .trim();
 
-// The column mapper's read: block 0 only. Kept, named, so BE-05-T03 can retire it with a test.
-const firstBlockText = (message) => message.content[0]?.text || '';
+// Compatibility export; callers now read all text blocks through the provider boundary.
+const firstBlockText = joinTextBlocks;
 
 const stripJsonFences = (text) => text.replace(/```json|```/g, '').trim();
 
@@ -50,6 +50,71 @@ const validatedInsightStrings = (value) => {
   return insights.slice(0, 10);
 };
 
+const MAX_JSON_SCAN_CHARS = 100_000;
+const MAX_JSON_CANDIDATES = 20;
+const OPENERS = { array: '[', object: '{' };
+
+/** Index of the bracket that closes the one at `start`, or -1; string-aware, linear in the text scanned. */
+const closingIndex = (text, start) => {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === '[' || char === '{') {
+      depth += 1;
+    } else if (char === ']' || char === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+};
+
+/**
+ * The first JSON array (or object) in a model reply that parses. Prose before or after it, code fences and
+ * bracketed asides are skipped. Bounded: at most 20 candidates over the first 100,000 characters.
+ */
+const extractJson = (text, expect = 'array') => {
+  const opener = OPENERS[expect];
+  const source = String(text || '').slice(0, MAX_JSON_SCAN_CHARS);
+  let from = 0;
+  for (let attempt = 0; attempt < MAX_JSON_CANDIDATES; attempt += 1) {
+    const start = source.indexOf(opener, from);
+    if (start === -1) return undefined;
+    const end = closingIndex(source, start);
+    if (end !== -1) {
+      try {
+        return JSON.parse(source.slice(start, end + 1));
+      } catch {
+        // not this candidate
+      }
+    }
+    from = start + 1;
+  }
+  return undefined;
+};
+
+const MAPPING_ITEMS_MODES = new Set(['packed', 'line-per-row']);
+
+/** A column-mapping reply: { mapping: { field: header|null }, itemsMode? }, or null. */
+const validatedMappingProposal = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { mapping, itemsMode } = value;
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) return null;
+  if (itemsMode !== undefined && !MAPPING_ITEMS_MODES.has(itemsMode)) return null;
+  if (Object.values(mapping).some((header) => header !== null && typeof header !== 'string')) return null;
+  return { mapping, itemsMode: itemsMode || 'packed' };
+};
+
+
 module.exports = {
+  extractJson, validatedMappingProposal,
   joinTextBlocks, firstBlockText, stripJsonFences, providerDiagnostics, validatedInsightStrings,
 };

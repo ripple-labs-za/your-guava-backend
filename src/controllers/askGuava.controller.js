@@ -6,6 +6,8 @@ const InsightChat = require('../models/InsightChat.model');
 const { prepareChatConversation, getCachedInsights, refreshInsights, generateBusinessChatResponse, streamBusinessChatResponse } = require('../services/anthropic.service');
 const { meterGuavaCredits } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
+const { abortWhenResponseCloses } = require('../utils/requestAbort');
+const { isAbortError } = require('../services/anthropicClient.service');
 
 const CHAT_IN_FLIGHT_WAIT_MS = 60_000;
 
@@ -157,6 +159,7 @@ const refreshGeneratedInsights = async (req, res, next) => {
       userId: req.user.id,
       idempotencyKey,
       signal: requestAbort.signal,
+      requestId: req.id,
     });
     return res.status(200).json({
       success: true,
@@ -191,6 +194,7 @@ const chatInsights = async (req, res, next) => {
         authorizedCafeIds,
         messages: conversation,
         signal: requestAbort.signal,
+        requestId: req.id,
       });
       return res.status(200).json({ success: true, ...result, aiCredits: null, guavaCredits: null });
     }
@@ -219,6 +223,7 @@ const chatInsights = async (req, res, next) => {
         authorizedCafeIds,
         messages: conversation,
         signal: requestAbort.signal,
+        requestId: req.id,
       }),
     });
     await persistChatExchangeWithoutBlockingDelivery({
@@ -261,21 +266,6 @@ const openSse = (res) => {
   res.flushHeaders?.();
 };
 
-const abortWhenResponseCloses = (res) => {
-  const controller = new AbortController();
-  const onClose = () => {
-    if (res.writableEnded || controller.signal.aborted) return;
-    const error = new Error('Client disconnected');
-    error.name = 'AbortError';
-    controller.abort(error);
-  };
-  res.once('close', onClose);
-  return {
-    signal: controller.signal,
-    dispose: () => res.off('close', onClose),
-  };
-};
-
 const streamChatInsights = async (req, res, next) => {
   const requestAbort = abortWhenResponseCloses(res);
   try {
@@ -295,6 +285,7 @@ const streamChatInsights = async (req, res, next) => {
         messages: conversation,
         onDelta: (text) => writeStreamEvent(res, 'delta', { text }),
         signal: requestAbort.signal,
+        requestId: req.id,
       });
 
       writeStreamEvent(res, 'done', {
@@ -340,6 +331,7 @@ const streamChatInsights = async (req, res, next) => {
             if (text.trim()) meter.markDelivered();
           },
           signal: requestAbort.signal,
+          requestId: req.id,
           meter,
         });
       },
@@ -387,14 +379,18 @@ const streamChatInsights = async (req, res, next) => {
       });
     }
     if (requestAbort.signal.aborted || res.destroyed) return;
+    if (!error.wrappedProviderError && !isAbortError(error)) {
+      console.error(JSON.stringify({ level: 'error', event: 'ask_guava_stream_failed', requestId: req.id, code: error.code || error.name }));
+    }
     if (res.headersSent) {
       writeStreamEvent(res, 'error', {
         code: charged ? 'AI_STREAM_INTERRUPTED' : (error.code || 'AI_CHAT_FAILED'),
         charged,
         credits: charged ? error.guavaCharge.credits : 0,
+        retryable: error.details?.retryable !== false,
         message: charged
           ? 'The AI service stopped this answer part-way. It had started, so it was charged.'
-          : charged === false ? 'The AI analyst could not complete this request. Nothing was charged. Please retry.'
+          : charged === false ? (error.exposeMessage ? error.message : 'The AI analyst could not complete this request. Nothing was charged. Please retry.')
             : 'The charge could not be confirmed. Retry this request with the same key.',
       });
       return res.end();

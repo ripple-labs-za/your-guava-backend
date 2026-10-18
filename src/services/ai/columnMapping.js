@@ -2,10 +2,10 @@
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const crypto = require('crypto');
 const { withUsageDiagnostics, meterGuavaCredits } = require('../usage.service');
-const { createAnthropicClient, withAnthropicErrors } = require('../anthropicClient.service');
+const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const { isValidEmail } = require('../../utils/email');
 const { modelId, COLUMN_MAPPING_SYSTEM_PROMPT, columnMappingUserPrompt } = require('./prompts');
-const { firstBlockText, stripJsonFences, providerDiagnostics } = require('./json');
+const { extractJson, validatedMappingProposal, providerDiagnostics } = require('./json');
 const { headersLookHeaderless, summarizeMappingSamples } = require('./pii');
 
 const MAPPING_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -62,7 +62,7 @@ const mappingCacheSet = (key, value) => {
  * @param {object[]} sampleRows up to 5 rows for context
  * @returns {Promise<{mapping: object, itemsMode: 'packed'|'line-per-row'}>}
  */
-const proposeColumnMappingWithClaude = async (headers, sampleSummary) => {
+const proposeColumnMappingWithClaude = async (headers, sampleSummary, { requestId } = {}) => {
   const client = createAnthropicClient();
 
   const startedAt = Date.now();
@@ -72,15 +72,13 @@ const proposeColumnMappingWithClaude = async (headers, sampleSummary) => {
     temperature: 0,
     system: COLUMN_MAPPING_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: columnMappingUserPrompt(headers, sampleSummary) }],
-  }), 'proposeColumnMapping');
-  const text = stripJsonFences(firstBlockText(message));
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  }), 'proposeColumnMapping', { requestId });
+  const parsed = validatedMappingProposal(extractJson(responseText(message), 'object'));
+  if (!parsed) {
     const error = new Error('AI column mapper returned invalid JSON');
     error.statusCode = 502;
     error.code = 'AI_INVALID_RESPONSE';
+    error.providerDiagnostics = providerDiagnostics(message, startedAt, 'import_column_mapping');
     throw error;
   }
   const cleaned = {};
@@ -181,7 +179,7 @@ const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
         idempotencyKey:
           `import-map:${usageContext.userId}:${usageContext.cafeId}:${semanticHash}`.slice(0, 160),
         metadata: { headerCount: headers.length, semanticHash },
-        run: () => proposeColumnMappingWithClaude(headers, sampleSummary),
+        run: () => proposeColumnMappingWithClaude(headers, sampleSummary, usageContext),
       });
       result = {
         ...metered.result,
@@ -191,7 +189,7 @@ const proposeColumnMapping = async (headers, sampleRows, usageContext = {}) => {
         replayed: Boolean(metered.replayed),
       };
     } else {
-      const raw = await proposeColumnMappingWithClaude(headers, sampleSummary);
+      const raw = await proposeColumnMappingWithClaude(headers, sampleSummary, usageContext);
       const { __usageDiagnostics: _diagnostics, ...cleanResult } = raw;
       result = { ...cleanResult, mappingAssistedByAi: true, aiCreditsCharged: 0 };
     }

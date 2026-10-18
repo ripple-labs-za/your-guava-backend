@@ -1,7 +1,7 @@
 // Ask Guava, non-streaming: message sanitising, the chat request and the answer.
 // Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
 const { withUsageDiagnostics } = require('../usage.service');
-const { createAnthropicClient, withAnthropicErrors } = require('../anthropicClient.service');
+const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const {
   modelId, fencedJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
 } = require('./prompts');
@@ -165,6 +165,7 @@ const generateBusinessChatResponse = async ({
   authorizedCafeIds,
   messages,
   signal,
+  requestId,
 }) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     return missingChatKeyResponse();
@@ -181,13 +182,10 @@ const generateBusinessChatResponse = async ({
   const startedAt = Date.now();
   const response = await withAnthropicErrors(
     () => client.messages.create(request, { signal }),
-    'generateBusinessChatResponse'
+    'generateBusinessChatResponse', { requestId }
   );
 
-  const answer = response.content
-    .map((part) => (part.type === 'text' ? part.text : ''))
-    .join('')
-    .trim();
+  const answer = responseText(response);
 
   if (!answer) {
     const error = new Error('AI chat provider returned an empty response');

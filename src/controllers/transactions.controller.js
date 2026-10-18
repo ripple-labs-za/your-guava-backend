@@ -176,6 +176,7 @@ const upload = async (req, res, next) => {
           userId,
           allowPaidAi: canSpendCredits(req.user),
           admitPaidCall: () => admitAiRequest(req, res),
+          requestId: req.id,
         });
         columnMapping = cleanColumnMapping(proposal.mapping, headers);
         itemsMode = proposal.itemsMode;

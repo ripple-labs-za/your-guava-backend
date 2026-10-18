@@ -192,4 +192,30 @@ describe('error middleware', () => {
       { id: 'r3', method: 'GET', path: '/x' }, response, jest.fn());
     expect(response.json.mock.calls[0][0]).not.toHaveProperty('code');
   });
+it('keeps an opted-in AI error code and retry hint in production', () => {
+  process.env.NODE_ENV = 'production';
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+  const response = createResponse();
+  const friendly = 'The AI service is busy right now. No credits were charged. Try again in a minute.';
+
+  errorMiddleware(
+    Object.assign(new Error(friendly), {
+      statusCode: 503,
+      exposeMessage: true,
+      exposeDetails: true,
+      details: { code: 'AI_PROVIDER_BUSY', retryable: true, retryAfterSeconds: 30 },
+    }),
+    { id: 'request-11', method: 'POST', path: '/api/forecasts/insights/chat' },
+    response,
+    jest.fn()
+  );
+
+  expect(response.json).toHaveBeenCalledWith({
+    success: false,
+    message: friendly,
+    requestId: 'request-11',
+    details: { code: 'AI_PROVIDER_BUSY', retryable: true, retryAfterSeconds: 30 },
+  });
+});
+
 });

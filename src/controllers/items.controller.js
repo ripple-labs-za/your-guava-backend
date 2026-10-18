@@ -361,6 +361,8 @@ const reconciliation = async (req, res, next) => {
 };
 
 const generateReconciliationSuggestions = async (req, res, next) => {
+  const { abortWhenResponseCloses } = require('../utils/requestAbort');
+  const requestAbort = abortWhenResponseCloses(res);
   try {
     const idempotencyKey = String(req.get('Idempotency-Key') || '').trim();
     if (!idempotencyKey) {
@@ -406,7 +408,10 @@ const generateReconciliationSuggestions = async (req, res, next) => {
       userId: req.user.id,
       useAi: true,
       idempotencyPrefix: `menu-review:${req.user.id}:${idempotencyKey}`,
+      signal: requestAbort.signal,
+      requestId: req.id,
     });
+    if (requestAbort.signal.aborted || res.destroyed) return;
     suggestions.forEach((suggestion, index) => {
       const {
         guavaCredits: _credits,
@@ -433,7 +438,10 @@ const generateReconciliationSuggestions = async (req, res, next) => {
       },
     });
   } catch (error) {
+    if (requestAbort.signal.aborted || res.destroyed) return;
     next(error);
+  } finally {
+    requestAbort.dispose();
   }
 };
 

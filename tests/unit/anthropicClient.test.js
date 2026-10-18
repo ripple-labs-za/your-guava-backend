@@ -2,6 +2,9 @@ const {
   getAnthropicClientOptions,
   asUpstreamAiError,
   withAnthropicErrors,
+  readStreamEvents,
+  resolveSdkConstructor,
+  responseText,
 } = require('../../src/services/anthropicClient.service');
 
 describe('Anthropic client bounds', () => {
@@ -62,8 +65,8 @@ describe('Anthropic upstream error wrapping', () => {
 
     const wrapped = asUpstreamAiError(cause);
 
-    expect(wrapped.statusCode).toBe(503);
-    expect(wrapped.message).toMatch(/temporarily unavailable/);
+    expect(wrapped.statusCode).toBe(502);
+    expect(wrapped.message).toMatch(/not accepting our credentials/);
     expect(wrapped.cause).toBe(cause);
     expect(wrapped.upstreamStatus).toBe(401);
     expect(wrapped.upstreamMessage).toBe('authentication_error: invalid x-api-key');
@@ -105,7 +108,7 @@ describe('Anthropic upstream error wrapping', () => {
   it('logs the failed operation with upstream status and type', async () => {
     await expect(
       withAnthropicErrors(async () => { throw sdkAuthError(); }, 'proposeColumnMapping')
-    ).rejects.toMatchObject({ statusCode: 503, upstreamStatus: 401 });
+    ).rejects.toMatchObject({ statusCode: 502, upstreamStatus: 401 });
 
     expect(logSpy).toHaveBeenCalledWith(
       '[anthropic] proposeColumnMapping failed: status=401 type=authentication_error'
@@ -117,5 +120,150 @@ describe('Anthropic upstream error wrapping', () => {
 
     await expect(withAnthropicErrors(async () => { throw abort; })).rejects.toBe(abort);
     expect(logSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('provider error classification', () => {
+  let logSpy;
+  beforeEach(() => { logSpy = jest.spyOn(console, 'error').mockImplementation(() => {}); });
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  const providerError = (status, type, extra = {}) => Object.assign(new Error(`${status} {"type":"error"}`), {
+    status,
+    error: { type: 'error', error: { type, message: `${type} happened` } },
+    headers: { 'request-id': `req_${status}` },
+    ...extra,
+  });
+
+  it.each([
+    [400, 'invalid_request_error', 502, 'AI_PROVIDER_REJECTED', false],
+    [401, 'authentication_error', 502, 'AI_PROVIDER_AUTH_FAILED', false],
+    [403, 'permission_error', 502, 'AI_PROVIDER_AUTH_FAILED', false],
+    [404, 'not_found_error', 502, 'AI_PROVIDER_REJECTED', false],
+    [413, 'request_too_large', 502, 'AI_PROVIDER_REJECTED', false],
+    [429, 'rate_limit_error', 503, 'AI_PROVIDER_BUSY', true],
+    [500, 'api_error', 503, 'AI_PROVIDER_UNAVAILABLE', true],
+    [529, 'overloaded_error', 503, 'AI_PROVIDER_UNAVAILABLE', true],
+  ])('maps a provider %i %s to %i %s', (status, type, statusCode, code, retryable) => {
+    const wrapped = asUpstreamAiError(providerError(status, type));
+    expect(wrapped).toMatchObject({
+      statusCode, code, exposeMessage: true, exposeDetails: true, upstreamStatus: status, providerRequestId: `req_${status}`,
+    });
+    expect(wrapped.details).toEqual(expect.objectContaining({ code, retryable }));
+  });
+
+  it('maps a connection timeout to a 504 the client may retry', () => {
+    const timeout = Object.assign(new Error('Request timed out.'), { name: 'APIConnectionTimeoutError' });
+    expect(asUpstreamAiError(timeout)).toMatchObject({
+      statusCode: 504, code: 'AI_PROVIDER_TIMEOUT', details: { code: 'AI_PROVIDER_TIMEOUT', retryable: true },
+    });
+  });
+
+  it('passes the provider Retry-After through for a 429, bounded to two minutes', () => {
+    expect(asUpstreamAiError(providerError(429, 'rate_limit_error', {
+      headers: { 'retry-after': '30', 'request-id': 'req_429' },
+    })).details.retryAfterSeconds).toBe(30);
+    expect(asUpstreamAiError(providerError(429, 'rate_limit_error', {
+      headers: { 'retry-after': '99999' },
+    })).details.retryAfterSeconds).toBe(120);
+  });
+
+  it('reads the error type and request id from the newer SDK shapes as well', () => {
+    const newer = Object.assign(new Error('529 Overloaded'), {
+      status: 529,
+      requestID: 'req_new',
+      headers: new Headers({ 'request-id': 'req_new' }),
+      error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+    });
+    expect(asUpstreamAiError(newer)).toMatchObject({ statusCode: 503, providerRequestId: 'req_new' });
+    const sseError = Object.assign(
+      new Error('SSE Error: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'),
+      { name: 'APIConnectionError' }
+    );
+    expect(asUpstreamAiError(sseError).upstreamMessage).toBe('overloaded_error: Overloaded');
+  });
+
+  it('logs the local request id and the provider request id when it has them', async () => {
+    await expect(withAnthropicErrors(
+      async () => { throw providerError(401, 'authentication_error'); },
+      'streamBusinessChatResponse',
+      { requestId: 'req-local-0001' }
+    )).rejects.toMatchObject({ code: 'AI_PROVIDER_AUTH_FAILED' });
+    expect(logSpy).toHaveBeenCalledWith(
+      '[anthropic] streamBusinessChatResponse failed: status=401 type=authentication_error requestId=req-local-0001 providerRequestId=req_401'
+    );
+  });
+
+  it('recognises the real SDK abort class, which carries no name', async () => {
+    const { APIUserAbortError } = require('@anthropic-ai/sdk');
+    const abort = new APIUserAbortError();
+    await expect(withAnthropicErrors(async () => { throw abort; })).rejects.toBe(abort);
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('stream deadlines', () => {
+  const quietAfter = (events) => ({
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+      await new Promise(() => {});
+    },
+  });
+  const trickle = (everyMs) => ({
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, everyMs));
+        yield { type: 'ping' };
+      }
+    },
+  });
+  const drain = async (stream, options) => {
+    const seen = [];
+    for await (const event of readStreamEvents(stream, options)) seen.push(event.type);
+    return seen;
+  };
+
+  it('aborts a stream that goes quiet for longer than the idle limit', async () => {
+    const timeouts = [];
+    const started = process.hrtime.bigint();
+    await expect(drain(quietAfter([{ type: 'message_start' }]), {
+      idleMs: 200, maxDurationMs: 5_000, onTimeout: (error) => timeouts.push(error),
+    })).rejects.toMatchObject({ code: 'AI_PROVIDER_TIMEOUT', phase: 'idle' });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(timeouts).toHaveLength(1);
+    expect(elapsedMs).toBeGreaterThanOrEqual(190);
+    expect(elapsedMs).toBeLessThan(2_000);
+  });
+
+  it('aborts a stream that keeps trickling past its overall deadline', async () => {
+    const started = process.hrtime.bigint();
+    await expect(drain(trickle(50), { idleMs: 1_000, maxDurationMs: 300, onTimeout: () => {} }))
+      .rejects.toMatchObject({ code: 'AI_PROVIDER_TIMEOUT', phase: 'deadline' });
+    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2_000);
+  });
+
+  it('passes a healthy stream through untouched', async () => {
+    const onTimeout = jest.fn();
+    const healthy = { async *[Symbol.asyncIterator]() { yield { type: 'a' }; yield { type: 'b' }; } };
+    expect(await drain(healthy, { idleMs: 1_000, maxDurationMs: 5_000, onTimeout })).toEqual(['a', 'b']);
+    expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe('SDK shape helpers', () => {
+  it('finds the SDK constructor however the SDK exports it', () => {
+    function Client() {}
+    expect(resolveSdkConstructor(Client)).toBe(Client);
+    expect(resolveSdkConstructor({ default: Client })).toBe(Client);
+    expect(resolveSdkConstructor({ Anthropic: Client })).toBe(Client);
+  });
+
+  it('reads the answer from the text blocks, skipping a leading non-text block', () => {
+    expect(responseText({
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'noop', input: {} },
+        { type: 'text', text: '{"a":1}' },
+      ],
+    })).toBe('{"a":1}');
   });
 });

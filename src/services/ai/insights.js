@@ -7,13 +7,13 @@ const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
 const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const { withUsageDiagnostics, creditSnapshot, meterGuavaCredits } = require('../usage.service');
-const { createAnthropicClient, withAnthropicErrors } = require('../anthropicClient.service');
+const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const { safeTimezone, zonedDayStart, addZonedDays, zonedDateKey } = require('../../utils/timezone');
 const {
   modelId, missingInsightsKeyResponse, buildSummaryStats, MAX_FORECAST_ITEMS_IN_PROMPT, insufficientInsightDataResponse,
   INSIGHTS_SYSTEM_PROMPT, insightsUserPrompt,
 } = require('./prompts');
-const { joinTextBlocks, stripJsonFences, validatedInsightStrings, providerDiagnostics } = require('./json');
+const { extractJson, validatedInsightStrings, providerDiagnostics } = require('./json');
 const { insightDatasetIsTooThin } = require('./context');
 const { throwIfAborted, waitWithAbort } = require('./stream');
 
@@ -68,7 +68,7 @@ const invalidateInsights = async (cafeId) => {
  * @param {string|ObjectId} cafeId
  * @returns {Promise<{ insights: string[], generatedAt: Date }>}
  */
-const generateInsights = async (cafeId, { signal } = {}) => {
+const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   throwIfAborted(signal);
   // Guard: no API key
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -141,28 +141,23 @@ const generateInsights = async (cafeId, { signal } = {}) => {
       messages: [{ role: 'user', content: insightsUserPrompt({ summary, forecastSummary }) }],
     },
     { signal }
-  ), 'generateInsights');
+  ), 'generateInsights', { requestId });
 
   // Join every text block, the way the chat path already does. Reading only
   // block 0 turned any response that led with a non-text block — or split the
   // JSON array across two text blocks — into a 502 the owner sees as a provider
   // outage, when the provider had in fact answered.
-  const content = joinTextBlocks(message) || '[]';
-
-  let parsed;
-  try {
-    // Strip any accidental markdown code fences
-    const cleaned = stripJsonFences(content);
-    parsed = JSON.parse(cleaned);
-  } catch {
-    parsed = null;
-  }
+  const parsed = extractJson(responseText(message), 'array');
   const insights = validatedInsightStrings(parsed);
   if (!insights) {
-    const error = new Error('AI insight provider returned an invalid response');
-    error.statusCode = 502;
-    error.code = 'AI_INVALID_RESPONSE';
-    throw error;
+    const truncated = message?.stop_reason === 'max_tokens';
+    const code = truncated ? 'AI_OUTPUT_TRUNCATED' : 'AI_INVALID_RESPONSE';
+    throw Object.assign(new Error(truncated
+      ? 'The AI service stopped writing before the insights were complete, so none were saved. No credits were charged. Try again.'
+      : 'The AI service replied in a form Guava could not read, so no insights were saved. No credits were charged. Try again.'), {
+      statusCode: 502, code, details: { code, retryable: true }, exposeMessage: true, exposeDetails: true,
+      providerDiagnostics: providerDiagnostics(message, startedAt, 'insight_refresh'),
+    });
   }
 
   const generatedAt = new Date();
@@ -196,6 +191,7 @@ const performInsightsRefresh = async ({
   userId,
   idempotencyKey,
   signal,
+  requestId,
 }) => {
   throwIfAborted(signal);
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -236,7 +232,7 @@ const performInsightsRefresh = async ({
     idempotencyKey,
     metadata: { source: 'explicit_refresh' },
     signal,
-    run: () => generateInsights(cafeId, { signal }),
+    run: () => generateInsights(cafeId, { signal, requestId }),
   });
   const result = metered.result;
   const written = await GeneratedInsight.findOneAndUpdate(
