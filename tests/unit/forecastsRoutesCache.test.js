@@ -9,6 +9,7 @@ jest.mock('../../src/middleware/rateLimit.middleware', () => ({
   aiLimiter: (_req, _res, next) => next(),
 }));
 jest.mock('../../src/middleware/cache.middleware', () => ({
+  ...jest.requireActual('../../src/middleware/cache.middleware'),
   apiCache: jest.fn(({ keyPrefix }) => (
     keyPrefix === 'forecast-history'
       ? (...args) => mockHistoryCache(...args)
