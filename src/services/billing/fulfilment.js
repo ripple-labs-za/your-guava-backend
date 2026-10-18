@@ -172,37 +172,46 @@ const applyPlanPayment = async (paymentSession, transaction) => {
  */
 const applyDuePlanChange = async (org, now = new Date()) => {
   if (!planChangeIsDue(org, now)) return null;
-  const pending = org.pendingPlanChange;
-  const plan = getPlan(pending.plan);
-  const effectiveAt = new Date(pending.effectiveAt);
-  const bonusUsed = bonusUsedForCredits(org);
-  const updated = await Organization.findOneAndUpdate(
-    { _id: org._id, 'pendingPlanChange.reference': pending.reference },
-    {
-      $set: {
-        plan: plan.id,
-        billingCycle: pending.billingCycle,
-        billingStatus: 'active',
-        currentPeriodStart: effectiveAt,
-        currentPeriodEnd: new Date(pending.periodEnd),
-        'aiCredits.included': plan.includedGuavaCredits ?? plan.includedAiCredits,
-        'aiCredits.bonusUsed': bonusUsed,
-        'aiCredits.used': bonusUsed,
-        'aiCredits.resetAt': nextMonthlyAnniversary(effectiveAt, now),
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    // A reservation/refund can change purchased-credit usage after auth reads the org.
+    // Retry from that newer snapshot instead of resetting its counters from stale data.
+    if (!org || !planChangeIsDue(org, now)) return org;
+    const pending = org.pendingPlanChange;
+    const plan = getPlan(pending.plan);
+    const effectiveAt = new Date(pending.effectiveAt);
+    const bonusUsed = bonusUsedForCredits(org);
+    const updated = await Organization.findOneAndUpdate(
+      { _id: org._id, __v: org.__v, 'pendingPlanChange.reference': pending.reference },
+      {
+        $set: {
+          plan: plan.id,
+          billingCycle: pending.billingCycle,
+          billingStatus: 'active',
+          currentPeriodStart: effectiveAt,
+          currentPeriodEnd: new Date(pending.periodEnd),
+          'aiCredits.included': plan.includedGuavaCredits ?? plan.includedAiCredits,
+          'aiCredits.bonusUsed': bonusUsed,
+          'aiCredits.used': bonusUsed,
+          'aiCredits.resetAt': nextMonthlyAnniversary(effectiveAt, now),
+        },
+        $unset: { pendingPlanChange: 1 },
+        $inc: { __v: 1 },
       },
-      $unset: { pendingPlanChange: 1 },
-      $inc: { __v: 1 },
-    },
-    { new: true, runValidators: true }
-  ).lean();
-  if (!updated) return Organization.findById(org._id).lean();
-  if (updated.plan !== org.plan) {
-    await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
-    invalidateFutureForecastsForOrg(org._id).catch((error) => {
-      console.error('[billing] forecast invalidation after a scheduled plan change failed:', error.message);
-    });
+      { new: true, runValidators: true }
+    ).lean();
+    if (!updated) {
+      org = await Organization.findById(org._id).lean();
+      continue;
+    }
+    if (updated.plan !== org.plan) {
+      await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
+      invalidateFutureForecastsForOrg(org._id).catch((error) => {
+        console.error('[billing] forecast invalidation after a scheduled plan change failed:', error.message);
+      });
+    }
+    return updated;
   }
-  return updated;
+  throw new Error('Could not apply scheduled plan change after concurrent billing updates');
 };
 
 const applyCreditPayment = async (paymentSession) => {

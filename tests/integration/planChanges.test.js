@@ -179,6 +179,35 @@ describe('D-019 plan changes through fulfilment', () => {
     expect(org.pendingPlanChange).toBeUndefined();
   });
 
+  it('a due change preserves bonus usage reserved after the auth snapshot was read', async () => {
+    const { applyDuePlanChange } = require('../../src/services/billingPayments.service');
+    const { reserveCreditsAtomic } = require('../../src/services/usage/credits');
+    const owner = await createTestUser();
+    const end = new Date(Date.now() + 60_000);
+    await makeActive(owner.user.orgId, {
+      plan: 'pro', billingCycle: 'monthly', startDays: -31, endDays: 0,
+      extra: {
+        currentPeriodEnd: end, pendingPlanChange: scheduledStarter(end),
+        'aiCredits.included': 6000, 'aiCredits.used': 6000,
+        'aiCredits.bonus': 100, 'aiCredits.bonusUsed': 0,
+      },
+    });
+    const snapshot = await Organization.findById(owner.user.orgId).lean();
+    // An already authenticated request reserves purchased credits before the term ends.
+    const reservation = await reserveCreditsAtomic(owner.user.orgId, 7, new Date());
+    expect(reservation.allocation).toEqual({ included: 0, bonus: 7 });
+
+    const applied = await applyDuePlanChange(snapshot, new Date(end.getTime() + 1));
+
+    expect(applied.plan).toBe('starter');
+    expect(applied.pendingPlanChange).toBeUndefined();
+    expect(applied.aiCredits.bonusUsed).toBe(7);
+    expect(applied.aiCredits.used).toBe(7);
+    const persisted = await Organization.findById(owner.user.orgId).lean();
+    expect(persisted.aiCredits.bonusUsed).toBe(7);
+    expect(persisted.__v).toBe(snapshot.__v + 2);
+  });
+
   it('checkout refuses another plan change while one is scheduled', async () => {
     const owner = await createTestUser();
     const end = new Date(Date.now() + 20 * DAY);
