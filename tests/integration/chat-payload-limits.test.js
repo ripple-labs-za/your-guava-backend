@@ -126,8 +126,12 @@ it.each([
 });
 
 it('authenticates a two-megabyte chat body before parsing it', async () => {
+  // Declare a body without sending it. Auth must answer before a JSON parser
+  // waits for those bytes; writing 2 MiB races the early 401/socket close.
   const response = await request.post('/api/forecasts/insights/chat/stream')
-    .send({ padding: 'x'.repeat(2 * 1024 * 1024) });
+    .type('json')
+    .set('Content-Length', String(2 * 1024 * 1024))
+    .timeout({ response: 2000, deadline: 3000 });
   expect(response.status).toBe(401);
   expect(response.body.message).toBe('No token provided');
 });
