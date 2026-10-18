@@ -4,6 +4,8 @@
  * environment variable, and a model that rejects a parameter never receives it.
  */
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+const MODEL_ALIASES = Object.freeze({ 'claude-haiku-4-5': DEFAULT_MODEL });
+const canonicalModel = (model) => Object.hasOwn(MODEL_ALIASES, model) ? MODEL_ALIASES[model] : model;
 
 // Prices: USD per million tokens, Anthropic first-party list prices (September 2026). Cache writes are the 5-minute
 // ephemeral rate (1.25x input); cache reads 0.1x input. minCacheableTokens: shorter prompt prefixes never cache.
@@ -38,18 +40,23 @@ const featureSpec = (feature) => {
   return spec;
 };
 
-const modelFor = (feature) => {
+const modelSelection = (feature) => {
   const spec = featureSpec(feature);
-  return String(process.env[spec.env] || process.env.ANTHROPIC_MODEL || DEFAULT_MODEL).trim();
+  for (const variable of [spec.env, 'ANTHROPIC_MODEL']) {
+    const value = String(process.env[variable] || '').trim();
+    if (value) return { variable, model: canonicalModel(value) };
+  }
+  return { variable: spec.env, model: DEFAULT_MODEL };
 };
+const modelFor = (feature) => modelSelection(feature).model;
 
 const requestSettings = (feature) => {
   const spec = featureSpec(feature);
-  const model = modelFor(feature);
+  const { model, variable } = modelSelection(feature);
   const rules = Object.hasOwn(MODELS, model) ? MODELS[model] : null;
   if (!rules) {
     throw Object.assign(
-      new Error(`${spec.env} names ${model}, which has no request rules or prices in src/config/ai.js. Add it there first.`),
+      new Error(`${variable} names ${model}, which has no request rules or prices in src/config/ai.js. Add it there first.`),
       { code: 'AI_MODEL_UNKNOWN' }
     );
   }
@@ -62,9 +69,9 @@ const requestSettings = (feature) => {
   };
 };
 
-/** Every configured model must be known; validateEnv refuses a production boot otherwise. */
+/** Every configured model must be known; hardened deployments refuse to boot otherwise. */
 const aiModelProblems = () => Object.keys(FEATURES)
-  .map((feature) => ({ variable: FEATURES[feature].env, model: modelFor(feature) }))
+  .map(modelSelection)
   .filter(({ model }) => !Object.hasOwn(MODELS, model))
   .map(({ variable, model }) => `${variable} (or ANTHROPIC_MODEL) names unknown model ${model}`);
 
@@ -72,7 +79,8 @@ const PER_MILLION = 1_000_000;
 
 /** USD cost of one provider call from its diagnostics; null for a model with no price (the stub, a test double). */
 const usageCostUsd = ({ model, inputTokens = 0, outputTokens = 0, cacheCreationInputTokens = 0, cacheReadInputTokens = 0 } = {}) => {
-  const price = Object.hasOwn(MODELS, model) ? MODELS[model].price : null;
+  const id = canonicalModel(model);
+  const price = Object.hasOwn(MODELS, id) ? MODELS[id].price : null;
   if (!price) return null;
   const cost = (inputTokens * price.input + outputTokens * price.output
     + cacheCreationInputTokens * price.cacheWrite + cacheReadInputTokens * price.cacheRead) / PER_MILLION;

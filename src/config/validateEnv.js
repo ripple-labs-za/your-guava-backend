@@ -131,8 +131,8 @@ const validateEnv = () => {
     errors.push('PAYSTACK_CURRENCY must be ZAR (payment sessions are priced in ZAR)');
   }
 
+  if (isHardenedEnvironment()) errors.push(...aiModelProblems());
   if (isProduction) {
-    errors.push(...aiModelProblems());
     if ((process.env.JWT_SECRET || '').length < 32) {
       errors.push('JWT_SECRET must be at least 32 characters in production');
     }
@@ -220,7 +220,7 @@ const validateEnv = () => {
     }
   }
 
-  if (!isProduction) aiModelProblems().forEach((problem) => console.warn(`[env] ${problem}`));
+  if (!isHardenedEnvironment()) aiModelProblems().forEach((problem) => console.warn(`[env] ${problem}`));
   if (errors.length > 0) {
     throw new Error(`Environment validation failed:\n - ${errors.join('\n - ')}`);
   }

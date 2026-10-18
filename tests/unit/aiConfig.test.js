@@ -21,6 +21,19 @@ describe('AI model configuration', () => {
     }
   });
 
+  it('accepts the official Haiku alias and trims blank overrides before fallback', () => {
+    process.env.ANTHROPIC_MODEL = ' claude-haiku-4-5 ';
+    process.env.AI_MODEL_CHAT = '   ';
+    expect(config.requestSettings('chat')).toEqual({ model: HAIKU, max_tokens: 1400, temperature: 0.3 });
+    expect(config.aiModelProblems()).toEqual([]);
+    expect(config.usageCostUsd({ model: 'claude-haiku-4-5', inputTokens: 1000 })).toBe(0.001);
+  });
+
+  it('names the legacy variable that supplied an unknown model at runtime', () => {
+    process.env.ANTHROPIC_MODEL = ' legacy-model-typo ';
+    expect(() => config.requestSettings('chat')).toThrow(/^ANTHROPIC_MODEL names legacy-model-typo/);
+  });
+
   it('keeps every feature on Claude Haiku 4.5 with the settings used today', () => {
     expect(config.DEFAULT_MODEL).toBe(HAIKU);
     expect(config.requestSettings('chat')).toEqual({ model: HAIKU, max_tokens: 1400, temperature: 0.3 });

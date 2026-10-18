@@ -94,6 +94,35 @@ const setProductionPaystackEnv = () => {
 };
 
 describe('validateEnv', () => {
+  it.each(['staging', 'preview'])('refuses unknown AI models in hardened %s', (environment) => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.NODE_ENV = environment;
+    process.env.AI_MODEL_CHAT = 'mistyped-model';
+    expect(() => validateEnv()).toThrow(/AI_MODEL_CHAT.*unknown model mistyped-model/);
+  });
+
+  it('reports all four features when only the legacy production model is mistyped', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.ANTHROPIC_MODEL = 'mistyped-model';
+    let error;
+    try { validateEnv(); } catch (caught) { error = caught; }
+    expect(error).toBeDefined();
+    expect(error.message.match(/unknown model mistyped-model/g)).toHaveLength(4);
+  });
+
+  it('warns without throwing about an unknown development model', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.MONGODB_URI = 'mongodb://localhost:27199/test';
+    process.env.JWT_SECRET = 'development-secret';
+    process.env.JWT_REFRESH_SECRET = 'development-refresh';
+    process.env.CLIENT_URL = 'http://localhost:5185';
+    process.env.AI_MODEL_CHAT = 'mistyped-model';
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(() => validateEnv()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/AI_MODEL_CHAT.*unknown model mistyped-model/));
+  });
   it('rejects production startup when an AI feature has no request rules', () => {
     setProductionBaseEnv();
     setProductionPaystackEnv();
