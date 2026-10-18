@@ -90,6 +90,7 @@ const runBillingReminders = async ({ now = new Date() } = {}) => {
         kind: target.kind,
         endsAt: target.endsAt,
         daysLeft,
+        now,
         graceDays: billingGraceDays(),
       });
       if (!delivered(result)) throw new Error(String(result?.reason || result?.error || 'email not sent'));

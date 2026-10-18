@@ -1,4 +1,4 @@
-const { DEFAULT_TIMEZONE } = require('../utils/timezone');
+const { DEFAULT_TIMEZONE, zonedDayOrdinal } = require('../utils/timezone');
 const { Resend } = require('resend');
 const { isRelaxedEnvironment } = require('../config/posture');
 
@@ -362,10 +362,13 @@ const formatLongDate = (value) => new Intl.DateTimeFormat('en-ZA', {
 }).format(new Date(value));
 
 /** Pure, so the copy and the escaping are testable without a transport. */
-const billingReminderMessage = ({ ownerName, orgName, planName, kind, endsAt, daysLeft, graceDays }) => {
+const billingReminderMessage = ({ ownerName, orgName, planName, kind, endsAt, graceDays, now = new Date() }) => {
+  ownerName = safeEmailText(ownerName) || 'there';
+  orgName = safeEmailText(orgName) || 'your organisation';
   const billingUrl = `${appUrl()}/settings?section=billing`;
   const what = kind === 'trial' ? 'free trial' : `${planName} plan`;
-  const when = daysLeft <= 1 ? 'tomorrow' : `on ${formatLongDate(endsAt)}`;
+  const calendarDays = zonedDayOrdinal(endsAt) - zonedDayOrdinal(now);
+  const when = calendarDays === 0 ? 'today' : calendarDays === 1 ? 'tomorrow' : `on ${formatLongDate(endsAt)}`;
   const afterEnd = graceDays > 0
     ? `After it ends, Guava stays readable for ${graceDays} days (forecasts, analytics and history), but imports, edits and AI tools pause until payment.`
     : 'After it ends, Guava pauses until payment.';

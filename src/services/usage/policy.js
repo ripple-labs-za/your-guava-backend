@@ -114,12 +114,15 @@ const billingAccessForOrganization = (org, now = new Date()) => {
     }, current);
   }
 
+  const paidPeriodEnd = inferredCurrentPeriodEnd(org);
+  const trialEnd = inferredTrialEnd(org);
+  const trialExpired = !paidPeriodEnd && trialEnd && trialEnd <= current;
   return withGrace({
     allowed: false,
     status,
     storedStatus: status,
-    reason: status === 'canceled' ? 'subscription_canceled' : 'payment_required',
-    periodEnd: inferredCurrentPeriodEnd(org) || inferredTrialEnd(org),
+    reason: status === 'canceled' ? 'subscription_canceled' : trialExpired ? 'trial_expired' : 'payment_required',
+    periodEnd: paidPeriodEnd || trialEnd,
   }, current);
 };
 

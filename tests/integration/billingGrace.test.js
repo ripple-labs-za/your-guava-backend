@@ -176,3 +176,41 @@ describe('the lapse write never overwrites a renewal (billing-14)', () => {
     expect(org.currentPeriodEnd).toEqual(renewedEnd);
   });
 });
+
+  it('keeps trial_expired on the second refused write after the lapse transition', async () => {
+    const owner = await createTestUser();
+    await Organization.updateOne({ _id: owner.user.orgId }, {
+      $set: { billingStatus: 'trialing', trialEndsAt: new Date(Date.now() - DAY) },
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const result = await request.put('/api/cafe/me').set('Authorization', `Bearer ${owner.token}`).send({ name: 'Refused' });
+      expect(result.status).toBe(402);
+      expect(result.body.billing.reason).toBe('trial_expired');
+      expect(result.body.billing.status).toBe('grace');
+    }
+  });
+
+  it('does not lapse a trial that was extended after the request read its old end', async () => {
+    const owner = await createTestUser();
+    const extended = new Date(Date.now() + 7 * DAY);
+    await Organization.updateOne({ _id: owner.user.orgId }, { $set: { billingStatus: 'trialing', trialEndsAt: extended } });
+    const fresh = await Organization.findById(owner.user.orgId).lean();
+    const stale = { ...fresh, trialEndsAt: new Date(Date.now() - 60_000) };
+    jest.spyOn(Organization, 'findById').mockImplementationOnce(() => ({ lean: async () => stale }));
+    await get('/api/cafe/me', owner.token);
+    const actual = await Organization.findById(owner.user.orgId).lean();
+    expect(actual.billingStatus).toBe('trialing');
+    expect(actual.trialEndsAt).toEqual(extended);
+  });
+
+  it('does not lapse an organisation whose version changed after the billing read', async () => {
+    const owner = await createTestUser();
+    await endedPaidPeriod(owner.user.orgId, DAY);
+    const stale = await Organization.findById(owner.user.orgId).lean();
+    await Organization.updateOne({ _id: owner.user.orgId }, { $inc: { __v: 1 } });
+    jest.spyOn(Organization, 'findById').mockImplementationOnce(() => ({ lean: async () => stale }));
+    await get('/api/cafe/me', owner.token);
+    const actual = await Organization.findById(owner.user.orgId).lean();
+    expect(actual.billingStatus).toBe('active');
+    expect(actual.__v).toBe(stale.__v + 1);
+  });

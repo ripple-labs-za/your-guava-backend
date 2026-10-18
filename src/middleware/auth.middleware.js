@@ -95,6 +95,7 @@ const authMiddleware = async (req, res, next) => {
       await Organization.updateOne(
         {
           _id: organization._id, billingStatus: organization.billingStatus,
+          __v: organization.__v,
           currentPeriodEnd: organization.currentPeriodEnd ?? null,
           trialEndsAt: organization.trialEndsAt ?? null,
         },
