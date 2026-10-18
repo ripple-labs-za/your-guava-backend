@@ -594,9 +594,19 @@ const lineStatusFor = (item) => {
 const stampLegacyForecastItemIds = async (cafeId, item, targetItem, session) => {
   const sameItem = String(item._id) === String(targetItem._id);
   if (sameItem && item.name === targetItem.name) return;
-  const bindings = sameItem
-    ? [[item, [item.name, targetItem.name, ...(item.aliases || [])]]]
-    : [[item, [item.name]], [targetItem, [targetItem.name]], [item, item.aliases || []], [targetItem, targetItem.aliases || []]];
+  const aliasNames = [...new Set([...(item.aliases || []), ...(targetItem.aliases || [])].filter(Boolean))];
+  // An alias may be a third item's canonical name. Read within the caller's
+  // transaction and bind those names first too, before aliases can claim them.
+  const canonicalOwners = aliasNames.length === 0 ? [] : await Item.find({
+    cafeId, _id: { $nin: [item._id, targetItem._id] }, name: { $in: aliasNames },
+  }).select('_id name').session(session || null).lean();
+  const bindings = [
+    [item, [item.name]],
+    [targetItem, [targetItem.name]],
+    ...canonicalOwners.map((owner) => [owner, [owner.name]]),
+    [item, item.aliases || []],
+    ...(sameItem ? [] : [[targetItem, targetItem.aliases || []]]),
+  ];
   for (const [owner, names] of bindings) {
     // The old and new, individually capped alias lists can exceed one list's
     // limit when combined. Keep every old spelling needed by these forecasts.

@@ -244,6 +244,56 @@ describe('forecast generation integrity', () => {
     expect(stored.calibrationExcluded).toBe(true);
   });
 
+  it.each(['rename', 'merge'])('keeps another item canonical name ahead of a clashing alias during a %s', async (action) => {
+    const auth = { Authorization: `Bearer ${token}` };
+    const latte = await request.post('/api/items').set(auth).send({ name: 'Latte', category: 'coffee' });
+    const flat = await request.post('/api/items').set(auth)
+      .send({ name: 'flat white', aliases: ['Latte'], category: 'coffee' });
+    expect(latte.status).toBe(201);
+    expect(flat.status).toBe(201);
+    const latteId = latte.body.item._id;
+    const flatId = flat.body.item._id;
+    const yesterday = localDay(-1);
+    await Transaction.create({
+      cafeId: cafe._id, date: new Date(yesterday.getTime() + 10 * 3600 * 1000), hour: 10, dayOfWeek: 0,
+      status: 'approved', total: 630,
+      items: [
+        { name: 'flat white', salesItemId: flatId, quantity: 14, unitPrice: 30 },
+        { name: 'Latte', salesItemId: latteId, quantity: 7, unitPrice: 30 },
+      ],
+    });
+    const forecast = await Forecast.create({
+      cafeId: cafe._id, date: yesterday, generatedAt: new Date(), origin: 'live', signals: quietSignals,
+      items: [{ itemName: 'flat white', predictedQty: 15, expectedQty: 15 }, { itemName: 'Latte', predictedQty: 8, expectedQty: 8 }],
+      forecastCoverage: { itemCount: 2, storedItemCount: 2, totalPredictedQty: 23, includesAllRevenue: true },
+      totalPredictedRevenue: 690, actualRevenue: 630, actualsUpdatedAt: new Date(), accuracy: 90,
+    });
+    let ownerId = flatId;
+    let ownerName = 'Flat White';
+    if (action === 'rename') {
+      expect((await request.put(`/api/items/${flatId}`).set(auth).send({ name: ownerName })).status).toBe(200);
+    } else {
+      const target = await request.post('/api/items').set(auth).send({ name: 'White coffee', category: 'coffee' });
+      expect(target.status).toBe(201);
+      ownerId = target.body.item._id;
+      ownerName = 'White coffee';
+      expect((await request.post(`/api/items/${flatId}/resolve`).set(auth)
+        .send({ action: 'map_to', targetItemId: ownerId })).status).toBe(200);
+    }
+    await forecastService._test.waitForMenuRefresh(cafe._id);
+
+    const stored = await Forecast.findById(forecast._id).lean();
+    expect(stored.items[1]).toEqual(expect.objectContaining({ itemName: 'Latte', actualQty: 7, predictedQty: 8, expectedQty: 8 }));
+    expect(String(stored.items[1].salesItemId)).toBe(latteId);
+    expect(stored.items[0]).toEqual(expect.objectContaining({ itemName: ownerName, actualQty: 14, predictedQty: 15, expectedQty: 15 }));
+    // A merge with no separate target line retains the source identity and follows its canonical target for actuals.
+    expect(String(stored.items[0].salesItemId)).toBe(flatId);
+    expect(stored.calibrationExcluded).not.toBe(true);
+    const sales = await Transaction.findOne({ cafeId: cafe._id }).lean();
+    expect(sales.items.find((line) => String(line.salesItemId) === latteId).quantity).toBe(7);
+    expect(sales.items.find((line) => String(line.salesItemId) === ownerId).quantity).toBe(14);
+  });
+
   it('replaces a raw legacy generation that has no inputsVersion', async () => {
     const target = localDay(2);
     await Forecast.collection.insertOne({
