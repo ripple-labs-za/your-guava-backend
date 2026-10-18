@@ -5,7 +5,7 @@
  */
 const insights = require('./ai/insights');
 const { buildSummaryStats } = require('./ai/prompts');
-const { buildBusinessContext } = require('./ai/context');
+const { buildBusinessContext, invalidateBusinessContext, _resetBusinessContextCache } = require('./ai/context');
 const { prepareChatConversation, assertCafeInScope, generateBusinessChatResponse } = require('./ai/chat');
 const { streamBusinessChatResponse } = require('./ai/stream');
 const { proposeColumnMapping, _resetMappingCache } = require('./ai/columnMapping');
@@ -15,6 +15,8 @@ module.exports = {
   buildSummaryStats,
   _resetMappingCache,
   buildBusinessContext,
+  invalidateBusinessContext,
+  _resetBusinessContextCache,
   invalidateInsights: insights.invalidateInsights,
   getCachedInsights: insights.getCachedInsights,
   generateInsights: insights.generateInsights,

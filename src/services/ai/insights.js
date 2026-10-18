@@ -15,7 +15,7 @@ const {
   INSIGHTS_SYSTEM_PROMPT, insightsUserPrompt,
 } = require('./prompts');
 const { extractJson, validatedInsightStrings, providerDiagnostics } = require('./json');
-const { insightDatasetIsTooThin } = require('./context');
+const { insightDatasetIsTooThin, invalidateBusinessContext } = require('./context');
 const { throwIfAborted, waitWithAbort } = require('./stream');
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -56,6 +56,7 @@ const getCachedInsights = async (cafeId) => {
 
 const invalidateInsights = async (cafeId) => {
   if (!cafeId) return;
+  invalidateBusinessContext(cafeId);
   await GeneratedInsight.updateOne(
     { cafeId },
     { $set: { invalidatedAt: new Date() } }

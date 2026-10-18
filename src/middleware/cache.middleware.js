@@ -3,6 +3,11 @@ const { activeCafeId } = require('../utils/tenancy');
 // Process-local response cache for read endpoints (D-005: one instance). Each entry remembers whose data it holds, so a
 // write evicts only that cafe's (or organisation's) entries instead of every tenant's (platform-12, forecasting-21).
 const cacheStore = new Map();
+const clearListeners = new Set();
+const onApiCacheCleared = (listener) => {
+  clearListeners.add(listener);
+  return () => clearListeners.delete(listener);
+};
 
 const normaliseQuery = (query = {}, keyParams = null) =>
   Object.keys(query)
@@ -72,7 +77,8 @@ const clearApiCache = (scope) => {
     cacheStore.delete(key);
     evicted += 1;
   }
+  for (const listener of clearListeners) listener({ cafeId, orgId, keyPrefix });
   return evicted;
 };
 
-module.exports = { apiCache, clearApiCache };
+module.exports = { apiCache, clearApiCache, onApiCacheCleared };
