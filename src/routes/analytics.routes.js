@@ -10,7 +10,7 @@ router.use(authMiddleware);
 router.use(requireActiveCafe);
 router.use(analyticsLimiter, analyticsRefreshLimiter);
 
-const analyticsCache = apiCache({ ttlMs: 60000, keyPrefix: 'analytics', keyParams: ['startDate', 'endDate', 'period'] });
+const analyticsCache = apiCache({ ttlMs: 60000, keyPrefix: 'analytics', keyParams: ['startDate', 'endDate', 'period', 'days'] });
 
 router.get('/revenue', analyticsCache, analytics.getRevenue);
 router.get('/items', analyticsCache, analytics.getItems);

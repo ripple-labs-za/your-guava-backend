@@ -1,6 +1,16 @@
 // Cafe-local date arithmetic: the one home of the zoned and date-only helpers (BE-11-T01, BE-11-T05).
 // Every caller outside the parser imports these from here.
 
+let supportedZones = null;
+
+// Canonical IANA names only, compared exactly. Intl accepts aliases and odd casing, but the portal offers canonical names
+// and a stored alias would never match the picker again.
+const isSupportedTimezone = (value) => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64) return false;
+  if (!supportedZones) supportedZones = new Set([...Intl.supportedValuesOf('timeZone'), 'UTC']);
+  return supportedZones.has(value);
+};
+
 const DEFAULT_TIMEZONE = 'Africa/Johannesburg';
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -189,7 +199,7 @@ const getCafeTimezone = async (cafeId) => {
 };
 
 module.exports = {
-  DEFAULT_TIMEZONE, DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, zonedPartsFormatter, zonedDateTimeToUtc, getZonedDateParts,
+  isSupportedTimezone, DEFAULT_TIMEZONE, DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, zonedPartsFormatter, zonedDateTimeToUtc, getZonedDateParts,
   zonedDayStart, zonedDayEnd, addZonedDays, zonedDayOrdinal, zonedDateKey, zonedDayOfWeek, processLocalCalendarDate,
   parseDateOnly, formatDateOnly, inclusiveDateOnlyDays, cafeLocalToday, getCafeTimezone,
 };

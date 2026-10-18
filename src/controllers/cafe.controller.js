@@ -1,13 +1,14 @@
+const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const User = require('../models/User.model');
 const Forecast = require('../models/Forecast.model');
 const { normalizeTradingHours, defaultTradingHours, tradingHoursInputError } = require('../utils/tradingHours');
 const { clearApiCache } = require('../middleware/cache.middleware');
-const { safeTimezone, zonedDayStart } = require('../utils/timezone');
+const { safeTimezone, zonedDayStart, isSupportedTimezone } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const { pickColumnMapping } = require('../services/parser.service');
 
-const FORECAST_INPUT_PREFIXES = ['location.lat', 'location.lng', 'location.city', 'tradingHours'];
+const FORECAST_INPUT_PREFIXES = ['location.lat', 'location.lng', 'location.city', 'tradingHours', 'timezone'];
 
 const affectsForecastInputs = (setUpdates = {}, unsetUpdates = {}) =>
   [...Object.keys(setUpdates), ...Object.keys(unsetUpdates)].some((key) =>
@@ -94,7 +95,8 @@ const getMe = async (req, res, next) => {
     if (!Array.isArray(cafe.tradingHours) || cafe.tradingHours.length !== 7) {
       cafe.tradingHours = defaultTradingHours();
     }
-    return res.status(200).json({ success: true, cafe: cafeDto(cafe) });
+    const timezoneEditable = !(await Transaction.exists({ cafeId: cafe._id }));
+    return res.status(200).json({ success: true, cafe: { ...cafeDto(cafe), timezoneEditable } });
   } catch (error) {
     next(error);
   }
@@ -102,7 +104,7 @@ const getMe = async (req, res, next) => {
 
 const updateMe = async (req, res, next) => {
   try {
-    const { name, location, tradingHours } = req.body;
+    const { name, location, tradingHours, timezone } = req.body;
 
     const setUpdates = {};
     const unsetUpdates = {};
@@ -153,10 +155,37 @@ const updateMe = async (req, res, next) => {
       setUpdates.tradingHours = normalizeTradingHours(tradingHours);
     }
 
+    if (timezone !== undefined) {
+      if (!isSupportedTimezone(timezone)) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_TIMEZONE',
+          message: 'Choose a timezone from the list, such as Africa/Johannesburg.',
+        });
+      }
+      const current = await Cafe.findOne({ _id: activeCafeId(req), orgId: req.user.orgId }).select('timezone').lean();
+      if (!current) return res.status(404).json({ success: false, message: 'Cafe not found' });
+      if (safeTimezone(current.timezone) !== timezone) {
+        // D-024: imported sales were read in the current zone; changing it would move them between days.
+        if (await Transaction.exists({ cafeId: current._id })) {
+          return res.status(409).json({
+            success: false,
+            code: 'TIMEZONE_LOCKED',
+            message: 'The timezone can only be changed before the first sales are imported, because imported sales keep the times they were read with. Contact support to change it now.',
+          });
+        }
+        setUpdates.timezone = timezone;
+      }
+    }
+
     const update = {};
     if (Object.keys(setUpdates).length > 0) update.$set = setUpdates;
     if (Object.keys(unsetUpdates).length > 0) update.$unset = unsetUpdates;
     if (Object.keys(update).length === 0) {
+      if (timezone !== undefined) {
+        const unchanged = await Cafe.findOne({ _id: activeCafeId(req), orgId: req.user.orgId }).lean();
+        return res.status(200).json({ success: true, cafe: cafeDto(unchanged) });
+      }
       return res.status(400).json({ success: false, message: 'No supported cafe fields were provided' });
     }
 
