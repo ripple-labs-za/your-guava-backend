@@ -313,4 +313,26 @@ describe('Ask Guava streaming charges (D-015)', () => {
     expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(0);
   });
 
+  it('reports an unknown charge when a delivered answer cannot be committed', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    const owner = await createTestUser();
+    const originalUpdate = UsageLedger.findOneAndUpdate.bind(UsageLedger);
+    const commitFailure = jest.spyOn(UsageLedger, 'findOneAndUpdate').mockImplementation((filter, update, ...options) => {
+      if (update?.$set?.status === 'committed') return Promise.reject(new Error('ledger write unavailable'));
+      return originalUpdate(filter, update, ...options);
+    });
+    mockAnthropicMessageCreate.mockImplementation(scriptedStream([
+      messageStart, textDelta('Visible answer'), { fail: new Error('provider disconnected') },
+    ]));
+    try {
+      const stream = await openStream({ token: owner.token, idempotencyKey: 'unknown-charge', messages: QUESTION });
+      const text = await stream.until(/event: error\ndata: .*\n/);
+      expect(eventData(text, 'error')).toEqual(expect.objectContaining({ charged: null }));
+      expect(eventData(text, 'error').message).toMatch(/charge could not be confirmed/i);
+      expect(eventData(text, 'error').message).not.toMatch(/nothing was charged/i);
+    } finally {
+      commitFailure.mockRestore();
+    }
+  });
+
 });
