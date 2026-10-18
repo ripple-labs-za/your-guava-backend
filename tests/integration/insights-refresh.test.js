@@ -278,28 +278,43 @@ describe('insight refresh lease, replay and window', () => {
   });
 
   it('never overwrites a newer post-import refresh when an older paid key is replayed', async () => {
-    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
-    const owner = await createTestUser();
-    await UsageLedger.init();
-    await seedRecentSales(owner.user.activeCafeId);
-    const { invalidateInsights } = require('../../src/services/anthropic.service');
-    mockAnthropicMessageCreate
-      .mockResolvedValueOnce(insightsReply(['Before the import.']))
-      .mockResolvedValueOnce(insightsReply(['New post-import analysis.']));
-    expect((await refresh(owner, 'old-paid-key')).status).toBe(200);
-    await invalidateInsights(owner.user.activeCafeId);
-    expect((await refresh(owner, 'new-paid-key')).body.insights).toEqual(['New post-import analysis.']);
-    // Expire the short coalescing window without waiting 30 seconds or faking Mongo timers.
-    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 31_000);
-    const replay = await refresh(owner, 'old-paid-key');
-    expect(replay.body.cacheStatus).toBe('stale');
-    expect(replay.body.requiresRefresh).toBe(true);
-    expect(replay.body.meta.replayed).toBe(true);
-    const read = await request.get('/api/forecasts/insights').set('Authorization', `Bearer ${owner.token}`);
-    expect(read.body.insights).toEqual(['New post-import analysis.']);
-    expect(read.body.cacheStatus).toBe('fresh');
-    expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(2);
-    expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(20);
+    // Replace the global Date, rather than mutating native Date.now: Mongoose
+    // snapshots the native constructor and uses it to judge heartbeat age.
+    // Keep all IO timers real so the replica set and HTTP requests keep running.
+    const instant = Date.now();
+    jest.useFakeTimers({
+      now: instant,
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask',
+        'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    try {
+      process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+      const owner = await createTestUser();
+      await UsageLedger.init();
+      await seedRecentSales(owner.user.activeCafeId);
+      const { invalidateInsights } = require('../../src/services/anthropic.service');
+      mockAnthropicMessageCreate
+        .mockResolvedValueOnce(insightsReply(['Before the import.']))
+        .mockResolvedValueOnce(insightsReply(['New post-import analysis.']));
+      expect((await refresh(owner, 'old-paid-key')).status).toBe(200);
+      jest.setSystemTime(instant + 1_000);
+      await invalidateInsights(owner.user.activeCafeId);
+      expect((await refresh(owner, 'new-paid-key')).body.insights).toEqual(['New post-import analysis.']);
+      // Distinct generations and an expired coalescing window, with no wall-time wait.
+      jest.setSystemTime(instant + 32_000);
+      const replay = await refresh(owner, 'old-paid-key');
+      expect(replay.status).toBe(200);
+      expect(replay.body.cacheStatus).toBe('stale');
+      expect(replay.body.requiresRefresh).toBe(true);
+      expect(replay.body.meta.replayed).toBe(true);
+      const read = await request.get('/api/forecasts/insights').set('Authorization', `Bearer ${owner.token}`);
+      expect(read.body.insights).toEqual(['New post-import analysis.']);
+      expect(read.body.cacheStatus).toBe('fresh');
+      expect(mockAnthropicMessageCreate).toHaveBeenCalledTimes(2);
+      expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(20);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it.each([false, true])('stops the lease heartbeat after provider failure=%s', async (fails) => {
