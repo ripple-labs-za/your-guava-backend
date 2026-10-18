@@ -23,7 +23,7 @@ const TRUNCATED_ANSWER_MARKER =
  * everything after it would read as operator-authored instruction. Item names,
  * event notes and cafe names all come from POS imports and operator input, so
  * that is reachable. Escaping the angle brackets as JSON `\uXXXX` keeps the
- * text the model reads identical while making the delimiter unforgeable â€”
+ * text the model reads identical while making the delimiter unforgeable —
  * business data can no longer emit a literal `<` at all.
  */
 const fencedJson = (value) =>

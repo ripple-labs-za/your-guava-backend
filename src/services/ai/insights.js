@@ -1,6 +1,6 @@
-const { getCafeTradingHours } = require('../../utils/tradingHours');
 // Insights: the cache, the refresh lease and de-duplication, and generation.
 // Renewed leases and completed-day windows keep paid refreshes honest.
+const { getCafeTradingHours } = require('../../utils/tradingHours');
 const crypto = require('crypto');
 const Transaction = require('../../models/Transaction.model');
 const Forecast = require('../../models/Forecast.model');
@@ -105,9 +105,9 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   const dayAfterTomorrow = addZonedDays(tomorrow, 1, timezone);
 
   // Projected and capped, like buildBusinessContext already does for chat. The
-  // bare `.lean()` this replaced put the whole Mongo document in the prompt â€”
+  // bare `.lean()` this replaced put the whole Mongo document in the prompt —
   // internal ObjectIds, modelVersion, trainingCutoff, and a per-item factors
-  // array â€” so prompt size grew with the cafe's menu with nothing bounding it.
+  // array — so prompt size grew with the cafe's menu with nothing bounding it.
   // A 21-item demo forecast was 41KB; a 300-item menu would overflow the
   // model's context window and fail the page permanently for the cafes with the
   // most data, all at the same flat 10-credit price.
@@ -148,8 +148,8 @@ const generateInsights = async (cafeId, { signal, requestId } = {}) => {
   ), 'generateInsights', { requestId });
 
   // Join every text block, the way the chat path already does. Reading only
-  // block 0 turned any response that led with a non-text block â€” or split the
-  // JSON array across two text blocks â€” into a 502 the owner sees as a provider
+  // block 0 turned any response that led with a non-text block — or split the
+  // JSON array across two text blocks — into a 502 the owner sees as a provider
   // outage, when the provider had in fact answered.
   const parsed = extractJson(responseText(message), 'array');
   const insights = validatedInsightStrings(parsed);
@@ -223,7 +223,7 @@ const performInsightsRefresh = async ({
 
   // Captured before the provider call. An import that commits during the call
   // stamps invalidatedAt, and unconditionally nulling it below republished
-  // pre-upload numbers as fresh for the full cache TTL â€” exactly when an owner
+  // pre-upload numbers as fresh for the full cache TTL — exactly when an owner
   // is most likely to look, because uploading and then reading insights is the
   // natural sequence.
   const priorInvalidatedAt = recent?.invalidatedAt ?? null;

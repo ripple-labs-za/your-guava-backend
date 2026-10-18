@@ -11,7 +11,7 @@ const { activeCafeId } = require('../../utils/tenancy');
 
 /**
  * GET /api/analytics/heatmap
- * Peak hour heatmap â€” 7 days Ã— 17 hours (6-22)
+ * Peak hour heatmap — 7 days × 17 hours (6-22)
  */
 const getHeatmap = async (req, res, next) => {
   try {
