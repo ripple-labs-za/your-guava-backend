@@ -49,11 +49,8 @@ const chatLimitResponse = (res) => res.status(409).json({
 });
 
 const MAX_MESSAGES = 80;
-// One chat can legitimately hold 80 messages of 20000 characters. Nothing here
-// is rate limited per user, and the portal calls createLocalChat on failure
-// paths, so a retry loop could grow this collection without bound on the same
-// Mongo instance the transaction data lives on. A cafe owner keeping 100 saved
-// conversations per location is generous; a runaway client stops at 100.
+// Writes have a per-user limiter; the saved-chat cap also bounds retained data.
+// A cafe owner can keep 100 conversations per location.
 const MAX_CHATS_PER_USER = 100;
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 30;

@@ -38,6 +38,8 @@ describe('AI limiter', () => {
 
     const softRefusal = await request.post('/admit');
     expect(softRefusal.status).toBe(200);
+    expect(softRefusal.headers.ratelimit).toBeUndefined();
+    expect(softRefusal.headers['ratelimit-policy']).toBeUndefined();
     expect(softRefusal.body).toEqual({ admitted: false, code: 'AI_RATE_LIMITED', statusCode: 429 });
     const hardRefusal = await request.post('/route');
     expect(hardRefusal.status).toBe(429);
@@ -46,6 +48,9 @@ describe('AI limiter', () => {
 });
 
 describe('saved-chat write limiter', () => {
+  it('refuses a hard-response limiter instead of hanging inside a handler', () => {
+    expect(() => admitThroughLimiter(createChatWriteLimiter())).toThrow(/soft|AI/i);
+  });
   it('refuses the write after the per-minute budget with a named 429 and Retry-After', async () => {
     const limiter = createChatWriteLimiter({ skip: () => false });
     const app = express();

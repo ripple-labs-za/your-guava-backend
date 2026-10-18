@@ -60,15 +60,15 @@ afterEach(async () => {
 });
 
 describe('AI column mapping on upload', () => {
-    it('passes the AI limiter, reserves credits and commits 10 around the provider call', async () => {
+  it('passes the AI limiter, reserves credits and commits 10 around the provider call', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     const owner = await createTestUser();
-      mockAnthropicMessageCreate.mockImplementation(async () => {
-        const reserved = await UsageLedger.findOne({ featureKey: 'import_column_mapping' }).lean();
-        expect(reserved).toEqual(expect.objectContaining({ status: 'reserved', credits: 10 }));
-        expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(10);
-        return aiMapping;
-      });
+    mockAnthropicMessageCreate.mockImplementation(async () => {
+      const reserved = await UsageLedger.findOne({ featureKey: 'import_column_mapping' }).lean();
+      expect(reserved).toEqual(expect.objectContaining({ status: 'reserved', credits: 10 }));
+      expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(10);
+      return aiMapping;
+    });
 
     const response = await uploadUnfamiliar(owner.token);
 

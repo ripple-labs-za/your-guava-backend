@@ -51,6 +51,7 @@ app.use(
     // Evaluated per request; with CLIENT_URL unset no origin is allowed (validateEnv refuses that outside tests anyway).
     origin: (requestOrigin, callback) => callback(null, process.env.CLIENT_URL || false),
     credentials: true,
+    exposedHeaders: ['Retry-After'],
   })
 );
 

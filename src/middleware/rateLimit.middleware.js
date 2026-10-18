@@ -100,8 +100,6 @@ const writeLimiter = rateLimit({
   message: { success: false, message: 'You are doing that too quickly. Please slow down.' },
 });
 
-// Paid AI calls are expensive and can hold provider connections open. Bound them
-// per organization and user independently of the broad IP-based global limiter.
 const AI_LIMIT = 20;
 const AI_RATE_LIMIT_MESSAGE = {
   success: false,
@@ -126,29 +124,43 @@ const softFailHandler = (req, res, next, options) => {
 
 // Paid AI calls are expensive and can hold provider connections open. Bound them per organization and user
 // independently of the broad IP-based global limiter. One instance, so every AI entry point shares the budget.
-const createAiLimiter = (overrides = {}) => rateLimit({
-  windowMs: 60 * 1000,
-  limit: AI_LIMIT,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: limitsOff,
-  keyGenerator: (req) => `${req.user?.orgId || 'unknown'}:${req.user?.id || req.ip}`,
-  validate: { keyGeneratorIpFallback: false },
-  message: AI_RATE_LIMIT_MESSAGE,
-  handler: softFailHandler,
-  ...overrides,
-});
+const softLimiters = new WeakSet();
+const createAiLimiter = (overrides = {}) => {
+  const limiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: AI_LIMIT,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skip: limitsOff,
+    keyGenerator: (req) => `${req.user?.orgId || 'unknown'}:${req.user?.id || req.ip}`,
+    validate: { keyGeneratorIpFallback: false },
+    message: AI_RATE_LIMIT_MESSAGE,
+    handler: softFailHandler,
+    ...overrides,
+  });
+  if (!overrides.handler || overrides.handler === softFailHandler) softLimiters.add(limiter);
+  return limiter;
+};
 const aiLimiter = createAiLimiter();
 
 /** Runs a limiter from inside a handler: resolves when admitted, rejects with a 429 error, never writes the response. */
-const admitThroughLimiter = (limiter) => (req, res) => new Promise((resolve, reject) => {
-  req.rateLimitSoftFail = true;
-  limiter(req, res, (error) => {
-    req.rateLimitSoftFail = false;
-    if (error) reject(error);
-    else resolve();
+const admitThroughLimiter = (limiter) => {
+  if (!softLimiters.has(limiter)) throw new TypeError('Only a soft AI limiter can be admitted inside a handler');
+  return (req, res) => new Promise((resolve, reject) => {
+    const headers = ['RateLimit', 'RateLimit-Policy', 'Retry-After'].map((name) => [name, res.getHeader(name)]);
+    req.rateLimitSoftFail = true;
+    const settled = (error) => {
+      req.rateLimitSoftFail = false;
+      for (const [name, value] of headers) {
+        if (value === undefined) res.removeHeader(name);
+        else res.setHeader(name, value);
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+    try { limiter(req, res, settled); } catch (error) { settled(error); }
   });
-});
+};
 const admitAiRequest = admitThroughLimiter(aiLimiter);
 
 // Saved-chat writes: generous for a person, a hard stop for a retry loop writing 80 x 20,000-character chats.
