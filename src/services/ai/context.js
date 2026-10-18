@@ -66,6 +66,10 @@ const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 const CONTEXT_CACHE_MAX_ENTRIES = 200;
 const contextCache = new Map();
 let contextGeneration = 0;
+let contextResetGeneration = 0;
+const cafeGenerations = new Map();
+const orgGenerations = new Map();
+let contextBuilds = 0;
 const contextCacheKey = ({ cafeId, orgId, authorizedCafeIds }) => JSON.stringify([
   String(orgId || ''), String(cafeId),
   Array.isArray(authorizedCafeIds) ? [...new Set(authorizedCafeIds.map(String))].sort() : null,
@@ -81,20 +85,33 @@ const readCachedContext = (key) => {
   contextCache.set(key, entry);
   return entry.context;
 };
-const storeContext = (key, context, { cafeIds, timezone, dayKey }) => {
-  contextCache.set(key, { context, cafeIds: new Set(cafeIds.map(String)), timezone, dayKey,
+const storeContext = (key, context, { cafeIds, orgId, timezone, dayKey }) => {
+  contextCache.set(key, { context, cafeIds: new Set(cafeIds.map(String)), orgId: String(orgId || ''), timezone, dayKey,
     expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
   while (contextCache.size > CONTEXT_CACHE_MAX_ENTRIES) contextCache.delete(contextCache.keys().next().value);
 };
 /** D-005: one instance. Imports drop every organisation view containing this cafe. */
 const invalidateBusinessContext = (cafeId) => {
   contextGeneration += 1;
+  if (cafeId && contextBuilds) cafeGenerations.set(String(cafeId), contextGeneration);
+  if (!cafeId) {
+    contextResetGeneration = contextGeneration;
+    cafeGenerations.clear();
+    orgGenerations.clear();
+  }
   for (const [key, entry] of contextCache) {
     if (!cafeId || entry.cafeIds.has(String(cafeId))) contextCache.delete(key);
   }
 };
-// API writes include org-level changes too; conservative eviction preserves every dependent view.
-onApiCacheCleared(() => invalidateBusinessContext());
+// A cafe edit evicts every view containing it; an org edit keeps other tenants warm.
+onApiCacheCleared(({ cafeId, orgId }) => {
+  if (cafeId) return invalidateBusinessContext(cafeId);
+  contextGeneration += 1;
+  if (contextBuilds) orgGenerations.set(String(orgId), contextGeneration);
+  for (const [key, entry] of contextCache) {
+    if (entry.orgId === String(orgId)) contextCache.delete(key);
+  }
+});
 const _resetBusinessContextCache = () => invalidateBusinessContext();
 
 const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
@@ -109,9 +126,11 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   const cached = readCachedContext(key);
   if (cached) return cached;
   const generation = contextGeneration;
+  contextBuilds += 1;
+  try {
 
   const [activeCafe, organization] = await Promise.all([
-    Cafe.findOne({ _id: cafeId, archivedAt: null, ...(orgId ? { orgId } : {}) }).select('name location timezone dataUploaded lastSyncAt').lean(),
+    Cafe.findOne({ _id: cafeId, archivedAt: null, ...(orgId ? { orgId } : {}) }).select('orgId name location timezone dataUploaded lastSyncAt').lean(),
     orgId ? Organization.findById(orgId).select('name plan').lean() : null,
   ]);
 
@@ -141,75 +160,52 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
 
   const baseMatch = { cafeId: { $in: cafeIds }, status: 'approved' };
   const activeCafeMatch = { cafeId: activeCafeId, status: 'approved' };
-  // One indexed 90-day scan. Each location keeps its own timezone, including DST.
+  // Two indexed reads run together: item unwinding must not serialize the summary branches.
   const timezoneByCafe = { $switch: {
     branches: cafes.map((cafe) => ({ case: { $eq: ['$cafeId', cafe._id] }, then: safeTimezone(cafe.timezone) })),
     default: activeTimezone,
   } };
-  const [facetRows, recentTransactions, menuItems, menuItemIssues, forecasts, upcomingEvents] = await Promise.all([
+  const [facetRows, topItems, recentTransactions, menuItems, menuItemIssues, forecasts, upcomingEvents] = await Promise.all([
     Transaction.aggregate([
       { $match: { ...baseMatch, date: { $gte: ninetyDaysAgo } } },
-      // Facet tees otherwise carry whole item subdocuments to every branch.
-      { $project: {
-        _id: 0, cafeId: 1, date: 1, dayOfWeek: 1, hour: 1, hourKnown: 1, paymentMethod: 1, total: 1,
-        'items.name': 1, 'items.quantity': 1, 'items.unitPrice': 1, 'items.menuItemStatus': 1,
+      // Collapse identical summary dimensions once before the small facet groups;
+      // no item arrays are carried through this read.
+      { $group: {
+        _id: { cafeId: '$cafeId', dayOfWeek: '$dayOfWeek', hour: '$hour', hourKnown: '$hourKnown',
+          paymentMethod: { $ifNull: ['$paymentMethod', 'unknown'] }, timezone: timezoneByCafe,
+          date: { $dateTrunc: { date: '$date', unit: 'day', timezone: timezoneByCafe } } },
+        transactions: saleCount, revenue: netRevenue, grossSales,
+        firstDate: { $min: '$date' }, lastDate: { $max: '$date' }, rows: { $sum: 1 },
       } },
       { $facet: {
-        totals: [
-          {
-            $group: {
-              _id: null,
-              transactions: saleCount,
-              revenue: netRevenue,
-              firstDate: { $min: '$date' },
-              lastDate: { $max: '$date' },
-              grossSales,
-            },
-          },
-        ],
         locationTotals: [
           {
             $group: {
-              _id: '$cafeId',
-              transactions: saleCount,
-              revenue: netRevenue,
+              _id: '$_id.cafeId',
+              transactions: { $sum: '$transactions' }, revenue: { $sum: '$revenue' },
+              firstDate: { $min: '$firstDate' }, lastDate: { $max: '$lastDate' },
+              grossSales: { $sum: '$grossSales' },
+              hourUnknown: { $sum: { $cond: [{ $eq: ['$_id.hourKnown', false] }, '$rows', 0] } },
             },
           },
           { $sort: { revenue: -1 } },
         ],
-        topItems: [
-          { $unwind: '$items' },
-          { $match: DEMAND_LINE_MATCH },
-          {
-            $group: {
-              _id: '$items.name',
-              quantity: { $sum: '$items.quantity' },
-              revenue: {
-                $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] },
-              },
-            },
-          },
-          { $sort: { quantity: -1 } },
-          { $limit: 25 },
-        ],
         dayPattern: [
           {
             $group: {
-              _id: '$dayOfWeek',
-              grossSales,
-              revenue: netRevenue,
-              transactions: saleCount,
+              _id: '$_id.dayOfWeek',
+              grossSales: { $sum: '$grossSales' }, revenue: { $sum: '$revenue' },
+              transactions: { $sum: '$transactions' },
             },
           },
           { $sort: { _id: 1 } },
         ],
         hourPattern: [
-          { $match: { cafeId: activeCafeId, hour: { $gte: 0, $lte: 23 }, hourKnown: { $ne: false } } },
+          { $match: { '_id.cafeId': activeCafeId, '_id.hour': { $gte: 0, $lte: 23 }, '_id.hourKnown': { $ne: false } } },
           {
             $group: {
-              _id: '$hour',
-              revenue: netRevenue,
-              transactions: saleCount,
+              _id: '$_id.hour',
+              revenue: { $sum: '$revenue' }, transactions: { $sum: '$transactions' },
             },
           },
           { $sort: { _id: 1 } },
@@ -217,9 +213,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
         paymentStats: [
           {
             $group: {
-              _id: { $ifNull: ['$paymentMethod', 'unknown'] },
-              transactions: saleCount,
-              revenue: netRevenue,
+              _id: '$_id.paymentMethod',
+              transactions: { $sum: '$transactions' }, revenue: { $sum: '$revenue' },
             },
           },
           { $sort: { transactions: -1 } },
@@ -227,19 +222,30 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
         ],
         dailyRevenue: [
           { $group: {
-            _id: { cafeId: '$cafeId', date: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone: timezoneByCafe } } },
-            revenue: netRevenue, transactions: saleCount,
+            _id: { cafeId: '$_id.cafeId', timezone: '$_id.timezone', date: '$_id.date' },
+            revenue: { $sum: '$revenue' }, transactions: { $sum: '$transactions' },
           } },
-          // The old stable JS sort kept cafe-query order for ties before reversing.
-          { $set: { locationOrder: { $indexOfArray: [cafeIds, '$_id.cafeId'] } } },
+          { $set: {
+            '_id.date': { $dateToString: { format: '%Y-%m-%d', date: '$_id.date', timezone: '$_id.timezone' } },
+            locationOrder: { $indexOfArray: [cafeIds, '$_id.cafeId'] },
+          } },
           { $sort: { '_id.date': -1, locationOrder: 1 } },
           { $limit: 120 },
         ],
-        hourUnknown: [
-          { $match: { cafeId: activeCafeId, hourKnown: false } },
-          { $count: 'count' },
-        ],
       } },
+    ]),
+    Transaction.aggregate([
+      { $match: { ...baseMatch, date: { $gte: ninetyDaysAgo } } },
+      { $project: { _id: 0,
+        'items.name': 1, 'items.quantity': 1, 'items.unitPrice': 1, 'items.menuItemStatus': 1 } },
+          { $unwind: '$items' },
+          { $match: DEMAND_LINE_MATCH },
+          { $group: {
+            _id: '$items.name', quantity: { $sum: '$items.quantity' },
+            revenue: { $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] } },
+          } },
+          { $sort: { quantity: -1 } },
+          { $limit: 25 },
     ]),
     Transaction.find(activeCafeMatch)
       .sort({ date: -1 })
@@ -275,10 +281,18 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       .lean(),
   ]);
 
-  const { totals, locationTotals, topItems, dayPattern, hourPattern, paymentStats, dailyRevenue: newestDaily, hourUnknown } = facetRows[0];
+  const { locationTotals, dayPattern, hourPattern, paymentStats, dailyRevenue: newestDaily } = facetRows[0];
   const dailyRevenue = newestDaily.slice().reverse();
-  const hourUnknownCount = hourUnknown[0]?.count || 0;
-  const total = totals[0] || {};
+  const hourUnknownCount = locationTotals.find((row) => String(row._id) === String(activeCafeId))?.hourUnknown || 0;
+  // The per-location groups already contain these totals; do not scan the same
+  // rows again for an organisation-wide group or unknown-time count.
+  const total = locationTotals.reduce((sum, row) => ({
+    transactions: sum.transactions + row.transactions,
+    revenue: sum.revenue + row.revenue,
+    grossSales: sum.grossSales + row.grossSales,
+    firstDate: !sum.firstDate || row.firstDate < sum.firstDate ? row.firstDate : sum.firstDate,
+    lastDate: !sum.lastDate || row.lastDate > sum.lastDate ? row.lastDate : sum.lastDate,
+  }), { transactions: 0, revenue: 0, grossSales: 0, firstDate: null, lastDate: null });
 
   const context = {
     organization: organization
@@ -396,8 +410,21 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     })),
   };
   // Never publish an old snapshot if an import or edit finished during the reads.
-  if (generation === contextGeneration) storeContext(key, context, { cafeIds, timezone: activeTimezone, dayKey: todayKey });
+  const contextOrgId = String(orgId || activeCafe.orgId || '');
+  if (generation >= contextResetGeneration && generation >= (orgGenerations.get(contextOrgId) || 0) &&
+      cafeIds.every((id) => generation >= (cafeGenerations.get(String(id)) || 0))) {
+    storeContext(key, context, { cafeIds, orgId: contextOrgId, timezone: activeTimezone, dayKey: todayKey });
+  }
   return context;
+  } finally {
+    contextBuilds -= 1;
+    // Version fences only protect in-flight reads, not cached entries. Do not
+    // retain a forever-growing tenant/cafe registry after all reads settle.
+    if (contextBuilds === 0) {
+      cafeGenerations.clear();
+      orgGenerations.clear();
+    }
+  }
 };
 
 module.exports = {

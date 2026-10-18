@@ -48,6 +48,31 @@ const seedTwoLocations = async () => {
 };
 
 describe('Ask Guava business context', () => {
+  it.each(['cafeId', 'orgId'])('keeps org A warm when an API clear targets org B by %s', async (scopeKey) => {
+    const ownerA = await createTestUser({ email: 'context-a@example.com' });
+    const ownerB = await createTestUser({ email: 'context-b@example.com' });
+    const argsA = { cafeId: ownerA.user.activeCafeId, orgId: ownerA.user.orgId };
+    const argsB = { cafeId: ownerB.user.activeCafeId, orgId: ownerB.user.orgId };
+    const firstA = await buildBusinessContext(argsA);
+    const firstB = await buildBusinessContext(argsB);
+    clearApiCache({ [scopeKey]: argsB[scopeKey] });
+    expect(await buildBusinessContext(argsA)).toBe(firstA);
+    expect(await buildBusinessContext(argsB)).not.toBe(firstB);
+  });
+
+  it('still publishes org A in-flight context when only org B was invalidated', async () => {
+    const ownerA = await createTestUser({ email: 'context-build-a@example.com' });
+    const ownerB = await createTestUser({ email: 'context-build-b@example.com' });
+    const original = Transaction.aggregate.bind(Transaction);
+    jest.spyOn(Transaction, 'aggregate').mockImplementationOnce(async (...args) => {
+      const rows = await original(...args);
+      clearApiCache({ cafeId: ownerB.user.activeCafeId });
+      return rows;
+    });
+    const args = { cafeId: ownerA.user.activeCafeId, orgId: ownerA.user.orgId };
+    const first = await buildBusinessContext(args);
+    expect(await buildBusinessContext(args)).toBe(first);
+  });
   it('refreshes the context after a cafe rename that does not change forecast inputs', async () => {
     const owner = await createTestUser();
     const args = { cafeId: owner.user.activeCafeId, orgId: owner.user.orgId };
@@ -101,7 +126,7 @@ describe('Ask Guava business context', () => {
       .set('Authorization', `Bearer ${owner.token}`).send({});
     expect(response.status).toBe(200);
     const after = await buildBusinessContext(args);
-    expect(aggregate).toHaveBeenCalledTimes(2);
+    expect(aggregate).toHaveBeenCalledTimes(4);
     expect(before.locations).toHaveLength(1);
     expect(after.locations).toHaveLength(2);
     expect(after.dataset.totalRevenue).toBe(110);
@@ -175,12 +200,12 @@ describe('Ask Guava business context', () => {
       inputTokens: 50, outputTokens: 40, cacheReadInputTokens: 1200, cacheCreationInputTokens: 300,
     });
   });
-  it('scans transactions once for two locations, including unknown-hour coverage', async () => {
+  it('uses at most two parallel transaction aggregates for two locations, including unknown-hour coverage', async () => {
     const { owner, cafeId } = await seedTwoLocations();
     const aggregate = jest.spyOn(Transaction, 'aggregate');
     const count = jest.spyOn(Transaction, 'countDocuments');
     await buildBusinessContext({ cafeId, orgId: owner.user.orgId });
-    expect(aggregate).toHaveBeenCalledTimes(1);
+    expect(aggregate).toHaveBeenCalledTimes(2);
     expect(count).not.toHaveBeenCalled();
   });
 
@@ -246,7 +271,7 @@ describe('Ask Guava business context', () => {
     const args = { cafeId, orgId: owner.user.orgId };
     expect((await buildBusinessContext(args)).dataset.totalRevenue).toBe(110);
     expect((await buildBusinessContext(args)).dataset.totalRevenue).toBe(210);
-    expect(aggregate).toHaveBeenCalledTimes(2);
+    expect(aggregate).toHaveBeenCalledTimes(4);
   });
 
   it('keeps unrelated cafes warm when an imported location invalidates an organisation view', async () => {
@@ -258,9 +283,9 @@ describe('Ask Guava business context', () => {
     const manager = await buildBusinessContext(managerArgs);
     await invalidateInsights(london._id);
     expect(await buildBusinessContext(managerArgs)).toEqual(manager);
-    expect(aggregate).toHaveBeenCalledTimes(2);
+    expect(aggregate).toHaveBeenCalledTimes(4);
     await buildBusinessContext(args);
-    expect(aggregate).toHaveBeenCalledTimes(3);
+    expect(aggregate).toHaveBeenCalledTimes(6);
   });
   it('preserves the two-location timezone, refund and forecast characterization before performance changes', async () => {
     const { owner, cafeId } = await seedTwoLocations();
