@@ -680,20 +680,22 @@ describe('Forecasts API', () => {
         expect.objectContaining({ sampleSize: expect.any(Number), overallMultiplier: expect.any(Number) })
       );
       expect(row.trainingData).toEqual(expect.objectContaining({ transactionCount: 1, weeksWithSales: 1 }));
-      expect(res.body.meta.overallRevenueAccuracy).toEqual(expect.any(Number));
-      expect(res.body.meta.avgDailyRevenueAccuracy).toEqual(expect.any(Number));
+      // One observed week: the backfilled day is shown but not counted (BE-06-T02).
+      expect(row.countsTowardAccuracy).toBe(false);
+      expect(res.body.meta.overallRevenueAccuracy).toBeNull();
+      expect(res.body.meta.avgDailyRevenueAccuracy).toBeNull();
       expect(res.body.meta.avgRevenueAccuracy).toBe(res.body.meta.avgDailyRevenueAccuracy);
       expect(res.body.meta.liveAccuracy).toEqual(expect.objectContaining({
         rowCount: 0,
         overallRevenueAccuracy: null,
       }));
       expect(res.body.meta.backtestAccuracy).toEqual(expect.objectContaining({
-        rowCount: 1,
-        overallRevenueAccuracy: expect.any(Number),
+        rowCount: 0,
+        excludedRowCount: 1,
       }));
       expect(res.body.meta.combinedAccuracy).toEqual(expect.objectContaining({
-        rowCount: 1,
-        overallRevenueAccuracy: res.body.meta.overallRevenueAccuracy,
+        rowCount: 0,
+        excludedRowCount: 1,
       }));
       expect(res.body.pagination).toEqual(
         expect.objectContaining({ total: 1, page: 1, limit: 30, pages: 1 })

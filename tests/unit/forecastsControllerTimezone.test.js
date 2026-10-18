@@ -21,6 +21,7 @@ jest.mock('../../src/models/Transaction.model', () => ({
   aggregate: (...args) => mockTransactionAggregate(...args),
 }));
 jest.mock('../../src/services/forecast.service', () => ({
+  BACKTEST_BASIS_NOTE: 'note',
   FORECAST_MODEL_VERSION: 'test-model',
   generateForecast: (...args) => mockGenerateForecast(...args),
   updateForecastActuals: (...args) => mockUpdateForecastActuals(...args),

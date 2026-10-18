@@ -7,6 +7,30 @@ const { backgroundJobsInline } = require('../../config/flags');
 const { safeTimezone, zonedDayStart, addZonedDays } = require('../../utils/timezone');
 const { isDemandLine } = require('../../utils/demand');
 
+const BACKTEST_BASIS_NOTE =
+  "Backtests are scored with the weather that actually happened and today's menu prices, so they read better than live forecasts will.";
+
+const storedPrediction = (item) => (Number.isFinite(item.expectedQty) ? item.expectedQty : Number(item.predictedQty) || 0);
+
+// Item-level WAPE, with the unstored long tail counted as one aggregate term.
+const itemWape = (items, { totalPredicted, totalActual }) => {
+  if (!(totalActual > 0)) return null;
+  let absError = 0;
+  let storedPredicted = 0;
+  let storedActual = 0;
+  for (const item of items || []) {
+    if (item.actualQty == null) continue;
+    const predicted = storedPrediction(item);
+    absError += Math.abs(predicted - item.actualQty);
+    storedPredicted += predicted;
+    storedActual += item.actualQty;
+  }
+  const tailPredicted = Math.max(0, totalPredicted - storedPredicted);
+  const tailActual = Math.max(0, totalActual - storedActual);
+  absError += Math.abs(tailPredicted - tailActual);
+  return Math.max(0, Math.min(100, (1 - absError / totalActual) * 100));
+};
+
 /**
  * Pulls actual transactions for a given date and updates forecast accuracy.
  * Accuracy is the bounded relative error between total predicted and sold units.
@@ -59,6 +83,7 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
       fi.actualQty = undefined;
     }
     forecast.accuracy = undefined;
+    forecast.itemAccuracy = undefined;
     forecast.actualRevenue = undefined;
     forecast.actualTransactionCount = undefined;
     forecast.actualsUpdatedAt = undefined;
@@ -108,6 +133,8 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
       : null;
 
   forecast.accuracy = accuracy !== null ? parseFloat(accuracy.toFixed(1)) : undefined;
+  const itemAccuracy = itemWape(forecast.items, { totalPredicted, totalActual });
+  forecast.itemAccuracy = itemAccuracy !== null ? parseFloat(itemAccuracy.toFixed(1)) : undefined;
   forecast.actualRevenue = parseFloat(actualRevenue.toFixed(2));
   forecast.actualTransactionCount = transactions.length;
   forecast.actualsUpdatedAt = new Date();
@@ -164,5 +191,6 @@ const scheduleForecastRefreshAfterMenuChange = async (cafeId) => {
 };
 
 module.exports = {
+  BACKTEST_BASIS_NOTE, itemWape,
   updateForecastActuals, refreshForecastsAfterMenuChange, scheduleForecastRefreshAfterMenuChange,
 };

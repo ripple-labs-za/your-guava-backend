@@ -10,6 +10,7 @@ const generate = require('./forecast/generate');
 const actuals = require('./forecast/actuals');
 
 module.exports = {
+  BACKTEST_BASIS_NOTE: actuals.BACKTEST_BASIS_NOTE,
   FORECAST_MODEL_VERSION: generate.FORECAST_MODEL_VERSION,
   MIN_HISTORY_WEEKS: history.MIN_HISTORY_WEEKS,
   MAX_STORED_FORECAST_ITEMS: generate.MAX_STORED_FORECAST_ITEMS,
@@ -19,6 +20,7 @@ module.exports = {
   refreshForecastsAfterMenuChange: actuals.refreshForecastsAfterMenuChange,
   scheduleForecastRefreshAfterMenuChange: actuals.scheduleForecastRefreshAfterMenuChange,
   _test: {
+    itemWape: actuals.itemWape,
     winsoriseBuckets: history.winsoriseBuckets,
     deFactorItemBuckets: history.deFactorItemBuckets,
     computeForecastCalibration: calibration.computeForecastCalibration,

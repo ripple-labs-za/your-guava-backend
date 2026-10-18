@@ -7,6 +7,7 @@ const {
   FORECAST_MODEL_VERSION,
   generateForecast,
   updateForecastActuals,
+  BACKTEST_BASIS_NOTE,
 } = require('../services/forecast.service');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const {
@@ -102,17 +103,23 @@ const revenueAccuracy = (predicted, actual) => {
   return parseFloat(Math.max(0, (1 - Math.abs(actual - predicted) / actual) * 100).toFixed(1));
 };
 
-const summarizeHistoryAccuracy = (rows) => {
-  const accuracyRows = rows.filter((row) => row.revenueAccuracy != null);
-  const totalPredictedRevenue = rows.reduce((sum, row) => sum + row.predictedRevenue, 0);
-  const totalActualRevenue = rows.reduce((sum, row) => sum + row.actualRevenue, 0);
+const summarizeHistoryAccuracy = (rows, { note = null } = {}) => {
+  const counted = rows.filter((row) => row.countsTowardAccuracy !== false);
+  const accuracyRows = counted.filter((row) => row.revenueAccuracy != null);
+  const itemRows = counted.filter((row) => Number.isFinite(row.itemAccuracy));
+  const totalPredictedRevenue = counted.reduce((sum, row) => sum + row.predictedRevenue, 0);
+  const totalActualRevenue = counted.reduce((sum, row) => sum + row.actualRevenue, 0);
   const variance = totalActualRevenue - totalPredictedRevenue;
 
   return {
-    rowCount: rows.length,
+    rowCount: counted.length,
+    excludedRowCount: rows.length - counted.length,
     overallRevenueAccuracy: revenueAccuracy(totalPredictedRevenue, totalActualRevenue),
     avgDailyRevenueAccuracy: accuracyRows.length > 0
       ? parseFloat((accuracyRows.reduce((sum, row) => sum + row.revenueAccuracy, 0) / accuracyRows.length).toFixed(1))
+      : null,
+    avgItemAccuracy: itemRows.length > 0
+      ? parseFloat((itemRows.reduce((sum, row) => sum + row.itemAccuracy, 0) / itemRows.length).toFixed(1))
       : null,
     totalPredictedRevenue: parseFloat(totalPredictedRevenue.toFixed(2)),
     totalActualRevenue: parseFloat(totalActualRevenue.toFixed(2)),
@@ -120,6 +127,7 @@ const summarizeHistoryAccuracy = (rows) => {
     variancePct: totalPredictedRevenue > 0
       ? parseFloat(((variance / totalPredictedRevenue) * 100).toFixed(1))
       : null,
+    note: counted.length > 0 ? note : null,
   };
 };
 
@@ -143,7 +151,10 @@ const buildHistoryRow = (forecast, actual = {}, timezone) => {
     variance,
     variancePct,
     revenueAccuracy: revenueAccuracy(predictedRevenue, actualRevenue),
-    itemAccuracy: forecast.accuracy ?? null,
+    availabilityStatus: forecast.availability?.status || 'ready',
+    countsTowardAccuracy: (forecast.availability?.status || 'ready') !== 'insufficient_data',
+    volumeAccuracy: forecast.accuracy ?? null,
+    itemAccuracy: forecast.itemAccuracy ?? null,
     transactionCount: actual.transactionCount ?? forecast.actualTransactionCount ?? 0,
     weather: forecast.signals?.weather || null,
     signals: {
@@ -358,15 +369,19 @@ const getAccuracy = async (req, res, next) => {
     const today = zonedDayStart(new Date(), timezone);
     const thirtyDaysAgo = addZonedDays(today, -30, timezone);
 
-    const scored = await Forecast.find({
+    const window = {
       cafeId,
       date: { $gte: thirtyDaysAgo, $lt: today },
       accuracy: { $exists: true, $ne: null },
       actualsUpdatedAt: { $exists: true, $ne: null },
-    })
-      .sort({ date: -1 })
-      .select('date dateKey origin modelVersion accuracy totalPredictedRevenue actualRevenue actualTransactionCount actualsUpdatedAt')
-      .lean();
+    };
+    const [scored, excludedInsufficientDays] = await Promise.all([
+      Forecast.find({ ...window, 'availability.status': { $ne: 'insufficient_data' } })
+        .sort({ date: -1 })
+        .select('date dateKey origin modelVersion accuracy itemAccuracy totalPredictedRevenue actualRevenue actualTransactionCount actualsUpdatedAt')
+        .lean(),
+      Forecast.countDocuments({ ...window, 'availability.status': 'insufficient_data' }),
+    ]);
 
     // A backfilled day was scored against sales the model had not seen, so it
     // is a real measurement -- just a retrospective one. Anything that is not
@@ -394,10 +409,18 @@ const getAccuracy = async (req, res, next) => {
     // The day live scoring starts, so the UI can say what the estimate will be
     // replaced by and when.
     const earliestLive = live.length > 0 ? live[live.length - 1] : null;
+    const itemScored = chosen.filter((forecast) => Number.isFinite(forecast.itemAccuracy));
+    const avgItemAccuracy = itemScored.length > 0
+      ? parseFloat((itemScored.reduce((sum, forecast) => sum + forecast.itemAccuracy, 0) / itemScored.length).toFixed(1))
+      : null;
 
     return res.status(200).json({
       success: true,
       avgAccuracy: avgAccuracy !== null ? parseFloat(avgAccuracy.toFixed(1)) : null,
+      avgItemAccuracy,
+      itemAccuracyDays: itemScored.length,
+      excludedInsufficientDays,
+      basisNote: basis === 'backtest' ? BACKTEST_BASIS_NOTE : null,
       basis,
       liveCount: live.length,
       backtestCount: backtest.length,
@@ -514,7 +537,7 @@ const getHistory = async (req, res, next) => {
       rows.filter((row) => row.origin !== 'backfill')
     );
     const backtestAccuracy = summarizeHistoryAccuracy(
-      rows.filter((row) => row.origin === 'backfill')
+      rows.filter((row) => row.origin === 'backfill'), { note: BACKTEST_BASIS_NOTE }
     );
     const totalRows = rows.length;
     const totalPages = Math.max(Math.ceil(totalRows / limit), 1);

@@ -168,6 +168,8 @@ const forecastSchema = new mongoose.Schema(
     accuracy: {
       type: Number, // percentage, populated after actuals come in
     },
+    // Item-level accuracy (100 - WAPE); accuracy remains total-volume accuracy.
+    itemAccuracy: { type: Number },
     trainingData: {
       transactionCount: { type: Number, default: 0 },
       firstTransactionDate: { type: Date },
