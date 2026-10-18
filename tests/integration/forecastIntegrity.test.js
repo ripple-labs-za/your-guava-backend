@@ -161,6 +161,102 @@ describe('forecast generation integrity', () => {
     expect(stored.calibrationExcluded).toBe(true);
   });
 
+  it.each(['flat white', 'Old till label', 'Last till label'])('retains legacy %s forecast actuals through a rename', async (oldForecastName) => {
+    const aliases = oldForecastName === 'Last till label'
+      ? [...Array.from({ length: 49 }, (_, index) => `Till alias ${index}`), oldForecastName]
+      : ['Old till label'];
+    const created = await request.post('/api/items').set('Authorization', `Bearer ${token}`)
+      .send({ name: 'flat white', aliases, category: 'coffee' });
+    expect(created.status).toBe(201);
+    const itemId = created.body.item._id;
+    const otherItem = await request.post('/api/items').set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Already linked coffee', category: 'coffee' });
+    expect(otherItem.status).toBe(201);
+    const otherId = otherItem.body.item._id;
+    const yesterday = localDay(-1);
+    await Transaction.create({
+      cafeId: cafe._id, date: new Date(yesterday.getTime() + 10 * 3600 * 1000), hour: 10, dayOfWeek: 0,
+      status: 'approved', total: 420, items: [{ name: 'flat white', salesItemId: itemId, quantity: 14, unitPrice: 30 }],
+    });
+    const forecast = await Forecast.create({
+      cafeId: cafe._id, date: yesterday, generatedAt: new Date(), origin: 'live', signals: quietSignals,
+      items: [
+        { itemName: oldForecastName, predictedQty: 15, expectedQty: 15 },
+        { itemName: oldForecastName, salesItemId: otherId, predictedQty: 2, expectedQty: 2 },
+      ],
+      forecastCoverage: { itemCount: 2, storedItemCount: 2, totalPredictedQty: 17, includesAllRevenue: true },
+      totalPredictedRevenue: 510, actualRevenue: 420, actualsUpdatedAt: new Date(), accuracy: 80,
+    });
+    const otherCafe = await Cafe.create({ name: 'Unrelated forecast cafe', orgId: cafe.orgId, timezone: TZ });
+    const untouched = await Forecast.create({
+      cafeId: otherCafe._id, date: yesterday, generatedAt: new Date(), origin: 'live', signals: quietSignals,
+      items: [{ itemName: oldForecastName, predictedQty: 1, expectedQty: 1 }], totalPredictedRevenue: 30,
+    });
+    expect(forecast.items[0].salesItemId).toBeUndefined();
+
+    const renamed = await request.put(`/api/items/${itemId}`).set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Flat White' });
+    expect(renamed.status).toBe(200);
+    await forecastService._test.waitForMenuRefresh(cafe._id);
+
+    const stored = await Forecast.findById(forecast._id).lean();
+    expect(stored.items[0]).toEqual(expect.objectContaining({ itemName: 'Flat White', actualQty: 14, predictedQty: 15, expectedQty: 15 }));
+    expect(String(stored.items[0].salesItemId)).toBe(String(itemId));
+    expect(String(stored.items[1].salesItemId)).toBe(String(otherId));
+    expect(stored.items[1].predictedQty).toBe(2);
+    const foreign = await Forecast.findById(untouched._id).lean();
+    expect(foreign.items[0]).toEqual(expect.objectContaining({ itemName: oldForecastName, predictedQty: 1 }));
+    expect(foreign.items[0].salesItemId).toBeUndefined();
+  });
+
+  it('retains canonical ownership when two legacy forecast lines are merged', async () => {
+    const target = await request.post('/api/items').set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Cappuccino', category: 'coffee' });
+    const source = await request.post('/api/items').set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Capuccino', category: 'coffee' });
+    expect(target.status).toBe(201);
+    expect(source.status).toBe(201);
+    const targetId = target.body.item._id;
+    const sourceId = source.body.item._id;
+    const yesterday = localDay(-1);
+    await Transaction.create({
+      cafeId: cafe._id, date: new Date(yesterday.getTime() + 9 * 3600 * 1000), hour: 9, dayOfWeek: 0, status: 'approved', total: 390,
+      items: [
+        { name: 'Capuccino', salesItemId: sourceId, quantity: 4, unitPrice: 30 },
+        { name: 'Cappuccino', salesItemId: targetId, quantity: 9, unitPrice: 30 },
+      ],
+    });
+    const before = await Forecast.create({
+      cafeId: cafe._id, date: yesterday, generatedAt: new Date(), origin: 'live', signals: quietSignals,
+      items: [{ itemName: 'Capuccino', predictedQty: 5, expectedQty: 5 }, { itemName: 'Cappuccino', predictedQty: 10, expectedQty: 10 }],
+      forecastCoverage: { itemCount: 2, storedItemCount: 2, totalPredictedQty: 15, includesAllRevenue: true },
+      totalPredictedRevenue: 450, actualRevenue: 390, actualsUpdatedAt: new Date(), accuracy: 84.6,
+    });
+    const merged = await request.post(`/api/items/${sourceId}/resolve`).set('Authorization', `Bearer ${token}`)
+      .send({ action: 'map_to', targetItemId: targetId });
+    expect(merged.status).toBe(200);
+    await forecastService._test.waitForMenuRefresh(cafe._id);
+
+    const stored = await Forecast.findById(before._id).lean();
+    expect(stored.items.find((line) => String(line.salesItemId) === String(targetId)).actualQty).toBe(13);
+    expect(stored.items.find((line) => String(line.salesItemId) === String(sourceId)).actualQty).toBeNull();
+    expect(stored.items.map((line) => line.expectedQty)).toEqual([5, 10]);
+    expect(stored.calibrationExcluded).toBe(true);
+  });
+
+  it('replaces a raw legacy generation that has no inputsVersion', async () => {
+    const target = localDay(2);
+    await Forecast.collection.insertOne({
+      cafeId: cafe._id, date: target, generatedAt: new Date(0), origin: 'live', modelVersion: 'legacy', items: [], totalPredictedRevenue: 1,
+    });
+    expect((await Forecast.collection.findOne({ cafeId: cafe._id, date: target })).inputsVersion).toBeUndefined();
+    const generated = await forecastService.generateForecast(cafe._id, target, { origin: 'live' });
+    const stored = await Forecast.collection.find({ cafeId: cafe._id, date: target }).toArray();
+    expect(stored).toHaveLength(1);
+    expect(stored[0].modelVersion).toBe(forecastService.FORECAST_MODEL_VERSION);
+    expect(String(generated._id)).toBe(String(stored[0]._id));
+  });
+
   it('bumps the forecast inputs version on every invalidation path', async () => {
     const version = async () => (await Cafe.findById(cafe._id).lean()).forecastInputsVersion;
     const auth = { Authorization: `Bearer ${token}` };

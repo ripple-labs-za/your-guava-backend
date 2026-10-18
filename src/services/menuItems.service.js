@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
+const Forecast = require('../models/Forecast.model');
 const { inferItemCategory } = require('../utils/itemCategory');
 
 const MAX_CANONICAL_NAME_CHARS = 200;
@@ -587,6 +588,30 @@ const lineStatusFor = (item) => {
   return 'matched';
 };
 
+// Bind old forecasts before a rename or merge changes the sales names used by
+// legacy actuals. Canonical names win over aliases; a merge keeps the source
+// id so actuals can distinguish its excluded line from the target's owner.
+const stampLegacyForecastItemIds = async (cafeId, item, targetItem, session) => {
+  const sameItem = String(item._id) === String(targetItem._id);
+  if (sameItem && item.name === targetItem.name) return;
+  const bindings = sameItem
+    ? [[item, [item.name, targetItem.name, ...(item.aliases || [])]]]
+    : [[item, [item.name]], [targetItem, [targetItem.name]], [item, item.aliases || []], [targetItem, targetItem.aliases || []]];
+  for (const [owner, names] of bindings) {
+    // The old and new, individually capped alias lists can exceed one list's
+    // limit when combined. Keep every old spelling needed by these forecasts.
+    const rawNames = [...new Set(names.filter(Boolean))];
+    if (rawNames.length === 0) continue;
+    await Forecast.updateMany({
+      cafeId,
+      items: { $elemMatch: { salesItemId: null, itemName: { $in: rawNames } } },
+    }, { $set: { 'items.$[line].salesItemId': owner._id } }, {
+      arrayFilters: [{ 'line.salesItemId': null, 'line.itemName': { $in: rawNames } }],
+      ...(session ? { session } : {}),
+    });
+  }
+};
+
 /**
  * Points every sales line of `item` at `targetItem`. It used to set every line matched and drop its price variance,
  * so a notes-only edit cleared the item's price mismatches (BE-03-T10). Status is written first and only on the
@@ -594,6 +619,7 @@ const lineStatusFor = (item) => {
  * resolving it (confirm, link, ignore, a new menu price) or the target is ignored.
  */
 const updateTransactionMenuItemLinks = async (cafeId, item, targetItem = item, { clearPriceMismatch = false, session } = {}) => {
+  await stampLegacyForecastItemIds(cafeId, item, targetItem, session);
   const rawNames = uniqueStrings([item.name, ...(item.aliases || [])]);
   const lineOf = (alias) => ({
     $or: [
