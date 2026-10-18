@@ -1,11 +1,12 @@
 // Reconciliation: provider-response parsing, session claims and leases, failures, and the pending-payment sweeper.
 // Moved from billingPayments.service.js by BE-11-T04; successful settlement evicts only the paying organisation.
 const { clearApiCache } = require('../../middleware/cache.middleware');
+const mongoose = require('mongoose');
 const PaymentSession = require('../../models/PaymentSession.model');
 const paymentProvider = require('../paymentProvider.service');
 const { invalidateFutureForecastsForOrg } = require('./periods');
 const { normalizePaymentReference, invalidPaymentReference, paymentSessionNotFound } = require('./sessions');
-const { applyPlanPayment, applyCreditPayment } = require('./fulfilment');
+const { applyPlanPayment, applyCreditPayment, cardDetailsFromTransaction, revokeUnusedPackCredits } = require('./fulfilment');
 
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 const DEFAULT_RECONCILIATION_AGE_MS = 2 * 60 * 1000;
@@ -41,7 +42,7 @@ const isFailedTransaction = (transaction) => {
 const validateTransactionForSession = (paymentSession, transaction) => {
   if (!transaction) return false;
   const txReference = transaction.merchant_reference || transaction.reference;
-  const txAmount = Number(transaction.amount || 0);
+  const txAmount = Number(transaction.requestedAmount ?? transaction.amount ?? 0);
   const txCurrency = String(transaction.currency || transaction.currency_code || '').toUpperCase();
   return (
     txReference === paymentSession.reference &&
@@ -80,6 +81,77 @@ const sessionFieldsFromTransaction = (transaction) => ({
   providerReason: transaction?.reason,
   providerPayload: { transaction: safeProviderPayload(transaction) },
 });
+
+const observedFields = (transaction) => ({
+  providerStatus: transaction ? String(transaction.status || 'unknown').slice(0, 40) : 'not_found',
+  ...(transaction ? { providerPayload: { transaction: safeProviderPayload(transaction) } } : {}),
+});
+
+const holdForAttention = async (paymentSession, transaction, reason) => {
+  console.error(`[billing] payment ${paymentSession.reference} (org ${paymentSession.orgId}) needs manual attention: ${reason}`);
+  const held = await PaymentSession.findOneAndUpdate(
+    { _id: paymentSession._id, status: 'processing', processingStartedAt: paymentSession.processingStartedAt },
+    {
+      $set: {
+        ...observedFields(transaction), status: 'needs_attention', failedAt: new Date(),
+        providerReason: String(reason).slice(0, 500),
+      },
+      $unset: { processingStartedAt: 1 },
+    },
+    { new: true, runValidators: true }
+  );
+  return held || PaymentSession.findById(paymentSession._id);
+};
+
+/** Bind before granting: the unique provider/id index prevents a second session consuming the capture. */
+const bindProviderTransaction = async (paymentSession, transaction) => {
+  const id = providerTransactionId(transaction);
+  if (!id) return true;
+  try {
+    const bound = await PaymentSession.findOneAndUpdate(
+      { _id: paymentSession._id, status: 'processing', processingStartedAt: paymentSession.processingStartedAt },
+      { $set: { providerTransactionId: id } },
+      { new: true, runValidators: true }
+    );
+    if (!bound) throw new Error('Payment session changed while fulfillment was starting');
+    return true;
+  } catch (error) {
+    if (error?.code === 11000) return false;
+    throw error;
+  }
+};
+
+const reconcilePaidSession = async (paymentSession) => {
+  const transaction = await paymentProvider.providerForSession(paymentSession).lookupGatewayTransaction(paymentSession.reference);
+  const status = String(transaction?.status || '').toLowerCase();
+  if (status !== 'reversed') return paymentSession;
+  const session = await mongoose.startSession();
+  let reversed;
+  try {
+    // The status guard and withdrawal commit together, so a failed withdrawal remains retryable.
+    await session.withTransaction(async () => {
+      reversed = await PaymentSession.findOneAndUpdate(
+        { _id: paymentSession._id, status: 'paid' },
+        {
+          $set: {
+            status: 'reversed', reversedAt: new Date(), providerStatus: status,
+            providerReason: 'The provider reported this payment reversed (refund or chargeback)',
+          },
+        },
+        { new: true, runValidators: true, session }
+      );
+      if (reversed?.kind === 'credits') await revokeUnusedPackCredits(reversed, session);
+    });
+  } finally {
+    await session.endSession();
+  }
+  if (!reversed) return PaymentSession.findById(paymentSession._id);
+  console.error(
+    `[billing] payment ${reversed.reference} (org ${reversed.orgId}, ${reversed.kind}) was reversed by the provider;`,
+    reversed.kind === 'credits' ? 'unspent pack credits were withdrawn' : 'the plan period was left in place for manual review'
+  );
+  return reversed;
+};
 
 const claimPaymentSession = async (reference, webhookPayload, { orgId } = {}) => {
   // Defence in depth: even though callers normalise, this is the last point
@@ -174,11 +246,12 @@ const recordFulfillmentFailure = async (paymentSession, transaction, error) => {
   );
 };
 
-const releaseProcessingSession = (sessionId, processingStartedAt, status = 'pending', reason) =>
+const releaseProcessingSession = (sessionId, processingStartedAt, status = 'pending', reason, extraSet = {}) =>
   PaymentSession.findOneAndUpdate(
     { _id: sessionId, status: 'processing', processingStartedAt },
     {
       $set: {
+        ...extraSet,
         status,
         ...(reason ? { providerReason: String(reason).slice(0, 500) } : {}),
         ...(status === 'failed' || status === 'cancelled' ? { failedAt: new Date() } : {}),
@@ -194,7 +267,10 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
     webhookPayload,
     options
   );
-  if (!claimed) return paymentSession;
+  if (!claimed) {
+    if (options.recheckPaid && paymentSession?.status === 'paid') return reconcilePaidSession(paymentSession);
+    return paymentSession;
+  }
 
   let financialEffectApplied = false;
   try {
@@ -202,29 +278,46 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
       .providerForSession(paymentSession)
       .lookupGatewayTransaction(reference);
     if (!validateTransactionForSession(paymentSession, transaction)) {
+      if (transaction && isPaidTransaction(transaction)) {
+        const amount = Number(transaction.requestedAmount ?? transaction.amount ?? 0);
+        return holdForAttention(paymentSession, transaction,
+          `Captured payment did not match this session: expected R${Number(paymentSession.amount).toFixed(2)} ` +
+          `${paymentSession.currency || 'ZAR'} for ${paymentSession.reference}, provider reported R${amount.toFixed(2)} ` +
+          `${String(transaction.currency || '?').toUpperCase()} for ${transaction.merchant_reference || transaction.reference || '?'}`);
+      }
       await releaseProcessingSession(
         paymentSession._id,
         paymentSession.processingStartedAt,
         'pending',
-        'Provider transaction did not match payment session'
+        'Provider transaction did not match payment session',
+        observedFields(transaction)
       );
-      const err = new Error('Payment could not be verified with OneGate');
+      const err = new Error('Payment could not be verified with the provider yet');
       err.statusCode = 202;
       throw err;
     }
 
     if (isPaidTransaction(transaction)) {
+      if (!(await bindProviderTransaction(paymentSession, transaction))) {
+        return holdForAttention(paymentSession, transaction,
+          `Provider transaction ${providerTransactionId(transaction)} already settled another payment session`);
+      }
       let result;
       try {
         result = paymentSession.kind === 'plan'
           ? await applyPlanPayment(paymentSession, transaction)
-          : await applyCreditPayment(paymentSession);
+          : await applyCreditPayment(paymentSession, transaction);
       } catch (fulfillmentError) {
         await recordFulfillmentFailure(paymentSession, transaction, fulfillmentError)
           .catch(() => null);
         throw fulfillmentError;
       }
       financialEffectApplied = true;
+
+      const shown = cardDetailsFromTransaction(transaction, paymentSession.provider);
+      const card = shown?.brand || shown?.last4
+        ? { ...(shown.brand ? { brand: shown.brand } : {}), ...(shown.last4 ? { last4: shown.last4 } : {}) }
+        : null;
 
       const paid = await PaymentSession.findOneAndUpdate(
         {
@@ -237,6 +330,7 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
             ...sessionFieldsFromTransaction(transaction),
             status: 'paid',
             paidAt: new Date(),
+            ...(card ? { card } : {}),
           },
           $unset: { processingStartedAt: 1, failedAt: 1 },
         },
@@ -279,7 +373,9 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
     return releaseProcessingSession(
       paymentSession._id,
       paymentSession.processingStartedAt,
-      'pending'
+      'pending',
+      undefined,
+      observedFields(transaction)
     );
   } catch (error) {
     if (error.statusCode !== 202) {
@@ -307,6 +403,11 @@ const reconcilePendingOneGatePayments = async ({
   const expiredBefore = new Date(now.getTime() - PENDING_SESSION_TTL_MS);
   const hostedProviders = paymentProvider.hostedProviderNames();
 
+  await PaymentSession.updateMany(
+    { provider: { $in: hostedProviders }, status: 'pending', providerStatus: 'success', createdAt: { $lt: expiredBefore } },
+    { $set: { status: 'needs_attention', failedAt: now, providerReason: 'A captured payment was still unapplied after 24 hours' } }
+  );
+
   // Retire checkouts the customer abandoned. Nothing is lost by doing so: the
   // provider never recorded a transaction against them, and if one ever settles
   // late the return or webhook can still claim a cancelled session.
@@ -315,6 +416,7 @@ const reconcilePendingOneGatePayments = async ({
       provider: { $in: hostedProviders },
       status: 'pending',
       providerTransactionId: { $exists: false },
+      providerStatus: { $ne: 'success' },
       createdAt: { $lt: expiredBefore },
     },
     {
@@ -345,6 +447,8 @@ const reconcilePendingOneGatePayments = async ({
             createdAt: { $gte: expiredBefore },
           },
           { status: 'processing', processingStartedAt: { $lt: staleProcessingBefore } },
+          // A declined card can be retried on the same reference during the session's first day.
+          { status: 'failed', failedAt: { $lte: pendingBefore }, createdAt: { $gte: expiredBefore } },
         ],
       },
     ],
@@ -380,5 +484,5 @@ const reconcilePendingOneGatePayments = async ({
 
 module.exports = {
   isPaidTransaction, isFailedTransaction, validateTransactionForSession, claimPaymentSession, recordFulfillmentFailure, releaseProcessingSession,
-  reconcileOneGatePayment, reconcilePendingOneGatePayments,
+  reconcileOneGatePayment, reconcilePendingOneGatePayments, reconcilePaidSession,
 };

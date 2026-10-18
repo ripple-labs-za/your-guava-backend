@@ -612,19 +612,21 @@ const handlePaystackWebhook = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid signature' });
     }
 
-    const reference = normalizePaymentReference(req.body?.data?.reference);
+    const data = req.body?.data || {};
+    const reference = normalizePaymentReference(data.reference)
+      || normalizePaymentReference(data.transaction_reference)
+      || normalizePaymentReference(data.transaction?.reference);
     if (!reference) return res.status(200).json({ success: true });
 
-    // Acknowledge regardless of outcome so Paystack does not retry a payment
-    // this server has already recorded.
+    const event = typeof req.body?.event === 'string' ? req.body.event.slice(0, 64) : '';
     try {
-      await reconcileOneGatePayment(reference, {
-        reference,
-        status: req.body?.event,
+      await reconcileOneGatePayment(reference, { reference, status: event }, {
+        recheckPaid: /^(refund\.|charge\.dispute\.)/.test(event),
       });
     } catch (error) {
-      if (error?.statusCode !== 202) {
-        console.error('[billing] paystack webhook reconciliation failed:', error.message);
+      if (![202, 400, 404].includes(error?.statusCode)) {
+        console.error(`[billing] paystack webhook reconciliation failed for ${reference}:`, error.message);
+        return res.status(500).json({ success: false, message: 'Reconciliation failed; retry later' });
       }
     }
     return res.status(200).json({ success: true });

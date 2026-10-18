@@ -79,7 +79,7 @@ const authHeaders = () => ({
 const toSubunit = (amount) => Math.round(Number(amount || 0) * 100);
 const fromSubunit = (amount) => Number(amount || 0) / 100;
 
-const currency = () => (process.env.PAYSTACK_CURRENCY || 'ZAR').toUpperCase();
+const currency = () => (process.env.PAYSTACK_CURRENCY || 'ZAR').trim().toUpperCase();
 
 /**
  * Where Paystack sends the customer after payment. This points at the API
@@ -152,6 +152,27 @@ const createPaymentKey = async ({ reference, amount, customerReference, email })
  * billingPayments already reads from OneGate (status / successful / amount /
  * currency / merchant_reference / gateway_reference / reason).
  */
+const SETTLED_FAILURES = new Set(['failed', 'reversed']);
+const successFlag = (status) => {
+  if (status === 'success') return true;
+  return SETTLED_FAILURES.has(status) ? false : undefined;
+};
+
+const digits = (value, length) => new RegExp(`^\\d{${length}}$`).test(String(value ?? ''));
+
+/** Display metadata only; reusable provider credentials are never copied. */
+const cardFromAuthorization = (authorization) => {
+  if (!authorization || typeof authorization !== 'object') return undefined;
+  const brand = String(authorization.brand || authorization.card_type || '').trim().toLowerCase().slice(0, 32);
+  const card = {
+    ...(brand ? { brand } : {}),
+    ...(digits(authorization.last4, 4) ? { last4: String(authorization.last4) } : {}),
+    ...(digits(authorization.exp_month, 2) ? { exp_month: String(authorization.exp_month) } : {}),
+    ...(digits(authorization.exp_year, 4) ? { exp_year: String(authorization.exp_year) } : {}),
+  };
+  return card.brand || card.last4 ? card : undefined;
+};
+
 const lookupGatewayTransaction = async (reference) => {
   assertConfigured();
   try {
@@ -163,15 +184,20 @@ const lookupGatewayTransaction = async (reference) => {
     const txn = data?.data;
     if (!txn) return null;
 
+    const status = String(txn.status || '').toLowerCase();
+    const card = cardFromAuthorization(txn.authorization);
     return {
+      id: txn.id != null ? String(txn.id) : undefined,
       status: txn.status,
-      successful: txn.status === 'success',
+      successful: successFlag(status),
       amount: fromSubunit(txn.amount),
+      ...(txn.requested_amount != null ? { requestedAmount: fromSubunit(txn.requested_amount) } : {}),
       currency: txn.currency,
       merchant_reference: txn.reference,
       reference: txn.reference,
       gateway_reference: txn.id ? String(txn.id) : undefined,
       reason: txn.gateway_response,
+      ...(card ? { authorization: card } : {}),
     };
   } catch (error) {
     // An unknown reference is a legitimate "nothing settled yet", not a fault.

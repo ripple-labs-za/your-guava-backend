@@ -125,6 +125,11 @@ const validateEnv = () => {
     errors.push('BCRYPT_ROUNDS cannot be below 10 outside development and test');
   }
 
+  const paystackCurrency = (process.env.PAYSTACK_CURRENCY || '').trim().toUpperCase();
+  if (paystackCurrency && paystackCurrency !== 'ZAR') {
+    errors.push('PAYSTACK_CURRENCY must be ZAR (payment sessions are priced in ZAR)');
+  }
+
   if (isProduction) {
     if ((process.env.JWT_SECRET || '').length < 32) {
       errors.push('JWT_SECRET must be at least 32 characters in production');

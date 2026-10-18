@@ -1,3 +1,4 @@
+const { verifyResponse } = require('../fixtures/paystack');
 const axios = require('axios');
 const paystack = require('../../src/services/paystack.service');
 const paymentProvider = require('../../src/services/paymentProvider.service');
@@ -14,6 +15,7 @@ describe('paystack.service', () => {
     process.env.CLIENT_URL = 'http://localhost:5174';
     process.env.API_PUBLIC_URL = '';
     process.env.PORT = '5055';
+    process.env.PAYSTACK_CURRENCY = 'ZAR';
   });
 
   afterAll(() => {
@@ -21,6 +23,14 @@ describe('paystack.service', () => {
   });
 
   describe('createPaymentKey', () => {
+    it('uses the normalized ZAR currency accepted by startup validation', async () => {
+      process.env.PAYSTACK_CURRENCY = ' zar ';
+      axios.post.mockResolvedValue({
+        data: { status: true, data: { authorization_url: 'https://checkout.paystack.com/fixture', access_code: 'fixture' } },
+      });
+      await paystack.createPaymentKey({ reference: 'CURRENCY1', amount: 99, email: 'owner@fixture.example' });
+      expect(axios.post.mock.calls[0][1].currency).toBe('ZAR');
+    });
     it('sends the amount in cents and returns the hosted checkout url', async () => {
       axios.post.mockResolvedValue({
         data: {
@@ -87,6 +97,42 @@ describe('paystack.service', () => {
   });
 
   describe('lookupGatewayTransaction', () => {
+    it.each(['abandoned', 'ongoing', 'pending', 'processing', 'queued'])(
+      'leaves a %s transaction undecided so the session stays pending',
+      async (status) => {
+        axios.get.mockResolvedValue({ data: verifyResponse(status, { reference: 'R1', amountRand: 99 }) });
+        const txn = await paystack.lookupGatewayTransaction('R1');
+        expect(txn.status).toBe(status);
+        expect(txn.successful).toBeUndefined();
+      }
+    );
+
+    it('marks a reversed transaction as unsuccessful', async () => {
+      axios.get.mockResolvedValue({ data: verifyResponse('reversed', { reference: 'R1', amountRand: 99 }) });
+      expect((await paystack.lookupGatewayTransaction('R1')).successful).toBe(false);
+    });
+
+    it('carries the Paystack transaction id so one transaction cannot settle two sessions', async () => {
+      axios.get.mockResolvedValue({ data: verifyResponse('success', { reference: 'R1', amountRand: 99, id: 998877 }) });
+      expect((await paystack.lookupGatewayTransaction('R1')).id).toBe('998877');
+    });
+
+    it('keeps card brand, last4 and expiry, and never the reusable authorization code or BIN', async () => {
+      axios.get.mockResolvedValue({ data: verifyResponse('success', { reference: 'R1', amountRand: 99 }) });
+      const txn = await paystack.lookupGatewayTransaction('R1');
+      expect(txn.authorization).toEqual({ brand: 'visa', last4: '4081', exp_month: '12', exp_year: '2030' });
+      expect(JSON.stringify(txn)).not.toMatch(/AUTH_|SIG_|408408|CUS_/);
+    });
+
+    it('reports the requested amount separately when the customer paid the fees', async () => {
+      axios.get.mockResolvedValue({
+        data: verifyResponse('success', { reference: 'R1', amountRand: 101.73, requestedRand: 99 }),
+      });
+      const txn = await paystack.lookupGatewayTransaction('R1');
+      expect(txn.amount).toBe(101.73);
+      expect(txn.requestedAmount).toBe(99);
+    });
+
     it('normalises a successful verify onto the shape billing already reads', async () => {
       axios.get.mockResolvedValue({
         data: {

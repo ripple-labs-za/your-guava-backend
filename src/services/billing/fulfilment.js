@@ -9,7 +9,7 @@ const { bonusUsedForCredits } = require('../usage.service');
 const { planChangeForPayment, isScheduledChange, planChangeIsDue, invalidateFutureForecastsForOrg } = require('./periods');
 const { normalizePaymentIdempotencyKey, generateReference, paymentRequestFingerprint } = require('./sessions');
 
-const cardDetailsFromTransaction = (transaction) => {
+const cardDetailsFromTransaction = (transaction, provider) => {
   // Paystack reports the card under `authorization` with discrete fields.
   // OneGate returns a masked PAN inside its gateway response parameters, so the
   // brand and last four have to be picked out of loose strings.
@@ -17,10 +17,14 @@ const cardDetailsFromTransaction = (transaction) => {
   if (authorization?.last4 || authorization?.brand) {
     const brand = String(authorization.brand || '').trim().toLowerCase();
     const last4 = String(authorization.last4 || '').trim();
+    const expiresAt = authorization.exp_month && authorization.exp_year
+      ? `${String(authorization.exp_month).padStart(2, '0')}/${String(authorization.exp_year).slice(-2)}`
+      : undefined;
     return {
       ...(brand ? { brand } : {}),
       ...(last4 ? { last4 } : {}),
-      provider: paymentProvider.providerName() || 'paystack',
+      ...(expiresAt ? { expiresAt } : {}),
+      provider: provider || paymentProvider.providerName() || 'paystack',
     };
   }
 
@@ -37,7 +41,7 @@ const cardDetailsFromTransaction = (transaction) => {
   return {
     ...(brand ? { brand } : {}),
     ...(last4 ? { last4 } : {}),
-    provider: paymentProvider.providerName() || 'onegate',
+    provider: provider || paymentProvider.providerName() || 'onegate',
   };
 };
 
@@ -146,7 +150,7 @@ const applyPlanPayment = async (paymentSession, transaction) => {
     if (pending?.reference && pending.reference !== paymentSession.reference) throw planChangeConflictError(pending);
 
     const change = planChangeForPayment(org, paymentSession, now);
-    const paymentMethod = cardDetailsFromTransaction(transaction);
+    const paymentMethod = cardDetailsFromTransaction(transaction, paymentSession.provider);
     const update = isScheduledChange(change)
       ? scheduledChangeUpdate(change, paymentSession, paymentMethod, now)
       : immediateChangeUpdate(org, change, paymentMethod, now);
@@ -214,13 +218,15 @@ const applyDuePlanChange = async (org, now = new Date()) => {
   throw new Error('Could not apply scheduled plan change after concurrent billing updates');
 };
 
-const applyCreditPayment = async (paymentSession) => {
+const applyCreditPayment = async (paymentSession, transaction) => {
+  const paymentMethod = cardDetailsFromTransaction(transaction, paymentSession.provider);
   const org = await Organization.findOneAndUpdate(
     {
       _id: paymentSession.orgId,
       fulfilledPaymentReferences: { $ne: paymentSession.reference },
     },
     {
+      ...(paymentMethod ? { $set: { paymentMethod } } : {}),
       $inc: {
         'aiCredits.bonus': Math.max(0, Number(paymentSession.credits) || 0),
         __v: 1,
@@ -306,6 +312,23 @@ const fulfilMockCreditPurchase = async ({ org, userId, credits, amount, idempote
   return { org: updated, session, applied };
 };
 
+/** Spent credits remain spent; withdraw only as much of the reversed pack as is still available. */
+const revokeUnusedPackCredits = (paymentSession, session) => Organization.updateOne(
+  { _id: paymentSession.orgId },
+  [{
+    $set: {
+      'aiCredits.bonus': {
+        $max: [
+          { $ifNull: ['$aiCredits.bonusUsed', 0] },
+          { $subtract: [{ $ifNull: ['$aiCredits.bonus', 0] }, Math.max(0, Number(paymentSession.credits) || 0)] },
+        ],
+      },
+      __v: { $add: [{ $ifNull: ['$__v', 0] }, 1] },
+    },
+  }],
+  { session }
+);
+
 module.exports = {
-  cardDetailsFromTransaction, applyDuePlanChange, applyPlanPayment, applyCreditPayment, fulfilMockCreditPurchase,
+  cardDetailsFromTransaction, applyDuePlanChange, applyPlanPayment, applyCreditPayment, fulfilMockCreditPurchase, revokeUnusedPackCredits,
 };

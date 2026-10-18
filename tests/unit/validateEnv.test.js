@@ -17,6 +17,7 @@ const KEYS = [
   'ONEGATE_API_URL',
   'PAYSTACK_SECRET_KEY',
   'PAYSTACK_API_URL',
+  'PAYSTACK_CURRENCY',
   'API_PUBLIC_URL',
   'BILLING_MOCK_ENABLED',
   'TOKEN_ENCRYPTION_KEY',
@@ -92,6 +93,17 @@ const setProductionPaystackEnv = () => {
 };
 
 describe('validateEnv', () => {
+  it('rejects a Paystack currency other than ZAR', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.JWT_SECRET = 'dev-secret';
+    process.env.JWT_REFRESH_SECRET = 'dev-refresh-secret';
+    process.env.MONGODB_URI = 'mongodb://localhost:27199/guava-test';
+    process.env.CLIENT_URL = 'http://localhost:5185';
+    process.env.PAYSTACK_CURRENCY = 'NGN';
+    expect(() => validateEnv()).toThrow(/PAYSTACK_CURRENCY must be ZAR/);
+    process.env.PAYSTACK_CURRENCY = 'zar';
+    expect(() => validateEnv()).not.toThrow();
+  });
   let env;
 
   beforeEach(() => {

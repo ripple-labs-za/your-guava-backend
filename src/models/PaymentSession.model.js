@@ -55,7 +55,8 @@ const paymentSessionSchema = new mongoose.Schema(
       // applied. It is terminal on purpose: retrying forever hides money that
       // was taken with nothing delivered, so the session stops rotating through
       // the sweeper and waits for a person instead.
-      enum: ['pending', 'processing', 'paid', 'failed', 'cancelled', 'needs_attention'],
+      // A reversed capture is terminal and is never claimed for fulfilment again.
+      enum: ['pending', 'processing', 'paid', 'failed', 'cancelled', 'needs_attention', 'reversed'],
       default: 'pending',
       index: true,
     },
@@ -109,6 +110,12 @@ const paymentSessionSchema = new mongoose.Schema(
     },
     paidAt: {
       type: Date,
+    },
+    reversedAt: { type: Date },
+    // Display metadata only.
+    card: {
+      type: new mongoose.Schema({ brand: String, last4: String }, { _id: false }),
+      default: undefined,
     },
     failedAt: {
       type: Date,
