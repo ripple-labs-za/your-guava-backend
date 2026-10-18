@@ -256,6 +256,31 @@ describe('same-key answer settlement waits', () => {
     expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(3);
   });
 
+  it('lets concurrent waiters replay the one replacement run after an in-flight refund', async () => {
+    const owner = await createTestUser();
+    const held = await reserveHeld(owner, 'multiple-refund-waiters');
+    let finishReplacement;
+    const run = jest.fn(() => new Promise((resolve) => { finishReplacement = resolve; }));
+    const waiters = Array.from({ length: 3 }, () => meterGuavaCredits({
+      orgId: owner.user.orgId, userId: owner.user.id, featureKey: 'ask_guava_chat',
+      idempotencyKey: 'multiple-refund-waiters', awaitInFlightMs: 5_000, run,
+    }).then((result) => ({ result }), (error) => ({ error })));
+    // Let every waiter encounter the original reserved row before it is refunded.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    held.rejectRun(new Error('original failed before delivery'));
+    await held.settled;
+    await waitFor(() => finishReplacement);
+    // Losing waiters must keep waiting through the replacement reservation.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    finishReplacement({ answer: 'one replacement answer' });
+    const outcomes = await Promise.all(waiters);
+    expect(outcomes.map((outcome) => outcome.error)).toEqual([undefined, undefined, undefined]);
+    expect(outcomes.map((outcome) => outcome.result.result.answer)).toEqual(Array(3).fill('one replacement answer'));
+    expect(outcomes.filter((outcome) => outcome.result.replayed)).toHaveLength(2);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(3);
+  });
+
   it('stops waiting on client abort without taking a new reservation', async () => {
     const owner = await createTestUser();
     const held = await reserveHeld(owner, 'wait-cancel');
