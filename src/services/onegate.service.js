@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { outboundGet, outboundPost, isOutboundTimeout } = require('../utils/http');
+const { outboundGet, outboundPost, toUpstreamError } = require('../utils/http');
 
 const DEFAULT_BASE_URL = 'https://payments.onegate.co.za';
 const OFFICIAL_ONEGATE_HOSTS = new Set(['payments.onegate.co.za']);
@@ -125,12 +125,7 @@ const createPaymentKey = async ({ reference, amount, customerReference }) => {
       },
     }));
   } catch (error) {
-    if (isOutboundTimeout(error)) throw error;
-    const providerMessage = error.response?.data?.message || error.response?.data?.name;
-    const err = new Error(providerMessage ? `OneGate checkout failed: ${providerMessage}` : error.message);
-    err.statusCode = error.response?.status || 502;
-    err.details = { provider: 'onegate' };
-    throw err;
+    throw toUpstreamError('onegate', error);
   }
 
   if (!data?.key || !data?.url) {
@@ -147,10 +142,15 @@ const lookupGatewayTransaction = async (reference) => {
   const config = getConfig();
   assertConfigured();
 
-  const { data } = await outboundGet('onegate', `${config.baseUrl}/api/v2/gateway-transaction/`, {
-    params: { reference },
-    headers: buildAuthHeaders(),
-  });
+  let data;
+  try {
+    ({ data } = await outboundGet('onegate', `${config.baseUrl}/api/v2/gateway-transaction/`, {
+      params: { reference },
+      headers: buildAuthHeaders(),
+    }));
+  } catch (error) {
+    throw toUpstreamError('onegate', error);
+  }
 
   if (Array.isArray(data)) return data[0] || null;
   return data || null;

@@ -181,7 +181,40 @@ const s3ClientTimeoutConfig = (service = 'r2') => {
   };
 };
 
+const MAX_UPSTREAM_MESSAGE_CHARS = 200;
+
+/**
+ * A provider failure as this API reports it: 502 with a code and a fixed sentence for the customer; the
+ * provider's status and text go to the log only (error.middleware logs upstreamStatus/upstreamMessage).
+ * Mirrors asUpstreamAiError for the AI client. A timeout keeps its own 504.
+ */
+const toUpstreamError = (service, error) => {
+  if (isOutboundTimeout(error)) return error;
+  const { label } = outboundPolicy(service);
+  const status = Number.isInteger(error?.response?.status) ? error.response.status : null;
+  const publicCode = status == null
+    ? 'UPSTREAM_UNREACHABLE'
+    : status === 401 || status === 403 ? 'UPSTREAM_AUTH_FAILED' : 'UPSTREAM_ERROR';
+  const wrapped = new Error(publicCode === 'UPSTREAM_UNREACHABLE'
+    ? `${label} could not be reached. Please try again in a minute.`
+    : `${label} could not complete the request. Please try again in a minute.`);
+  const body = error?.response?.data;
+  const detail = body?.error_description || body?.message || body?.error || error?.code || error?.message || '';
+  return Object.assign(wrapped, {
+    name: 'UpstreamError',
+    statusCode: 502,
+    code: publicCode,
+    publicCode,
+    exposeMessage: true,
+    service,
+    upstreamStatus: status,
+    upstreamMessage: String(detail).slice(0, MAX_UPSTREAM_MESSAGE_CHARS) || null,
+    cause: error,
+  });
+};
+
 module.exports = {
+  toUpstreamError,
   OUTBOUND_SERVICES,
   outboundPolicy,
   withDeadline,

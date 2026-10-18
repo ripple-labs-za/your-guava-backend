@@ -3,6 +3,7 @@ const errorMiddleware = require('../../src/middleware/error.middleware');
 
 const createResponse = () => {
   const response = {
+    headersSent: false,
     status: jest.fn(),
     json: jest.fn(),
   };
@@ -237,4 +238,90 @@ it('logs an error\'s logContext as context and never sends it to the client', ()
   );
   expect(logSpy.mock.calls[0][1].context).toMatchObject({ code: 'ENOSPC' });
   expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('ENOSPC');
+});
+
+describe('provider status boundary', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  afterEach(() => { process.env.NODE_ENV = originalNodeEnv; jest.restoreAllMocks(); });
+it('answers an upstream axios 401 with 502 so the portal never reads it as its own session expiring', () => {
+  jest.spyOn(logger, 'error').mockImplementation(() => {});
+  const response = createResponse();
+  errorMiddleware(
+    Object.assign(new Error('Request failed with status code 401'), {
+      isAxiosError: true,
+      status: 401,
+      response: { status: 401, data: { message: 'bad merchant salt' } },
+    }),
+    { id: 'request-11', method: 'POST', path: '/api/account/checkout' },
+    response,
+    jest.fn()
+  );
+  expect(response.status).toHaveBeenCalledWith(502);
+});
+
+it('ignores a bare err.status the application did not set', () => {
+  jest.spyOn(logger, 'error').mockImplementation(() => {});
+  const response = createResponse();
+  errorMiddleware(Object.assign(new Error('library said 401'), { status: 401 }),
+    { method: 'GET', path: '/api/example' }, response, jest.fn());
+  expect(response.status).toHaveBeenCalledWith(500);
+});
+
+it('keeps an http-errors status such as the body parser 413', () => {
+  const response = createResponse();
+  errorMiddleware(
+    Object.assign(new Error('request entity too large'), {
+      status: 413, statusCode: 413, expose: true, type: 'entity.too.large',
+    }),
+    { method: 'POST', path: '/api/example' }, response, jest.fn()
+  );
+  expect(response.status).toHaveBeenCalledWith(413);
+});
+
+it('falls back to 500 for a non-numeric or out-of-range statusCode', () => {
+  jest.spyOn(logger, 'error').mockImplementation(() => {});
+  for (const statusCode of ['401', 999, 302, 12.5]) {
+    const response = createResponse();
+    errorMiddleware(Object.assign(new Error('odd'), { statusCode }),
+      { method: 'GET', path: '/api/example' }, response, jest.fn());
+    expect(response.status).toHaveBeenCalledWith(500);
+  }
+});
+
+it('hands the error to Express when the response has already started', () => {
+  const response = { ...createResponse(), headersSent: true };
+  const next = jest.fn();
+  const error = new Error('stream broke');
+  errorMiddleware(error, { method: 'GET', path: '/api/example' }, response, next);
+  expect(next).toHaveBeenCalledWith(error);
+  expect(response.status).not.toHaveBeenCalled();
+});
+
+it('returns the public code of a wrapped upstream error in production', () => {
+  process.env.NODE_ENV = 'production';
+  jest.spyOn(logger, 'error').mockImplementation(() => {});
+  const response = createResponse();
+  errorMiddleware(
+    Object.assign(new Error('OneGate could not complete the request. Please try again in a minute.'), {
+      statusCode: 502, publicCode: 'UPSTREAM_AUTH_FAILED', exposeMessage: true,
+      upstreamStatus: 401, upstreamMessage: 'bad merchant salt',
+    }),
+    { id: 'request-12', method: 'POST', path: '/api/account/checkout' },
+    response,
+    jest.fn()
+  );
+  expect(response.json).toHaveBeenCalledWith({
+    success: false,
+    message: 'OneGate could not complete the request. Please try again in a minute.',
+    code: 'UPSTREAM_AUTH_FAILED',
+    requestId: 'request-12',
+  });
+});
+
+  it.each([null, 'library threw a string', { status: 401, name: 'APIError' }])('handles arbitrary thrown values %p', (error) => {
+    jest.spyOn(logger, 'error').mockImplementation(() => {});
+    const res = createResponse();
+    expect(() => errorMiddleware(error, { method: 'POST', path: '/example' }, res, jest.fn())).not.toThrow();
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
 });

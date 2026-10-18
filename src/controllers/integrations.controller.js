@@ -81,7 +81,7 @@ const list = async (req, res, next) => {
  * Returns the provider's OAuth authorize URL. The frontend should redirect
  * the user to this URL to begin the OAuth flow.
  */
-const getAuthUrl = async (req, res, _next) => {
+const getAuthUrl = async (req, res, next) => {
   try {
     if (!accountingIntegrationsEnabled()) return unavailable(res);
 
@@ -101,11 +101,10 @@ const getAuthUrl = async (req, res, _next) => {
     const url = service.buildAuthorizeUrl(state);
     return res.status(200).json({ success: true, url });
   } catch (error) {
-    return res.status(isConfigError(error) ? 503 : 500).json({
-      success: false,
-      code: isConfigError(error) ? 'INTEGRATION_NOT_CONFIGURED' : 'INTEGRATION_AUTH_URL_FAILED',
-      message: error.message,
-    });
+    if (isConfigError(error)) {
+      return res.status(503).json({ success: false, code: 'INTEGRATION_NOT_CONFIGURED', message: error.message });
+    }
+    return next(error);
   }
 };
 
