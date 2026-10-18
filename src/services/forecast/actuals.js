@@ -1,3 +1,4 @@
+const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Actuals scoring and the refresh a menu change triggers.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
@@ -260,9 +261,9 @@ const scheduleForecastRefreshAfterMenuChange = async (cafeId) => {
   if (!timezone) return;
   const refresh = runCoalescedMenuRefresh(cafeId, () => refreshHistoricalActualsAfterMenuChange(cafeId, timezone));
   if (backgroundJobsInline()) await refresh;
-  else refresh.catch((error) => {
-      logger.error('forecast_menu_refresh_failed', { cafeId: String(cafeId), ...logger.errorFields(error) });
-  });
+  else trackBackground('menu_change_actuals_refresh', refresh.catch((error) => {
+    logger.error('forecast_menu_refresh_failed', { cafeId: String(cafeId), ...logger.errorFields(error) });
+  }));
 };
 
 module.exports = {

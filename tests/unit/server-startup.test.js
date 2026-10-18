@@ -1,3 +1,4 @@
+process.env.LOG_LEVEL = 'silent';
 const { EventEmitter } = require('events');
 
 const mockListen = jest.fn();
@@ -60,6 +61,7 @@ jest.mock('../../src/services/usage.service', () => ({
 jest.mock('../../src/services/billing/reminders', () => ({ runBillingReminders: mockBillingReminders }));
 
 describe('server startup cleanup', () => {
+  afterEach(() => jest.restoreAllMocks());
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
@@ -172,4 +174,177 @@ describe('server startup cleanup', () => {
     await shutdown();
     expect(getEventLoopStats().running).toBe(false);
   });
+  const makeListeningServer = () => {
+    const server = new EventEmitter();
+    server.listening = true;
+    server.off = server.removeListener.bind(server);
+    server.closeIdleConnections = jest.fn();
+    server.closeAllConnections = jest.fn();
+    return server;
+  };
+  const listenWith = (server) =>
+    mockListen.mockImplementationOnce(() => {
+      queueMicrotask(() => server.emit('listening'));
+      return server;
+    });
+  const nextTick = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('drains in-flight requests and registered background work before disconnecting Mongo', async () => {
+    const server = makeListeningServer();
+    let finishInFlight;
+    server.close = (callback) => { finishInFlight = callback; };
+    listenWith(server);
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    let finishJob;
+    let stopping;
+    try {
+      const { start, shutdown } = require('../../src/server');
+      const lifecycle = require('../../src/utils/lifecycle');
+      await start();
+
+      lifecycle.runInBackground('menu_change_refresh', () => new Promise((resolve) => { finishJob = resolve; }));
+      stopping = shutdown('SIGTERM', { exitProcess: true });
+      await nextTick();
+
+      expect(lifecycle.isDraining()).toBe(true);
+      expect(mockDisconnect).not.toHaveBeenCalled();
+      finishInFlight();
+      await nextTick();
+      expect(mockDisconnect).not.toHaveBeenCalled();
+      finishJob();
+      await stopping;
+      expect(mockDisconnect).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      finishInFlight?.();
+      finishJob?.();
+      await stopping;
+      exit.mockRestore();
+    }
+  });
+
+  it('escalates a crash during an existing graceful drain without disconnecting twice', async () => {
+    const server = makeListeningServer();
+    let finishRequest;
+    server.close = jest.fn((callback) => { finishRequest = callback; });
+    listenWith(server);
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    let stopping;
+    try {
+      const { start, shutdown, installProcessHandlers } = require('../../src/server');
+      jest.spyOn(require('../../src/utils/logger'), 'fatal').mockImplementation(() => {});
+      await start();
+      stopping = shutdown('SIGTERM', { exitProcess: true });
+      const proc = new EventEmitter();
+      proc.exit = jest.fn();
+      installProcessHandlers({ proc });
+      installProcessHandlers({ proc });
+      expect(proc.listenerCount('unhandledRejection')).toBe(1);
+      proc.emit('unhandledRejection', new Error('crash while draining'));
+      finishRequest();
+      await stopping;
+      expect(exit).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(server.close).toHaveBeenCalledTimes(1);
+      expect(mockDisconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      finishRequest?.();
+      await stopping;
+      exit.mockRestore();
+    }
+  });
+
+  it('forces connections closed and exits 1 when draining outlives SHUTDOWN_TIMEOUT_MS', async () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate', 'nextTick'] });
+    process.env.SHUTDOWN_TIMEOUT_MS = '1000';
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    try {
+      const server = makeListeningServer();
+      server.close = () => {};
+      listenWith(server);
+      const { start, shutdown } = require('../../src/server');
+      await start();
+      const stopping = shutdown('SIGTERM', { exitProcess: true });
+      await jest.advanceTimersByTimeAsync(1000);
+      await stopping;
+      expect(server.closeAllConnections).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      exit.mockRestore();
+      delete process.env.SHUTDOWN_TIMEOUT_MS;
+      jest.useRealTimers();
+    }
+  });
+
+  it('gives up on index initialisation after INDEX_INIT_TIMEOUT_MS instead of hanging the deploy', async () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate', 'nextTick'] });
+    process.env.INDEX_INIT_TIMEOUT_MS = '10000';
+    try {
+      mockPaymentInit.mockReturnValue(new Promise(() => {}));
+      const { start } = require('../../src/server');
+      const started = start();
+      const assertion = expect(started).rejects.toMatchObject({ code: 'INDEX_INIT_TIMEOUT' });
+      await jest.advanceTimersByTimeAsync(10000);
+      await assertion;
+      expect(mockListen).not.toHaveBeenCalled();
+      expect(mockDisconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.INDEX_INIT_TIMEOUT_MS;
+      jest.useRealTimers();
+    }
+  });
+
+  it('logs an unhandled rejection as one fatal event and shuts down with exit code 1', async () => {
+    const { installProcessHandlers } = require('../../src/server');
+    const logger = require('../../src/utils/logger');
+    const fatal = jest.spyOn(logger, 'fatal').mockImplementation(() => {});
+    const proc = new EventEmitter();
+    proc.exit = jest.fn();
+    const shutdownFn = jest.fn().mockResolvedValue(undefined);
+    installProcessHandlers({ proc, shutdownFn });
+
+    proc.emit('unhandledRejection', new Error('detached job blew up'));
+    // The handler logs synchronously and starts the shutdown on a later microtask.
+    await nextTick();
+
+    expect(fatal).toHaveBeenCalledWith(
+      'process_unhandled_rejection',
+      expect.objectContaining({ errorMessage: 'detached job blew up' })
+    );
+    expect(shutdownFn).toHaveBeenCalledWith('unhandled_rejection', { exitProcess: true, exitCode: 1 });
+  });
+
+  it('treats an uncaught exception the same way', async () => {
+    const { installProcessHandlers } = require('../../src/server');
+    const logger = require('../../src/utils/logger');
+    const fatal = jest.spyOn(logger, 'fatal').mockImplementation(() => {});
+    const proc = new EventEmitter();
+    proc.exit = jest.fn();
+    const shutdownFn = jest.fn().mockResolvedValue(undefined);
+    installProcessHandlers({ proc, shutdownFn });
+
+    proc.emit('uncaughtException', new TypeError('cannot read properties of undefined'));
+    await nextTick();
+
+    expect(fatal).toHaveBeenCalledWith(
+      'process_uncaught_exception',
+      expect.objectContaining({ errorName: 'TypeError' })
+    );
+    expect(shutdownFn).toHaveBeenCalledWith('uncaught_exception', { exitProcess: true, exitCode: 1 });
+  });
+
+  it('still exits 1 when the graceful shutdown after a crash fails', async () => {
+    const { installProcessHandlers } = require('../../src/server');
+    const logger = require('../../src/utils/logger');
+    jest.spyOn(logger, 'fatal').mockImplementation(() => {});
+    const proc = new EventEmitter();
+    proc.exit = jest.fn();
+    installProcessHandlers({ proc, shutdownFn: jest.fn().mockRejectedValue(new Error('disconnect hung')) });
+
+    proc.emit('unhandledRejection', 'a string, not an Error');
+    await nextTick();
+
+    expect(proc.exit).toHaveBeenCalledWith(1);
+  });
+
 });

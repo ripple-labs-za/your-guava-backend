@@ -1,3 +1,4 @@
+const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Insights: the cache, the refresh lease and de-duplication, and generation.
 // Renewed leases and completed-day windows keep paid refreshes honest.
@@ -313,10 +314,10 @@ const claimRefreshLease = async ({ cafeId, token, leaseMs }) => {
 /** Renews the lease every third of its length while the holder runs; returns the stop function. */
 const startLeaseHeartbeat = ({ cafeId, token, leaseMs }) => {
   const timer = setInterval(() => {
-    GeneratedInsight.updateOne(
+    trackBackground('insight_lease_renewal', GeneratedInsight.updateOne(
       { cafeId, 'refreshLease.token': token },
       { $set: { 'refreshLease.expiresAt': new Date(Date.now() + leaseMs) } }
-    ).catch((error) => logger.error('insight_lease_renewal_failed', logger.errorFields(error)));
+    ).catch((error) => logger.error('insight_lease_renewal_failed', logger.errorFields(error))));
   }, Math.max(250, Math.floor(leaseMs / 3)));
   timer.unref?.();
   return () => clearInterval(timer);

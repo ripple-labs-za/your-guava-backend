@@ -1,3 +1,4 @@
+const { runInBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // PATCH /uploads/:id/mapping: re-import an upload under a new mapping.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
@@ -145,8 +146,8 @@ const remap = async (req, res, next) => {
     const queued = [...plan.deferred, ...readmitted.stale];
     if (queued.length > 0) {
       await readmission.queueReadmission(queued, plan.range, upload._id);
-      setImmediate(() => {
-        recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
+      runInBackground('upload_readmission_remap', () => {
+        return recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
           logger.error('upload_readmission_kick_failed', logger.errorFields(error));
         });
       });

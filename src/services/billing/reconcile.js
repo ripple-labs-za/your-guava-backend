@@ -1,3 +1,4 @@
+const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Reconciliation: provider-response parsing, session claims and leases, failures, and the pending-payment sweeper.
 // Moved from billingPayments.service.js by BE-11-T04; successful settlement evicts only the paying organisation.
@@ -341,9 +342,9 @@ const reconcilePayment = async (reference, webhookPayload = null, options = {}) 
       if (!paid) throw new Error('Payment session changed while fulfillment was completing');
 
       if (result.planChanged) {
-        invalidateFutureForecastsForOrg(paymentSession.orgId).catch((error) => {
+        trackBackground('payment_forecast_invalidation', invalidateFutureForecastsForOrg(paymentSession.orgId).catch((error) => {
           logger.error('forecast_invalidation_failed', { orgId: String(paymentSession.orgId), ...logger.errorFields(error) });
-        });
+        }));
       }
       // Only the transition to paid evicts; callback replays return before this branch.
       clearApiCache({ orgId: paymentSession.orgId });

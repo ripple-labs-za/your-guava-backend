@@ -1,3 +1,4 @@
+const { runInBackground } = require('./lifecycle');
 const logger = require('./logger');
 /**
  * Work that must not decide how long a response takes (identity-4): the handler answers first and the task runs on a later
@@ -7,12 +8,13 @@ const logger = require('./logger');
 const pending = new Set();
 
 const runAfterResponse = (label, task) => {
-  const promise = new Promise((resolve) => setImmediate(resolve))
-    .then(task)
-    .catch((error) => {
+  const promise = runInBackground(`after_response:${label}`, async () => {
+    try {
+      await task();
+    } catch (error) {
       logger.error('after_response_failed', { label, ...logger.errorFields(error) });
-    })
-    .finally(() => pending.delete(promise));
+    }
+  }).finally(() => pending.delete(promise));
   pending.add(promise);
   return promise;
 };

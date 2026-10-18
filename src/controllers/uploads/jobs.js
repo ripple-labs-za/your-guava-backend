@@ -1,3 +1,4 @@
+const { runInBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // The post-import job queue: forecast invalidation, actuals fill, insight invalidation, claim, run, schedule and recovery.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
@@ -195,8 +196,8 @@ const schedulePostImportMaintenance = async (uploadId, cafeId, dateRange, timezo
     await claimAndRunPostImportMaintenance(candidate, timezone);
     return;
   }
-  setImmediate(() => {
-    claimAndRunPostImportMaintenance(candidate, timezone).catch((error) => {
+  runInBackground('post_import_maintenance', () => {
+    return claimAndRunPostImportMaintenance(candidate, timezone).catch((error) => {
       logger.error('upload_maintenance_failed', { uploadId: String(uploadId), ...logger.errorFields(error) });
     });
   });

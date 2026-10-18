@@ -1,3 +1,4 @@
+const { runInBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // DELETE /uploads/:id: remove an upload, its rows and its storage object, re-admitting from overlapping uploads
 // the rows they held only through it (BE-03-T02).
@@ -118,8 +119,8 @@ const remove = async (req, res, next) => {
     if (queued.length > 0) {
       await readmission.queueReadmission(queued, plan.range, upload._id);
       // Start the queue now rather than at the next sweep; the job is idempotent and claims atomically.
-      setImmediate(() => {
-        recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
+      runInBackground('upload_readmission_remove', () => {
+        return recoverPendingUploadMaintenance({ limit: queued.length }).catch((error) => {
           logger.error('upload_readmission_kick_failed', logger.errorFields(error));
         });
       });

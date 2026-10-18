@@ -1,3 +1,4 @@
+const { isDraining } = require('../utils/lifecycle');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const { sha256Hex } = require('../utils/authPrimitives');
@@ -131,6 +132,7 @@ const health = (req, res) => {
 };
 
 const readiness = async (req, res) => {
+  if (isDraining()) return res.status(503).json({ success: false, status: 'draining', requestId: req.id });
   if (hasReadinessToken(req)) {
     let result;
     try {

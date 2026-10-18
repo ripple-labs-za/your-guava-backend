@@ -1,3 +1,4 @@
+const { trackBackground } = require('../utils/lifecycle');
 const logger = require('../utils/logger');
 const express = require('express');
 const router = express.Router();
@@ -127,9 +128,9 @@ router.post('/webhook', async (req, res) => {
 
   // Respond quickly to Yoco (must respond within 15s), then process asynchronously
   res.status(200).json({ received: true });
-  processWebhookEvent(req.body).catch((err) => {
+  trackBackground('yoco_webhook', processWebhookEvent(req.body).catch((err) => {
     logger.error('yoco_webhook_failed', logger.errorFields(err));
-  });
+  }));
 });
 
 // POST /api/yoco/disconnect — Disconnect Yoco

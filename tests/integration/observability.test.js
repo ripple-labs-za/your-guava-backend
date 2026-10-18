@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const logger = require('../../src/utils/logger');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, app } = require('../setup');
@@ -154,5 +155,34 @@ it('issues its own request id and echoes a well-formed client id separately', as
     } finally {
       stopEventLoopMonitor();
     }
+  });
+});
+
+describe('readiness during shutdown and outages', () => {
+  it('answers 503 draining once shutdown has begun', async () => {
+    const lifecycle = require('../../src/utils/lifecycle');
+    lifecycle.markDraining();
+    try {
+      const res = await request.get('/api/ready');
+      expect(res.status).toBe(503);
+      expect(res.body.status).toBe('draining');
+    } finally {
+      lifecycle.resetLifecycleForTests();
+    }
+  });
+
+  it('answers 503 while the database is disconnected and 200 again after it reconnects', async () => {
+    // The token takes BE-02-T06's detailed path, which computes readiness on every call. Anonymous readiness is cached
+    // for 5 s, so without it a result cached by an earlier test in this file could answer both requests.
+    await mongoose.disconnect();
+    try {
+      const down = await request.get('/api/ready').set('X-Readiness-Token', READINESS_TOKEN);
+      expect(down.status).toBe(503);
+      expect(down.body.success).toBe(false);
+    } finally {
+      await mongoose.connect(process.env.MONGODB_URI);
+    }
+    const up = await request.get('/api/ready').set('X-Readiness-Token', READINESS_TOKEN);
+    expect(up.status).toBe(200);
   });
 });

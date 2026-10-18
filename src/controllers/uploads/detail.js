@@ -1,3 +1,4 @@
+const { runInBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // GET /uploads/:id and its rows.
 // Moved from uploads.controller.js by BE-11-T03; behaviour unchanged.
@@ -31,8 +32,8 @@ const detail = async (req, res, next) => {
     if (upload.status === 'completed' && (
       upload.maintenance?.status === 'queued' || maintenanceIsStale || maintenanceRetryIsDue
     )) {
-      setImmediate(() => {
-        claimAndRunPostImportMaintenance(upload).catch((error) => {
+      runInBackground('upload_maintenance_recovery', () => {
+        return claimAndRunPostImportMaintenance(upload).catch((error) => {
           logger.error('upload_maintenance_recovery_failed', { trigger: 'request', ...logger.errorFields(error) });
         });
       });

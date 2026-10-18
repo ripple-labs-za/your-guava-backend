@@ -1,3 +1,4 @@
+const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Registration: the pending-registration upsert, verification and its resend cap.
 // Moved from auth.controller.js by BE-11-T04; behaviour unchanged.
@@ -307,9 +308,9 @@ const verifyEmail = async (req, res, next) => {
       );
     });
 
-    emailService.sendWelcomeEmail({ user, org, cafe }).catch((error) => {
+    trackBackground('welcome_email', emailService.sendWelcomeEmail({ user, org, cafe }).catch((error) => {
       logger.warn('welcome_email_failed', logger.errorFields(error));
-    });
+    }));
     return res.status(201).json({
       success: true,
       message: 'Email verified. You can now sign in.',

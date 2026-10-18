@@ -1,4 +1,10 @@
 const logger = require('./utils/logger');
+const {
+  drainBackgroundWork,
+  markDraining,
+  pendingBackgroundWork,
+  withDeadline,
+} = require('./utils/lifecycle');
 require('dotenv').config();
 const paymentProvider = require('./services/paymentProvider.service');
 const { startEventLoopMonitor, stopEventLoopMonitor } = require('./utils/eventLoopMonitor');
@@ -38,6 +44,7 @@ const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_PAYMENT_RECONCILIATION_INTERVAL_MS = 60 * 1000;
 const DEFAULT_USAGE_RECONCILIATION_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10 * 1000;
+const DEFAULT_INDEX_INIT_TIMEOUT_MS = 90 * 1000;
 
 let httpServer;
 let cleanupTimer;
@@ -47,6 +54,8 @@ let paymentReconciliationPromise;
 let usageReconciliationTimer;
 let usageReconciliationPromise;
 let shutdownPromise;
+let shutdownExitCode = 0;
+let shutdownExitRequested = false;
 
 const runPendingUploadCleanup = () => {
   if (cleanupPromise) return cleanupPromise;
@@ -181,24 +190,31 @@ const start = async () => {
     await connectDB();
     // Correctness, lifecycle cleanup, and exactly-once guarantees depend on
     // these indexes. Do not accept traffic until MongoDB confirms they exist.
-    await Promise.all([
-      PaymentSession.init(),
-      TeamInvitation.init(),
-      UsageLedger.init(),
-      Transaction.init(),
-      Forecast.init(),
-      Upload.init(),
-      AuthSession.init(),
-      PendingRegistration.init(),
-      PasswordResetToken.init(),
-      GeneratedInsight.init(),
-      IntegrationOAuthState.init(),
-      AccessAuditEvent.init(),
-      User.init(),
-      Item.init(),
-      Improvement.init(),
-      LeaveBalance.init(),
-    ]);
+    const indexTimeoutMs = boundedInteger(process.env.INDEX_INIT_TIMEOUT_MS, DEFAULT_INDEX_INIT_TIMEOUT_MS, 10000, 600000);
+    try {
+      await withDeadline(Promise.all([
+        PaymentSession.init(),
+        TeamInvitation.init(),
+        UsageLedger.init(),
+        Transaction.init(),
+        Forecast.init(),
+        Upload.init(),
+        AuthSession.init(),
+        PendingRegistration.init(),
+        PasswordResetToken.init(),
+        GeneratedInsight.init(),
+        IntegrationOAuthState.init(),
+        AccessAuditEvent.init(),
+        User.init(),
+        Item.init(),
+        Improvement.init(),
+        LeaveBalance.init(),
+      ]), indexTimeoutMs, 'index initialisation');
+    } catch (error) {
+      if (error.code !== 'DEADLINE_EXCEEDED') throw error;
+      logger.error('index_init_timeout', { timeoutMs: indexTimeoutMs });
+      throw Object.assign(new Error(`index initialisation exceeded ${indexTimeoutMs}ms`), { code: 'INDEX_INIT_TIMEOUT' });
+    }
     httpServer = app.listen(PORT);
     const candidateServer = httpServer;
     await new Promise((resolve, reject) => {
@@ -234,9 +250,13 @@ const start = async () => {
   }
 };
 
-const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
+const shutdown = (signal = 'shutdown', { exitProcess = false, exitCode } = {}) => {
+  if (exitProcess) shutdownExitRequested = true;
+  if (exitCode) shutdownExitCode = exitCode;
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
+    const startedAt = Date.now();
+    markDraining();
     logger.info('shutdown_started', { signal });
     if (cleanupTimer) clearInterval(cleanupTimer);
     if (paymentReconciliationTimer) clearInterval(paymentReconciliationTimer);
@@ -268,26 +288,50 @@ const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
       await Promise.allSettled(
         [cleanupPromise, paymentReconciliationPromise, usageReconciliationPromise, billingReminderPromise].filter(Boolean)
       );
+      await drainBackgroundWork();
       if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
     })();
 
     await Promise.race([closeResources, timeout]);
     clearTimeout(timeoutHandle);
-    if (timedOut) logger.error('shutdown_timeout', { signal, timeoutMs });
-    else logger.info('shutdown_complete', { signal });
-    if (exitProcess) process.exit(timedOut ? 1 : 0);
+    if (timedOut) {
+      logger.error('shutdown_timeout', { signal, timeoutMs, pendingBackground: pendingBackgroundWork() });
+    } else {
+      logger.info('shutdown_complete', { signal, durationMs: Date.now() - startedAt });
+    }
+    if (shutdownExitRequested) process.exit(shutdownExitCode || (timedOut ? 1 : 0));
   })();
   return shutdownPromise;
 };
 
+// Node 24 exits on an unhandled rejection. Log one structured fatal line, then
+// drain as for SIGTERM (bounded by SHUTDOWN_TIMEOUT_MS) and exit 1, so Railway's
+// ALWAYS policy restarts a clean process and the log says why it died.
+const handledProcesses = new WeakSet();
+const installProcessHandlers = ({ proc = process, shutdownFn = shutdown } = {}) => {
+  if (handledProcesses.has(proc)) return;
+  handledProcesses.add(proc);
+  const fatal = (kind) => (reason) => {
+    logger.fatal(`process_${kind}`, logger.errorFields(reason, { stack: true }));
+    try {
+      Promise.resolve(shutdownFn(kind, { exitProcess: true, exitCode: 1 })).catch(() => proc.exit(1));
+    } catch (_error) {
+      proc.exit(1);
+    }
+  };
+  proc.on('unhandledRejection', fatal('unhandled_rejection'));
+  proc.on('uncaughtException', fatal('uncaught_exception'));
+};
+
 if (require.main === module) {
+  installProcessHandlers();
   start().catch((error) => {
     logger.fatal('startup_failed', logger.errorFields(error, { stack: true }));
     process.exit(1);
   });
   const shutdownForSignal = (signal) => {
     void shutdown(signal, { exitProcess: true }).catch((error) => {
-      logger.fatal('shutdown_failed', logger.errorFields(error));
+      logger.fatal('shutdown_failed', logger.errorFields(error, { stack: true }));
       process.exit(1);
     });
   };
@@ -295,4 +339,4 @@ if (require.main === module) {
   process.once('SIGINT', () => shutdownForSignal('SIGINT'));
 }
 
-module.exports = { start, shutdown };
+module.exports = { start, shutdown, installProcessHandlers };

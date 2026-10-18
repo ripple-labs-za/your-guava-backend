@@ -1,3 +1,4 @@
+const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Fulfilment: applying a paid plan or credit pack to the organisation, and the mock credit purchase.
 // Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
@@ -206,9 +207,9 @@ const applyDuePlanChange = async (org, now = new Date()) => {
     }
     if (updated.plan !== org.plan) {
       await warnOnOverCapacityPlan(org._id, org.plan, updated.plan).catch(() => null);
-      invalidateFutureForecastsForOrg(org._id).catch((error) => {
+      trackBackground('plan_change_forecast_invalidation', invalidateFutureForecastsForOrg(org._id).catch((error) => {
         logger.error('forecast_invalidation_failed', logger.errorFields(error));
-      });
+      }));
     }
     return updated;
   }

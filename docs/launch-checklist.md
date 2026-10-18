@@ -78,3 +78,13 @@ The seed scripts are destructive and refuse production databases. Configure loca
 - `SEED_CAFE_NAME`
 - `SEED_CAFE_CITY`
 - `SEED_CAFE_ADDRESS`
+
+## Single instance (D-005)
+
+`railway.json` pins `numReplicas: 1`. Three things live in process memory and a second instance would silently split them: the
+rate-limit counters (`src/middleware/rateLimit.middleware.js`), the response cache (`src/middleware/cache.middleware.js`) and multer's
+temporary upload files under `uploads/`. Scale out only after that state moves to MongoDB.
+
+`restartPolicyType: ALWAYS` restarts the API after any exit; a crash writes one `process_unhandled_rejection` or
+`process_uncaught_exception` JSON line first. `drainingSeconds: 15` gives the graceful shutdown (`SHUTDOWN_TIMEOUT_MS`, default 10 s) time
+to finish in-flight requests and registered background work before the platform sends SIGKILL.
