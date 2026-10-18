@@ -1,6 +1,6 @@
 const { parseTrustProxyHops } = require('./proxy');
 const { isHardenedEnvironment } = require('./posture');
-const { originChecksEnabled } = require('./flags');
+const { originChecksEnabled, workforceEnabled } = require('./flags');
 const { aiModelProblems } = require('./ai');
 const PLACEHOLDER_VALUES = new Set([
   'your_jwt_secret_here',
@@ -216,6 +216,11 @@ const validateEnv = () => {
     if (accountingEnabled) {
       errors.push(
         'ACCOUNTING_INTEGRATIONS_ENABLED must remain false in production until provider posting is implemented'
+      );
+    }
+    if (workforceEnabled()) {
+      errors.push(
+        'WORKFORCE_ENABLED must remain false in production until the workforce feature is complete (D-003)'
       );
     }
   }

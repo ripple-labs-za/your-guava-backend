@@ -263,6 +263,7 @@ describe('Cross-tenant staff scoping', () => {
       });
 
     expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Staff member not found');
   });
 
   it('rejects leave requests referencing another cafe\'s staff', async () => {
@@ -286,5 +287,6 @@ describe('Cross-tenant staff scoping', () => {
       });
 
     expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Staff member not found');
   });
 });

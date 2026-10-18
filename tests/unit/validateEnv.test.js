@@ -30,6 +30,7 @@ const KEYS = [
   'YOCO_IAM_URL',
   'YOCO_WEBHOOK_SECRET',
   'ACCOUNTING_INTEGRATIONS_ENABLED',
+  'WORKFORCE_ENABLED',
   'R2_ACCOUNT_ID',
   'R2_ACCESS_KEY_ID',
   'R2_SECRET_ACCESS_KEY',
@@ -94,6 +95,29 @@ const setProductionPaystackEnv = () => {
 };
 
 describe('validateEnv', () => {
+  it.each(['true', 'TRUE', ' true '])(
+    'rejects production startup with workforce enabled as %s (D-003)',
+    (flag) => {
+      setProductionBaseEnv();
+      setProductionBillingEnv();
+      process.env.WORKFORCE_ENABLED = flag;
+      expect(() => validateEnv()).toThrow(
+        /WORKFORCE_ENABLED must remain false in production until the workforce feature is complete/i
+      );
+    }
+  );
+
+  it.each([undefined, 'false', '1', 'yes'])(
+    'allows production startup with the workforce flag off as %s',
+    (flag) => {
+      setProductionBaseEnv();
+      setProductionBillingEnv();
+      if (flag === undefined) delete process.env.WORKFORCE_ENABLED;
+      else process.env.WORKFORCE_ENABLED = flag;
+      expect(() => validateEnv()).not.toThrow();
+    }
+  );
+
   it.each(['staging', 'preview'])('refuses unknown AI models in hardened %s', (environment) => {
     setProductionBaseEnv();
     setProductionPaystackEnv();
