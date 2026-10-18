@@ -555,6 +555,7 @@ const getHistory = async (req, res, next) => {
             return;
           }
           let built = null;
+          const attempt = current?.generatedAt ? new Date(current.generatedAt).getTime() : 'missing';
           const { result, replayed } = await meterGuavaCredits({
             orgId: req.user.orgId,
             cafeId,
@@ -562,14 +563,14 @@ const getHistory = async (req, res, next) => {
             featureKey: 'history_backfill_day',
             credits: creditsPerDay,
             relatedEntity: { kind: 'forecast_day', id: dateKey },
-            idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}`,
+            idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}:${attempt}:${creditsPerDay}`,
             run: async () => {
               built = await ensureHistoryForecast(cafeId, zonedDayStart(dateKey, timezone));
               return { forecastId: built ? String(built._id) : null, dateKey };
             },
           });
           const forecast = built || (result?.forecastId ? await Forecast.findOne({ _id: result.forecastId, cafeId }).lean() : null);
-          if (forecast) {
+          if (forecast && !needsHistoryForecastRefresh(forecast)) {
             forecastByDate.set(dateKey, typeof forecast.toObject === 'function' ? forecast.toObject() : forecast);
             generated += 1;
             if (!replayed) creditsUsed += creditsPerDay;

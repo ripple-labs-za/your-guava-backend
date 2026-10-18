@@ -69,6 +69,74 @@ describe('forecast performance', () => {
     cafe = await Cafe.findOne({});
   });
 
+  describe('history backfill attempts', () => {
+    const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=1';
+    beforeEach(async () => {
+      await Transaction.create({
+        cafeId: cafe._id, date: new Date(localDay(-2).getTime() + 8 * 3600000), hour: 8,
+        dayOfWeek: zonedDayOfWeek(localDay(-2), TZ), status: 'approved', total: 60,
+        items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+      });
+    });
+
+    it('allows a refunded missing-day attempt to retry at the changed price', async () => {
+      const priorPrice = process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+      try {
+        process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = '1';
+        const write = jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValueOnce(new Error('transient write failure'));
+        const first = await request.get(url).set('Authorization', `Bearer ${token}`);
+        write.mockRestore();
+        expect(first.status).toBe(500);
+        expect((await UsageLedger.findOne({ orgId: user.orgId }).lean()).status).toBe('refunded');
+        expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(0);
+
+        process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = '2';
+        const retry = await request.get(url).set('Authorization', `Bearer ${token}`);
+        expect(retry.status).toBe(200);
+        expect(retry.body.meta).toEqual(expect.objectContaining({ generated: 1, pendingDays: 0 }));
+        expect(retry.body.meta.backfill).toEqual(expect.objectContaining({ creditsPerDay: 2, creditsUsed: 2 }));
+        const rows = await UsageLedger.find({ orgId: user.orgId, featureKey: 'history_backfill_day' }).lean();
+        expect(rows).toHaveLength(2);
+        expect(rows).toEqual(expect.arrayContaining([
+          expect.objectContaining({ status: 'refunded', credits: 1 }),
+          expect.objectContaining({ status: 'committed', credits: 2 }),
+        ]));
+        expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(2);
+      } finally {
+        if (priorPrice === undefined) delete process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+        else process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = priorPrice;
+      }
+    });
+
+    it('rebuilds a previously charged day rather than counting a stale replay', async () => {
+      const priorPrice = process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+      try {
+        process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = '1';
+        const first = await request.get(url).set('Authorization', `Bearer ${token}`);
+        expect(first.status).toBe(200);
+        expect(first.body.meta.generated).toBe(1);
+        const before = await Forecast.findOne({ cafeId: cafe._id }).lean();
+        expect(before.factors.length).toBeGreaterThan(0);
+        await Forecast.updateOne({ _id: before._id }, { $set: { factors: [] } });
+
+        const retry = await request.get(url).set('Authorization', `Bearer ${token}`);
+        expect(retry.status).toBe(200);
+        expect(retry.body.meta).toEqual(expect.objectContaining({ generated: 1, pendingDays: 0 }));
+        expect(retry.body.meta.backfill.creditsUsed).toBe(1);
+        const rebuilt = await Forecast.findById(before._id).lean();
+        expect(rebuilt.factors.length).toBeGreaterThan(0);
+        expect(await UsageLedger.countDocuments({ orgId: user.orgId, featureKey: 'history_backfill_day', status: 'committed' })).toBe(2);
+        expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(2);
+        const complete = await request.get(url).set('Authorization', `Bearer ${token}`);
+        expect(complete.body.meta.generated).toBe(0);
+        expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(2);
+      } finally {
+        if (priorPrice === undefined) delete process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+        else process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = priorPrice;
+      }
+    });
+  });
+
   it('builds a week from one projected transaction read, within budget', async () => {
     await Organization.findByIdAndUpdate(user.orgId, { plan: 'pro' });
     await Cafe.updateOne({ _id: cafe._id }, { $set: { forecastSettings: { history: { maxWeeks: 16 }, learning: { enabled: true } } } });
@@ -180,140 +248,156 @@ describe('forecast performance', () => {
     // cache first (so an ordinary read is still cached), then the compute limiter for backfill=sync, then the handler.
     expect(history.route.stack.map((layer) => layer.name)).toEqual(['cacheHistoryReads', 'limitBackfillCompute', 'getHistory']);
   });
-// Append inside forecast performance's describe after the plan's red-first checks.
-it('refunds a failed historical day instead of keeping its reserved credit', async () => {
-  await Transaction.create({
-    cafeId: cafe._id, date: new Date(localDay(-2).getTime() + 8 * 3600000), hour: 8,
-    dayOfWeek: zonedDayOfWeek(localDay(-2), TZ), status: 'approved', total: 60,
-    items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+  it('returns 429 for a second synchronous history request while ordinary reads stay available', async () => {
+    const express = require('express');
+    const { createForecastComputeLimiter } = require('../../src/middleware/rateLimit.middleware');
+    const { getHistory } = require('../../src/controllers/forecasts.controller');
+    const limited = express();
+    const limiter = createForecastComputeLimiter({ limit: 1, windowMs: 60000, skip: () => false });
+    limited.use((req, _res, next) => {
+      req.user = { id: String(user._id), orgId: user.orgId, cafeId: cafe._id };
+      next();
+    });
+    limited.get('/history', (req, res, next) => req.query.backfill === 'sync' ? limiter(req, res, next) : next(), getHistory);
+    const client = supertest(limited);
+    expect((await client.get('/history?backfill=sync')).status).toBe(200);
+    const refused = await client.get('/history?backfill=sync');
+    expect(refused.status).toBe(429);
+    expect(refused.body.code).toBe('FORECAST_RATE_LIMITED');
+    expect((await client.get('/history')).status).toBe(200);
   });
-  jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValue(new Error('historical write failed'));
-  const response = await request.get('/api/forecasts/history?days=7&backfill=sync&backfillLimit=1')
-    .set('Authorization', `Bearer ${token}`);
-  expect(response.status).toBe(500);
-  const rows = await UsageLedger.find({ orgId: user.orgId, featureKey: 'history_backfill_day' }).lean();
-  expect(rows).toHaveLength(1);
-  expect(rows[0].status).toBe('refunded');
-  expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(0);
-  expect(await Forecast.countDocuments({ cafeId: cafe._id })).toBe(0);
-});
-
-it('keeps a completed day charged exactly once when credits run out mid-batch', async () => {
-  process.env.API_CACHE_ENABLED = 'true';
-  await Organization.findByIdAndUpdate(user.orgId, { $set: {
-    'aiCredits.included': 400, 'aiCredits.used': 399, 'aiCredits.bonus': 0, 'aiCredits.bonusUsed': 0,
-    'aiCredits.resetAt': new Date(Date.now() + 86400000),
-  } });
-  for (const offset of [-2, -3]) {
+  it('refunds a failed historical day instead of keeping its reserved credit', async () => {
     await Transaction.create({
-      cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
-      dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: 60,
+      cafeId: cafe._id, date: new Date(localDay(-2).getTime() + 8 * 3600000), hour: 8,
+      dayOfWeek: zonedDayOfWeek(localDay(-2), TZ), status: 'approved', total: 60,
       items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
     });
-  }
-  const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=2';
-  const readUrl = '/api/forecasts/history?days=7';
-  const before = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
-  expect(before.body.meta.totalRows).toBe(0);
-  expect((await request.get(readUrl).set('Authorization', `Bearer ${token}`)).headers['x-guava-cache']).toBe('hit');
-  const response = await request.get(url).set('Authorization', `Bearer ${token}`);
-  expect(response.status).toBe(402);
-  expect(await Forecast.countDocuments({ cafeId: cafe._id })).toBe(1);
-  expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
-  expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(400);
-  const after = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
-  expect(after.body.meta.totalRows).toBe(1);
-  expect(after.headers['x-guava-cache']).toBe('miss');
-  expect((await request.get(url).set('Authorization', `Bearer ${token}`)).status).toBe(402);
-  expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
-});
+    jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValue(new Error('historical write failed'));
+    const response = await request.get('/api/forecasts/history?days=7&backfill=sync&backfillLimit=1')
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(500);
+    const rows = await UsageLedger.find({ orgId: user.orgId, featureKey: 'history_backfill_day' }).lean();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('refunded');
+    expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(0);
+    expect(await Forecast.countDocuments({ cafeId: cafe._id })).toBe(0);
+  });
 
-it('keeps partial current-day sales out of a future-only shared history read', async () => {
-  const target = localDay(7);
-  for (const [offset, quantity] of [[-7, 2], [-14, 2], [0, 1000]]) {
-    await Transaction.create({
-      cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
-      dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: quantity * 30,
-      items: [{ name: 'Flat White', quantity, unitPrice: 30 }],
+  it('keeps a completed day charged exactly once when credits run out mid-batch', async () => {
+    process.env.API_CACHE_ENABLED = 'true';
+    await Organization.findByIdAndUpdate(user.orgId, { $set: {
+      'aiCredits.included': 400, 'aiCredits.used': 399, 'aiCredits.bonus': 0, 'aiCredits.bonusUsed': 0,
+      'aiCredits.resetAt': new Date(Date.now() + 86400000),
+    } });
+    for (const offset of [-2, -3]) {
+      await Transaction.create({
+        cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
+        dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: 60,
+        items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+      });
+    }
+    const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=2';
+    const readUrl = '/api/forecasts/history?days=7';
+    const before = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
+    expect(before.body.meta.totalRows).toBe(0);
+    expect((await request.get(readUrl).set('Authorization', `Bearer ${token}`)).headers['x-guava-cache']).toBe('hit');
+    const response = await request.get(url).set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(402);
+    expect(await Forecast.countDocuments({ cafeId: cafe._id })).toBe(1);
+    expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
+    expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(400);
+    const after = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
+    expect(after.body.meta.totalRows).toBe(1);
+    expect(after.headers['x-guava-cache']).toBe('miss');
+    expect((await request.get(url).set('Authorization', `Bearer ${token}`)).status).toBe(402);
+    expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
+  });
+
+  it('keeps partial current-day sales out of a future-only shared history read', async () => {
+    const target = localDay(7);
+    for (const [offset, quantity] of [[-7, 2], [-14, 2], [0, 1000]]) {
+      await Transaction.create({
+        cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
+        dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: quantity * 30,
+        items: [{ name: 'Flat White', quantity, unitPrice: 30 }],
+      });
+    }
+    const { forecasts } = await forecastService.generateForecastsForDates(cafe._id, [target]);
+    expect(forecasts).toHaveLength(1);
+    expect(forecasts[0].trainingData.transactionCount).toBe(2);
+    expect(forecasts[0].items[0].baseQty).toBeLessThan(3);
+  });
+
+  it('keeps ignored POS lines out of demand after projecting the shared history', async () => {
+    for (const offset of [-7, -14]) {
+      await Transaction.create({
+        cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
+        dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: 150,
+        items: [
+          { name: 'Flat White', quantity: 2, unitPrice: 30 },
+          { name: 'Delivery fee', quantity: 99, unitPrice: 1, menuItemStatus: 'ignored' },
+        ],
+      });
+    }
+    const forecasts = await forecastService.generateWeekForecast(cafe._id);
+    const today = forecasts.find((forecast) => forecast.dateKey === zonedDateKey(localDay(0), TZ));
+    expect(today.items.map((item) => item.itemName)).toEqual(['Flat White']);
+    expect(today.forecastCoverage.totalPredictedQty).toBeLessThan(10);
+  });
+
+  it('refuses charged history building without the manager spending permission', async () => {
+    const User = require('../../src/models/User.model');
+    const jwt = require('jsonwebtoken');
+    const manager = await User.create({
+      name: 'History Reader', email: 'history-reader@example.test', password: 'password123',
+      role: 'manager', orgId: user.orgId, cafeIds: [cafe._id], activeCafeId: cafe._id,
     });
-  }
-  const { forecasts } = await forecastService.generateForecastsForDates(cafe._id, [target]);
-  expect(forecasts).toHaveLength(1);
-  expect(forecasts[0].trainingData.transactionCount).toBe(2);
-  expect(forecasts[0].items[0].baseQty).toBeLessThan(3);
-});
+    const managerToken = jwt.sign({ id: String(manager._id), orgId: String(user.orgId),
+      cafeId: String(cafe._id), role: 'manager', tokenVersion: 0 }, process.env.JWT_SECRET);
+    const read = await request.get('/api/forecasts/history').set('Authorization', `Bearer ${managerToken}`);
+    expect(read.status).toBe(200);
+    const build = await request.get('/api/forecasts/history?backfill=sync').set('Authorization', `Bearer ${managerToken}`);
+    expect(build.status).toBe(403);
+    expect(await UsageLedger.countDocuments({ orgId: user.orgId })).toBe(0);
+  });
 
-it('keeps ignored POS lines out of demand after projecting the shared history', async () => {
-  for (const offset of [-7, -14]) {
-    await Transaction.create({
-      cafeId: cafe._id, date: new Date(localDay(offset).getTime() + 8 * 3600000), hour: 8,
-      dayOfWeek: zonedDayOfWeek(localDay(offset), TZ), status: 'approved', total: 150,
-      items: [
-        { name: 'Flat White', quantity: 2, unitPrice: 30 },
-        { name: 'Delivery fee', quantity: 99, unitPrice: 1, menuItemStatus: 'ignored' },
-      ],
+  it('charges only the user who builds a shared historical day during a race', async () => {
+    const User = require('../../src/models/User.model');
+    const jwt = require('jsonwebtoken');
+    const other = await User.create({
+      name: 'Second Owner', email: 'second-history@example.test', password: 'password123',
+      role: 'owner', orgId: user.orgId, cafeIds: [cafe._id], activeCafeId: cafe._id,
     });
-  }
-  const forecasts = await forecastService.generateWeekForecast(cafe._id);
-  const today = forecasts.find((forecast) => forecast.dateKey === zonedDateKey(localDay(0), TZ));
-  expect(today.items.map((item) => item.itemName)).toEqual(['Flat White']);
-  expect(today.forecastCoverage.totalPredictedQty).toBeLessThan(10);
-});
-
-it('refuses charged history building without the manager spending permission', async () => {
-  const User = require('../../src/models/User.model');
-  const jwt = require('jsonwebtoken');
-  const manager = await User.create({
-    name: 'History Reader', email: 'history-reader@example.test', password: 'password123',
-    role: 'manager', orgId: user.orgId, cafeIds: [cafe._id], activeCafeId: cafe._id,
+    const otherToken = jwt.sign({ id: String(other._id), orgId: String(user.orgId),
+      cafeId: String(cafe._id), role: 'owner', tokenVersion: 0 }, process.env.JWT_SECRET);
+    await Transaction.create({
+      cafeId: cafe._id, date: new Date(localDay(-2).getTime() + 8 * 3600000), hour: 8,
+      dayOfWeek: zonedDayOfWeek(localDay(-2), TZ), status: 'approved', total: 60,
+      items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+    });
+    let release;
+    const bothReads = new Promise((resolve) => { release = resolve; });
+    let reads = 0;
+    const find = Forecast.find.bind(Forecast);
+    jest.spyOn(Forecast, 'find').mockImplementation((...args) => {
+      const query = find(...args);
+      if (!args[0]?.date || args[0]?.actualsUpdatedAt) return query;
+      const lean = query.lean.bind(query);
+      query.lean = async () => {
+        const rows = await lean();
+        reads += 1;
+        if (reads === 2) release();
+        await bothReads;
+        return rows;
+      };
+      return query;
+    });
+    const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=1';
+    const results = await Promise.all([token, otherToken].map((accessToken) =>
+      request.get(url).set('Authorization', `Bearer ${accessToken}`)));
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    expect(await UsageLedger.countDocuments({ orgId: user.orgId, featureKey: 'history_backfill_day', status: 'committed' })).toBe(1);
+    expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(1);
+    expect(results.map((result) => result.body.meta.backfill.creditsUsed).sort()).toEqual([0, 1]);
   });
-  const managerToken = jwt.sign({ id: String(manager._id), orgId: String(user.orgId),
-    cafeId: String(cafe._id), role: 'manager', tokenVersion: 0 }, process.env.JWT_SECRET);
-  const read = await request.get('/api/forecasts/history').set('Authorization', `Bearer ${managerToken}`);
-  expect(read.status).toBe(200);
-  const build = await request.get('/api/forecasts/history?backfill=sync').set('Authorization', `Bearer ${managerToken}`);
-  expect(build.status).toBe(403);
-  expect(await UsageLedger.countDocuments({ orgId: user.orgId })).toBe(0);
-});
-
-it('charges only the user who builds a shared historical day during a race', async () => {
-  const User = require('../../src/models/User.model');
-  const jwt = require('jsonwebtoken');
-  const other = await User.create({
-    name: 'Second Owner', email: 'second-history@example.test', password: 'password123',
-    role: 'owner', orgId: user.orgId, cafeIds: [cafe._id], activeCafeId: cafe._id,
-  });
-  const otherToken = jwt.sign({ id: String(other._id), orgId: String(user.orgId),
-    cafeId: String(cafe._id), role: 'owner', tokenVersion: 0 }, process.env.JWT_SECRET);
-  await Transaction.create({
-    cafeId: cafe._id, date: new Date(localDay(-2).getTime() + 8 * 3600000), hour: 8,
-    dayOfWeek: zonedDayOfWeek(localDay(-2), TZ), status: 'approved', total: 60,
-    items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
-  });
-  let release;
-  const bothReads = new Promise((resolve) => { release = resolve; });
-  let reads = 0;
-  const find = Forecast.find.bind(Forecast);
-  jest.spyOn(Forecast, 'find').mockImplementation((...args) => {
-    const query = find(...args);
-    if (!args[0]?.date || args[0]?.actualsUpdatedAt) return query;
-    const lean = query.lean.bind(query);
-    query.lean = async () => {
-      const rows = await lean();
-      reads += 1;
-      if (reads === 2) release();
-      await bothReads;
-      return rows;
-    };
-    return query;
-  });
-  const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=1';
-  const results = await Promise.all([token, otherToken].map((accessToken) =>
-    request.get(url).set('Authorization', `Bearer ${accessToken}`)));
-  expect(results.map((result) => result.status)).toEqual([200, 200]);
-  expect(await UsageLedger.countDocuments({ orgId: user.orgId, featureKey: 'history_backfill_day', status: 'committed' })).toBe(1);
-  expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(1);
-  expect(results.map((result) => result.body.meta.backfill.creditsUsed).sort()).toEqual([0, 1]);
-});
-
 });
