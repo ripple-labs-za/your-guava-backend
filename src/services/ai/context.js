@@ -161,7 +161,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   const baseMatch = { cafeId: { $in: cafeIds }, status: 'approved' };
   const activeCafeMatch = { cafeId: activeCafeId, status: 'approved' };
   // Two indexed reads run together: item unwinding must not serialize the summary branches.
-  const timezoneByCafe = { $switch: {
+  const timezoneByCafe = cafes.length === 1 ? safeTimezone(cafes[0].timezone) : { $switch: {
     branches: cafes.map((cafe) => ({ case: { $eq: ['$cafeId', cafe._id] }, then: safeTimezone(cafe.timezone) })),
     default: activeTimezone,
   } };
@@ -172,8 +172,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       // no item arrays are carried through this read.
       { $group: {
         _id: { cafeId: '$cafeId', dayOfWeek: '$dayOfWeek', hour: '$hour', hourKnown: '$hourKnown',
-          paymentMethod: { $ifNull: ['$paymentMethod', 'unknown'] }, timezone: timezoneByCafe,
-          date: { $dateTrunc: { date: '$date', unit: 'day', timezone: timezoneByCafe } } },
+          paymentMethod: { $ifNull: ['$paymentMethod', 'unknown'] },
+          date: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone: timezoneByCafe } } },
         transactions: saleCount, revenue: netRevenue, grossSales,
         firstDate: { $min: '$date' }, lastDate: { $max: '$date' }, rows: { $sum: 1 },
       } },
@@ -222,11 +222,10 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
         ],
         dailyRevenue: [
           { $group: {
-            _id: { cafeId: '$_id.cafeId', timezone: '$_id.timezone', date: '$_id.date' },
+            _id: { cafeId: '$_id.cafeId', date: '$_id.date' },
             revenue: { $sum: '$revenue' }, transactions: { $sum: '$transactions' },
           } },
           { $set: {
-            '_id.date': { $dateToString: { format: '%Y-%m-%d', date: '$_id.date', timezone: '$_id.timezone' } },
             locationOrder: { $indexOfArray: [cafeIds, '$_id.cafeId'] },
           } },
           { $sort: { '_id.date': -1, locationOrder: 1 } },
@@ -236,8 +235,6 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
     ]),
     Transaction.aggregate([
       { $match: { ...baseMatch, date: { $gte: ninetyDaysAgo } } },
-      { $project: { _id: 0,
-        'items.name': 1, 'items.quantity': 1, 'items.unitPrice': 1, 'items.menuItemStatus': 1 } },
           { $unwind: '$items' },
           { $match: DEMAND_LINE_MATCH },
           { $group: {
