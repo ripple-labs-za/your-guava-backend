@@ -400,4 +400,91 @@ describe('forecast performance', () => {
     expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(1);
     expect(results.map((result) => result.body.meta.backfill.creditsUsed).sort()).toEqual([0, 1]);
   });
+  it.each([0, 1])('refunds transient historical weather at price %i and keeps the day pending until a healthy retry', async (creditsPerDay) => {
+    const axios = require('axios');
+    const weather = require('../../src/services/weather.service');
+    const previousKey = process.env.WEATHER_API_KEY;
+    const previousUrl = process.env.WEATHER_API_URL;
+    const previousPrice = process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+    weather.clearWeatherCache();
+    process.env.WEATHER_API_KEY = 'test-weather-key';
+    process.env.WEATHER_API_URL = 'https://weather.example.test';
+    process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = String(creditsPerDay);
+    try {
+      await Cafe.updateOne({ _id: cafe._id }, { $set: { 'location.lat': -26.2, 'location.lng': 28 } });
+      const date = localDay(-2);
+      await Transaction.create({
+        cafeId: cafe._id, date: new Date(date.getTime() + 8 * 3600000), hour: 8,
+        dayOfWeek: zonedDayOfWeek(date, TZ), status: 'approved', total: 60,
+        items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+      });
+      const provider = jest.spyOn(axios, 'get').mockRejectedValueOnce(new Error('weather timeout'));
+      const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=1';
+      const first = await request.get(url).set('Authorization', `Bearer ${token}`);
+      expect(first.status).toBe(200);
+      expect(first.body.meta).toEqual(expect.objectContaining({ generated: 0, pendingDays: 1, totalRows: 0 }));
+      expect(first.body.meta.backfill.creditsUsed).toBe(0);
+      expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(0);
+      expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'refunded' })).toBe(creditsPerDay);
+      expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(0);
+      const partial = await Forecast.findOne({ cafeId: cafe._id }).lean();
+      expect(partial.signals.retryAfter).toBeInstanceOf(Date);
+      expect(partial.signals.weather.available).toBe(false);
+      expect(provider).toHaveBeenCalledTimes(1);
+
+      const pending = await request.get('/api/forecasts/history?days=7').set('Authorization', `Bearer ${token}`);
+      expect(pending.body.meta.pendingDays).toBe(1);
+      expect(pending.body.history).toHaveLength(0);
+      expect(provider).toHaveBeenCalledTimes(1);
+      // Evict only the weather retry cache; do not change Date.now or the
+      // Mongoose connection heartbeat. Backoff timing is pinned in forecastCaches.
+      weather.clearWeatherCache();
+      provider.mockResolvedValueOnce({ data: { forecast: { forecastday: [{
+        date: zonedDateKey(date, TZ), day: { avgtemp_c: 20, maxtemp_c: 24, avghumidity: 60,
+          totalprecip_mm: 0, condition: { text: 'Clear' } },
+      }] } } });
+      const retry = await request.get(url).set('Authorization', `Bearer ${token}`);
+      expect(retry.status).toBe(200);
+      expect(retry.body.meta).toEqual(expect.objectContaining({ generated: 1, pendingDays: 0, totalRows: 1 }));
+      expect(retry.body.meta.backfill.creditsUsed).toBe(creditsPerDay);
+      expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(creditsPerDay);
+      expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(creditsPerDay);
+      expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'refunded' })).toBe(creditsPerDay);
+      expect(provider).toHaveBeenCalledTimes(2);
+      const replay = await request.get(url).set('Authorization', `Bearer ${token}`);
+      expect(replay.body.meta).toEqual(expect.objectContaining({ generated: 0, pendingDays: 0 }));
+      expect(replay.body.meta.backfill.creditsUsed).toBe(0);
+      expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(creditsPerDay);
+      expect(provider).toHaveBeenCalledTimes(2);
+    } finally {
+      process.env.WEATHER_API_KEY = previousKey;
+      process.env.WEATHER_API_URL = previousUrl;
+      if (previousPrice === undefined) delete process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+      else process.env.HISTORY_BACKFILL_CREDITS_PER_DAY = previousPrice;
+      weather.clearWeatherCache();
+    }
+  });
+
+  it('keeps an original live snapshot even if its weather provider was temporarily unavailable', async () => {
+    const date = localDay(-2);
+    await Transaction.create({
+      cafeId: cafe._id, date: new Date(date.getTime() + 8 * 3600000), hour: 8,
+      dayOfWeek: zonedDayOfWeek(date, TZ), status: 'approved', total: 60,
+      items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+    });
+    const original = await Forecast.create({
+      cafeId: cafe._id, date, generatedAt: new Date(), origin: 'live', totalPredictedRevenue: 75,
+      signals: { retryAfter: new Date(), weather: { available: false,
+        unavailableReason: 'Weather data is temporarily unavailable' } },
+      actualRevenue: 60, actualsUpdatedAt: new Date(), accuracy: 80,
+    });
+    const result = await request.get('/api/forecasts/history?days=7&backfill=sync&backfillLimit=1')
+      .set('Authorization', `Bearer ${token}`);
+    expect(result.status).toBe(200);
+    expect(result.body.meta).toEqual(expect.objectContaining({ generated: 0, pendingDays: 0, totalRows: 1 }));
+    const stored = await Forecast.findById(original._id).lean();
+    expect(stored).toEqual(expect.objectContaining({ generatedAt: original.generatedAt, origin: 'live', totalPredictedRevenue: 75, accuracy: 80 }));
+    expect(await UsageLedger.countDocuments({ orgId: user.orgId })).toBe(0);
+  });
+
 });

@@ -110,11 +110,18 @@ const needsPlanningRefresh = (forecast, timezone, { inputsVersion = 0, now = new
   return !hasPlanningFactorPayload(forecast);
 };
 
+// The schema retains this explicit provider-failure reason, whereas the
+// weather service's transient flag is not persisted. Unconfigured weather
+// has a different reason and remains a usable, honestly labelled backfill.
+const historyWeatherIsPending = (forecast) => forecast?.signals?.weather?.available === false
+  && forecast.signals.weather.unavailableReason === 'Weather data is temporarily unavailable';
+
 const needsHistoryForecastRefresh = (forecast) => {
   if (!forecast) return true;
   // Never rewrite an original live/manual historical snapshot. Backfills are
   // explicitly marked and may be refreshed without corrupting live audit data.
   if ((forecast.origin || 'live') !== 'backfill') return false;
+  if (historyWeatherIsPending(forecast)) return true;
   if (forecast.totalPredictedRevenue == null) return true;
   return !hasPlanningFactorPayload(forecast);
 };
@@ -566,8 +573,18 @@ const getHistory = async (req, res, next) => {
             idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}:${attempt}:${creditsPerDay}`,
             run: async () => {
               built = await ensureHistoryForecast(cafeId, zonedDayStart(dateKey, timezone));
+              if (historyWeatherIsPending(built)) {
+                const error = new Error('Historical weather is temporarily unavailable; this day remains pending');
+                error.code = 'HISTORY_WEATHER_PENDING';
+                throw error; // The meter refunds before the day can be counted as built.
+              }
               return { forecastId: built ? String(built._id) : null, dateKey };
             },
+          }).catch((error) => {
+            if (error.code !== 'HISTORY_WEATHER_PENDING'
+              || (creditsPerDay > 0 && error.guavaCharge?.status !== 'refunded')) throw error;
+            clearApiCache({ cafeId });
+            return { result: null, replayed: false };
           });
           const forecast = built || (result?.forecastId ? await Forecast.findOne({ _id: result.forecastId, cafeId }).lean() : null);
           if (forecast && !needsHistoryForecastRefresh(forecast)) {
