@@ -7,7 +7,7 @@ const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getSignalsForDate } = require('../../utils/signals');
-const { getWeatherForecast, unavailableWeatherSignal } = require('../weather.service');
+const { getWeatherForecast, unavailableWeatherSignal, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT } = require('../weather.service');
 const {
   safeTimezone, zonedDayStart, addZonedDays, zonedDayOfWeek, zonedDayOrdinal, processLocalCalendarDate,
   zonedDateKey,
@@ -26,7 +26,7 @@ const {
 } = require('./history');
 const { computeSuggestedStockMap, loadStockPairs } = require('./stock');
 
-const FORECAST_MODEL_VERSION = '2026-09-29.3';
+const FORECAST_MODEL_VERSION = '2026-09-29.4';
 const MAX_STORED_FORECAST_ITEMS = 25;
 const SIGNAL_RETRY_AFTER_MS = 15 * 60 * 1000;
 
@@ -98,8 +98,19 @@ const getTradingAvailability = (cafe, events, dayOfWeek, { hasSalesHistory = fal
       eventName: fullClosure.name || '', scheduleSource: schedule.source,
     };
   }
-  const openMinutes = parseTime(schedule.openTime);
-  const closeMinutes = parseTime(schedule.closeTime);
+  let openMinutes = parseTime(schedule.openTime);
+  let closeMinutes = parseTime(schedule.closeTime);
+  // An inferred day has no owner-saved window. Use its observed trading hours
+  // when known, including sales before the suggested default opening time.
+  if (schedule.source === 'inferred_from_sales' && hourlyProfile instanceof Map) {
+    const hours = [...hourlyProfile].filter(([hour, units]) =>
+      Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isFinite(units) && units > 0
+    ).map(([hour]) => hour);
+    if (hours.length > 0) {
+      openMinutes = Math.min(...hours) * 60;
+      closeMinutes = (Math.max(...hours) + 1) * 60;
+    }
+  }
   const scheduledMinutes = closeMinutes != null && openMinutes != null ? closeMinutes - openMinutes : 0;
   if (scheduledMinutes <= 0) {
     return {
@@ -139,7 +150,6 @@ const getTradingAvailability = (cafe, events, dayOfWeek, { hasSalesHistory = fal
   }
   return { status: 'ready', multiplier: 1, reason: '', scheduleSource: schedule.source };
 };
-
 
 /**
  * Words the explanation for a day that is forecasting zero, and says whether
@@ -265,7 +275,6 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
   const lastTransactionDate =
     historyDates.length > 0 ? new Date(Math.max(...historyDates.map((date) => date.getTime()))) : undefined;
 
-
   // Get cafe location for weather
   const lat = cafe.location?.lat;
   const lng = cafe.location?.lng;
@@ -285,7 +294,6 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
   const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
   const transientSignal = weatherSignal.transient === true || signals.loadSheddingTransient === true;
   const retryAfter = transientSignal ? new Date(Date.now() + SIGNAL_RETRY_AFTER_MS) : null;
-
 
   // Group transactions by week and item
   const { itemWeekMap, observedBuckets } = groupByWeekAndItem(
@@ -364,9 +372,22 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
       daySignals.loadSheddingStage = stored.loadSheddingStage;
       daySignals.loadSheddingAvailable = true;
     }
-    const dayWeather = stored.weather && stored.weather.available !== false ? stored.weather : noStoredWeather;
+    const dayWeather = stored.weather && stored.weather.available !== false ? {
+      ...stored.weather,
+      // Reinterpret stored provider measurements under today's rain rule;
+      // legacy condition words and their isRain flag are not measurements.
+      isRain: Number.isFinite(stored.weather.precipMm)
+        ? stored.weather.precipMm >= RAIN_MIN_MM
+        : Number.isFinite(stored.weather.chanceOfRain) && stored.weather.chanceOfRain >= RAIN_MIN_CHANCE_PCT,
+    } : noStoredWeather;
+    // A legacy daily mean cannot establish a daytime high. Ignore only the
+    // temperature effects in this historical scoring view, preserving rain.
+    const historicalSettings = Number.isFinite(dayWeather.maxTemp) ? settings : {
+      ...settings,
+      weather: { ...settings.weather, hotColdDrinkPct: 0, hotCoffeePct: 0, coldCoffeePct: 0, coldColdDrinkPct: 0 },
+    };
     const factorProduct = multiplyFactors(
-      buildItemFactors({ category, signals: daySignals, weather: dayWeather, events: dayEvents, settings })
+      buildItemFactors({ category, signals: daySignals, weather: dayWeather, events: dayEvents, settings: historicalSettings })
     );
     const dayTrading = getTradingAvailability(cafe, dayEvents, targetDayOfWeek, {
       hasSalesHistory: observedWeeks > 0, hourlyProfile,

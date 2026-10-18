@@ -63,3 +63,34 @@ describe('weather rules', () => {
     expect(weatherFactor('food', weather)).toEqual(expect.objectContaining({ active: false, adjustmentPct: 0 }));
   });
 });
+
+
+describe('literal rain thresholds', () => {
+  const previousKey = process.env.WEATHER_API_KEY;
+  const previousUrl = process.env.WEATHER_API_URL;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearWeatherCache();
+    process.env.WEATHER_API_KEY = 'test-weather-key';
+    process.env.WEATHER_API_URL = 'https://api.weatherapi.com/v1';
+  });
+  afterAll(() => {
+    if (previousKey === undefined) delete process.env.WEATHER_API_KEY;
+    else process.env.WEATHER_API_KEY = previousKey;
+    if (previousUrl === undefined) delete process.env.WEATHER_API_URL;
+    else process.env.WEATHER_API_URL = previousUrl;
+  });
+  it('pins one millimetre and seventy percent', () => {
+    const { RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT } = require('../../src/services/weather.service');
+    expect(RAIN_MIN_MM).toBe(1);
+    expect(RAIN_MIN_CHANCE_PCT).toBe(70);
+  });
+  it.each([[0.99, false], [1, true]])('rain at %s mm is %s even with a 100 percent chance', async (amount, expected) => {
+    const date = provide({ avgtemp_c: 20, maxtemp_c: 22, avghumidity: 50, totalprecip_mm: amount, daily_chance_of_rain: 100, condition: { text: 'Rain' } });
+    await expect(getWeatherForecast(-26.2, 28, date)).resolves.toEqual(expect.objectContaining({ isRain: expected }));
+  });
+  it.each([[69, false], [70, true]])('rain without an amount at %s percent is %s', async (chance, expected) => {
+    const date = provide({ avgtemp_c: 20, maxtemp_c: 22, avghumidity: 50, daily_chance_of_rain: chance, condition: { text: 'Cloudy' } });
+    await expect(getWeatherForecast(-26.2, 28, date)).resolves.toEqual(expect.objectContaining({ isRain: expected }));
+  });
+});

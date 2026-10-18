@@ -46,7 +46,7 @@ const normalizeTradingHours = (input) => {
 };
 
 const getCafeTradingHours = (cafe) => {
-  if (cafe && Array.isArray(cafe.tradingHours) && cafe.tradingHours.length === 7) {
+  if (hasSavedTradingHours(cafe)) {
     return cafe.tradingHours;
   }
   return defaultTradingHours();
@@ -145,7 +145,10 @@ const tradingHoursInputError = (input) => {
   return null;
 };
 
-const hasSavedTradingHours = (cafe) => Array.isArray(cafe?.tradingHours) && cafe.tradingHours.length === 7;
+const hasSavedTradingHours = (cafe) => Array.isArray(cafe?.tradingHours) &&
+  cafe.tradingHours.length === 7 &&
+  cafe.tradingHours.every((entry) => Number.isInteger(entry?.dayOfWeek) && entry.dayOfWeek >= 0 && entry.dayOfWeek <= 6) &&
+  new Set(cafe.tradingHours.map((entry) => entry.dayOfWeek)).size === 7;
 
 // The schedule for one weekday and where it came from. A cafe that never saved hours has no schedule of its own, so a default-closed
 // day its sales show it trades is open with the default window. A saved schedule always wins, even when the sales disagree.

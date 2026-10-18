@@ -86,3 +86,70 @@ describe('load-shedding for the planning horizon', () => {
     expect(axios.get).not.toHaveBeenCalled();
   });
 });
+
+
+describe('bounded review regressions for calendars and shared load shedding', () => {
+  const originalKey = process.env.ESKOMSEPUSH_API_KEY;
+  afterEach(() => {
+    jest.restoreAllMocks();
+    clearLoadSheddingCache();
+    if (originalKey === undefined) delete process.env.ESKOMSEPUSH_API_KEY;
+    else process.env.ESKOMSEPUSH_API_KEY = originalKey;
+  });
+
+  it('moves Christmas 2028 through the observed Monday to Friday 22 December', () => {
+    expect(isPayday(day(2028, 12, 22))).toBe(true);
+    expect(isPayday(day(2028, 12, 25))).toBe(false);
+  });
+
+  it('keeps observed holidays and date-only overrides local in a negative-offset timezone', () => {
+    const { execFileSync } = require('child_process');
+    const script = [
+      "const { getPublicHolidaysForYear, isPayday } = require('./src/utils/signals');",
+      "console.log(JSON.stringify({ holidays: getPublicHolidaysForYear(2026), payday: isPayday(new Date(2028, 11, 22, 12)) }));",
+    ].join('\n');
+    const result = JSON.parse(execFileSync(process.execPath, ['-e', script], {
+      cwd: process.cwd(), encoding: 'utf8',
+      env: { ...process.env, TZ: 'America/Los_Angeles', PUBLIC_HOLIDAY_OVERRIDES: '2026-10-20:Special day' },
+    }));
+    expect(result.holidays).toContainEqual(expect.objectContaining({ date: '2026-08-10', observedOf: "National Women's Day" }));
+    expect(result.holidays).toContainEqual(expect.objectContaining({ date: '2026-10-20', name: 'Special day' }));
+    expect(result.payday).toBe(true);
+  });
+
+  it('logs one failure for seven concurrent dates and keeps each result explicitly unavailable', async () => {
+    process.env.ESKOMSEPUSH_API_KEY = 'test-eskom-key';
+    clearLoadSheddingCache();
+    axios.get.mockReset().mockRejectedValue(new Error('provider unavailable'));
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const now = new Date('2026-09-22T06:00:00Z');
+    const results = await Promise.all(Array.from({ length: 7 }, (_, index) =>
+      getLoadSheddingForDate('Johannesburg', `2026-09-${22 + index}`, 'Africa/Johannesburg', now)));
+    expect(axios.get).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveBeenCalledTimes(1);
+    for (const result of results) expect(result).toEqual({ available: false, stage: null, transient: true, unavailableReason: 'Load-shedding data is temporarily unavailable' });
+    await getLoadSheddingForDate('Johannesburg', '2026-09-23', 'Africa/Johannesburg', now);
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('pins the seven-day horizon and local 06:00 to 20:00 window', async () => {
+    const { LOAD_SHEDDING_SCHEDULE_DAYS, LOAD_SHEDDING_WINDOW } = require('../../src/utils/signals');
+    expect(LOAD_SHEDDING_SCHEDULE_DAYS).toBe(7);
+    expect(LOAD_SHEDDING_WINDOW).toEqual({ startHour: 6, endHour: 20 });
+    process.env.ESKOMSEPUSH_API_KEY = 'test-eskom-key';
+    clearLoadSheddingCache();
+    axios.get.mockReset().mockResolvedValue({ data: { status: { eskom: { stage: '0', next_stages: [
+      { stage: '2', stage_start_timestamp: '2026-09-29T05:59:00+02:00' },
+      { stage: '3', stage_start_timestamp: '2026-09-29T06:00:00+02:00' },
+      { stage: '4', stage_start_timestamp: '2026-09-29T19:59:00+02:00' },
+      { stage: '8', stage_start_timestamp: '2026-09-29T20:00:00+02:00' },
+    ] } } } });
+    const now = new Date('2026-09-22T06:00:00Z');
+    await expect(getLoadSheddingForDate('Johannesburg', '2026-09-29', 'Africa/Johannesburg', now))
+      .resolves.toEqual({ available: true, stage: 4, source: 'esp_schedule' });
+    await expect(getLoadSheddingForDate('Johannesburg', '2026-09-30', 'Africa/Johannesburg', now))
+      .resolves.toEqual(expect.objectContaining({ available: false, unavailableReason: 'EskomSePush publishes at most 7 days ahead' }));
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+});

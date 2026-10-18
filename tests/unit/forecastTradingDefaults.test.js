@@ -149,3 +149,72 @@ describe('staleness', () => {
     expect(forecast.trainingData.staleDays).toBe(1);
   });
 });
+
+
+describe('bounded review regressions for trading defaults', () => {
+  it('requires all seven distinct weekdays before treating hours as saved', () => {
+    const { hasSavedTradingHours, getCafeTradingHours, defaultTradingHours, resolveDaySchedule } = require('../../src/utils/tradingHours');
+    expect(hasSavedTradingHours({ tradingHours: openAllWeek })).toBe(true);
+    const duplicate = [...openAllWeek.slice(0, 6), openAllWeek[5]];
+    expect(hasSavedTradingHours({ tradingHours: duplicate })).toBe(false);
+    expect(getCafeTradingHours({ tradingHours: duplicate })).toEqual(defaultTradingHours());
+    expect(resolveDaySchedule({ tradingHours: duplicate }, 0, { hasSalesHistory: true }).source).toBe('inferred_from_sales');
+  });
+
+  it('keeps an unsaved Sunday with no sales closed with default provenance', async () => {
+    stubModels();
+    const forecast = await generateForecast('cafe-1', SUNDAY);
+    expect(forecast.availability).toEqual(expect.objectContaining({ status: 'closed', scheduleSource: 'default' }));
+  });
+
+  it('uses the observed early morning window for an inferred Sunday closure', () => {
+    const trading = forecastMath.getTradingAvailability({}, [
+      { name: 'Early closure', type: 'partial_closure', closureWindow: { startTime: '05:00', endTime: '06:00' } },
+    ], 0, { hasSalesHistory: true, hourlyProfile: new Map([[5, 60], [6, 40]]) });
+    expect(trading).toEqual(expect.objectContaining({ multiplier: 0.4, scheduleSource: 'inferred_from_sales', closedShareMethod: 'hourly_sales' }));
+  });
+
+  it('pins fifty scheduled units as the hourly-profile threshold', () => {
+    const { MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare } = require('../../src/services/forecast/generate');
+    expect(MIN_HOURLY_PROFILE_UNITS).toBe(50);
+    expect(hourlyClosedShare(new Map([[7, 24], [8, 25]]), 420, 540, [[420, 480]])).toBeNull();
+    expect(hourlyClosedShare(new Map([[7, 25], [8, 25]]), 420, 540, [[420, 480]])).toBe(0.5);
+  });
+});
+
+describe('stored weather under current historical rules', () => {
+  const WINTER_WEDNESDAY = zonedDayStart('2030-07-10', TZ);
+  const baselineWithWeather = async (storedWeather) => {
+    stubModels({
+      cafe: { tradingHours: openAllWeek },
+      transactions: Array.from({ length: 8 }, (_, i) => ({
+        date: at(WINTER_WEDNESDAY, 7 * (i + 1), 9), dayOfWeek: 3, hour: 9,
+        items: [{ name: 'Flat White', quantity: 100, unitPrice: 30 }],
+      })),
+    });
+    Forecast.find.mockImplementation((filter) => query(filter?.dateKey?.$in
+      ? filter.dateKey.$in.map((dateKey) => ({ dateKey, signals: { weather: storedWeather } })) : []));
+    const forecast = await generateForecast('cafe-1', WINTER_WEDNESDAY);
+    return forecast.items[0].baseQty;
+  };
+
+  it('does not remove a cold effect from a legacy mean without a daytime high', async () => {
+    expect(await baselineWithWeather({ available: true, temp: 12, condition: 'Cloudy', isRain: false })).toBeCloseTo(100, 5);
+  });
+
+  it('reinterprets a legacy wording-only rain flag using stored millimetres', async () => {
+    expect(await baselineWithWeather({ available: true, temp: 20, condition: 'Patchy rain nearby', isRain: true, precipMm: 0.2 })).toBeCloseTo(100, 5);
+  });
+
+  it('still removes a measurable weather effect from the historical baseline', async () => {
+    expect(await baselineWithWeather({ available: true, temp: 12, maxTemp: 12, condition: 'Cloudy', isRain: false })).toBe(86.96);
+  });
+
+  it('keeps measurable rain while ignoring a legacy cold mean', async () => {
+    expect(await baselineWithWeather({ available: true, temp: 12, condition: 'Rain', isRain: false, precipMm: 2 })).toBe(111.11);
+  });
+
+  it('uses the stored daytime high when it is present', async () => {
+    expect(await baselineWithWeather({ available: true, temp: 12, maxTemp: 19, condition: 'Cloudy', isRain: false })).toBeCloseTo(100, 5);
+  });
+});

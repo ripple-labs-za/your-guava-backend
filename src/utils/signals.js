@@ -1,14 +1,13 @@
 const axios = require('axios');
 const { zonedDateKey, zonedDateTimeToUtc } = require('./timezone');
 
-// Simple in-memory cache for load shedding status (both reported areas)
+// Shared current and announced load-shedding status for both reported areas.
 const LOAD_SHEDDING_CACHE_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
- * Returns true if the given date is a payday:
- * - 25th of the month
- * - 1st of the month
- * - Last business day of the month
+ * Calendar helpers below resolve public holidays and payday anchors locally.
+ * A non-business-day 25th and month-end move to the previous business day;
+ * the first counts only when it is itself a business day.
  */
 
 const toDateKey = (date) => {
@@ -100,7 +99,7 @@ const getPublicHolidaysForYear = (year) => {
 
   const baseHolidays = [...holidays.values()];
   for (const holiday of baseHolidays) {
-    const holidayDate = new Date(holiday.date);
+    const holidayDate = parseLocalDateKey(holiday.date);
     if (holidayDate.getDay() === 0) {
       addHoliday(holidays, addDays(holidayDate, 1), `${holiday.name} observed`, holiday.name);
     }
@@ -109,7 +108,8 @@ const getPublicHolidaysForYear = (year) => {
   const allSpecialHolidays = { ...SPECIAL_PUBLIC_HOLIDAYS, ...publicHolidayOverrides() };
   for (const [date, name] of Object.entries(allSpecialHolidays)) {
     if (date.startsWith(`${year}-`)) {
-      addHoliday(holidays, new Date(date), name);
+      const localDate = parseLocalDateKey(date);
+      if (localDate) addHoliday(holidays, localDate, name);
     }
   }
 
@@ -318,10 +318,9 @@ const loadSheddingAreaForCity = (city = '') =>
   /cape\s*town/i.test(String(city)) ? 'capetown' : 'eskom';
 
 /**
- * Fetches the current EskomSePush load shedding stage for the cafe's area.
- * Cape Town cafes use the City of Cape Town stage; all other locations use
- * the Eskom national stage. Returns an explicit availability signal and
- * caches verified stages for 30 minutes.
+ * Fetches current and announced EskomSePush stages for the cafe's area.
+ * Cape Town uses the city stage; other locations use the national stage.
+ * One in-flight request and the success/failure caches serve all dates.
  */
 const LOAD_SHEDDING_SCHEDULE_DAYS = 7;
 const LOAD_SHEDDING_WINDOW = { startHour: 6, endHour: 20 };
@@ -365,6 +364,7 @@ const fetchLoadSheddingStatus = async () => {
   pendingStatusRequest = requestLoadSheddingStatus()
     .catch((error) => {
       statusRetryAt = Date.now() + LOAD_SHEDDING_FAILURE_TTL_MS;
+      console.error('[signals] Load shedding API error:', error.message);
       throw error;
     })
     .finally(() => { pendingStatusRequest = null; });
@@ -381,8 +381,7 @@ const getLoadSheddingStage = async (city) => {
     return Number.isFinite(area?.stage)
       ? { available: true, stage: area.stage }
       : unknownStage('Load-shedding provider returned no stage for this area');
-  } catch (error) {
-    if (!error.cachedFailure) console.error('[signals] Load shedding API error:', error.message);
+  } catch {
     return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
 };
@@ -408,8 +407,7 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
   let area;
   try {
     area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
-  } catch (error) {
-    if (!error.cachedFailure) console.error('[signals] Load shedding API error:', error.message);
+  } catch {
     return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
   if (!Number.isFinite(area?.stage)) return unknownStage('Load-shedding provider returned no stage for this area');
@@ -487,7 +485,7 @@ const isPayday = (date) => {
 };
 
 module.exports = {
-  isBusinessDay, previousBusinessDay, paydayAnchors, getLoadSheddingForDate, LOAD_SHEDDING_SCHEDULE_DAYS,
+  isBusinessDay, previousBusinessDay, paydayAnchors, getLoadSheddingForDate, LOAD_SHEDDING_SCHEDULE_DAYS, LOAD_SHEDDING_WINDOW,
   isPayday,
   isPublicHoliday,
   getPublicHolidayInfo,
