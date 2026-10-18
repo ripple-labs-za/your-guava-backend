@@ -2,7 +2,9 @@ const Event = require('../models/Event.model');
 const { invalidatePlanningForecasts } = require('../services/forecast.service');
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
-const { getForecastSettings, eventImpactPct } = require('../services/forecastFactors.service');
+const Organization = require('../models/Organization.model');
+const { eventDateKey } = require('../services/forecast/history');
+const { getForecastSettings, eventImpactPct, factorUnlocked } = require('../services/forecastFactors.service');
 const {
   DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, getCafeTimezone, zonedDayStart, cafeLocalToday, parseDateOnly,
   formatDateOnly,
@@ -42,6 +44,24 @@ const parseImpactPct = (impactPct) => {
     throw error;
   }
   return Math.round(parsed * 10) / 10;
+};
+
+const parseRecurring = (value) => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    const error = new Error('recurring must be true or false');
+    error.statusCode = 400;
+    throw error;
+  }
+  return value;
+};
+
+const eventRange = (from, to, inclusive = true) => {
+  const keys = {};
+  const dates = {};
+  if (from) { keys.$gte = formatDateOnly(from); dates.$gte = from; }
+  if (to) { keys[inclusive ? '$lte' : '$lt'] = formatDateOnly(to); dates[inclusive ? '$lte' : '$lt'] = to; }
+  return { $or: [{ dateKey: keys }, { dateKey: { $exists: false }, date: dates }] };
 };
 
 const ALLOWED_EVENT_TYPES = ['event', 'closure', 'partial_closure'];
@@ -126,20 +146,30 @@ const eventEffects = async (req, res, next) => {
     const today = cafeLocalToday(timezone);
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 30, 100));
     const baselineWeeks = Math.max(3, Math.min(Number(req.query.baselineWeeks) || 8, 16));
-    const to = req.query.to ? requireEventDate(req.query.to, 'to') : today;
+    const latestTo = addDays(today, -1);
+    const requestedTo = req.query.to ? requireEventDate(req.query.to, 'to') : latestTo;
+    const to = requestedTo > latestTo ? latestTo : requestedTo;
     const from = req.query.from
       ? requireEventDate(req.query.from, 'from')
       : addDays(to, -365);
     if (from > to) {
       return res.status(400).json({ success: false, message: 'from must be on or before to' });
     }
-    const settings = getForecastSettings(cafe);
+    const org = await Organization.findById(req.user.orgId).select('plan').lean();
+    const plan = org?.plan || 'starter';
+    const settings = getForecastSettings(cafe, plan);
+    const expectedApplied = settings.events?.enabled === true;
+    const planLabel = plan.charAt(0).toUpperCase() + plan.slice(1);
+    const expectedNote = expectedApplied ? null : factorUnlocked(plan, 'events')
+      ? 'The events factor is switched off in Factors.'
+      : `Local events are not applied to forecasts on the ${planLabel} plan.`;
 
     const events = await Event.find({
       cafeId,
-      date: { $gte: from, $lte: to },
+      ...eventRange(from, to),
+      type: { $nin: ['closure', 'partial_closure'] },
     })
-      .sort({ date: -1 })
+      .sort({ dateKey: -1, date: -1 })
       .limit(limit)
       .lean();
 
@@ -157,8 +187,8 @@ const eventEffects = async (req, res, next) => {
       });
     }
 
-    const earliestBaselineDate = addDays(dateOnly(events[events.length - 1].date), -baselineWeeks * 7);
-    const eventEndDate = addDays(dateOnly(events[0].date), 1);
+    const earliestBaselineDate = addDays(requireEventDate(eventDateKey(events[events.length - 1], timezone)), -baselineWeeks * 7);
+    const eventEndDate = addDays(requireEventDate(eventDateKey(events[0], timezone)), 1);
     const earliestBaselineStart = zonedDayStart(formatDateOnly(earliestBaselineDate), timezone);
     const eventEnd = zonedDayStart(formatDateOnly(eventEndDate), timezone);
 
@@ -166,16 +196,16 @@ const eventEffects = async (req, res, next) => {
       getDailySales(cafe._id, earliestBaselineStart, eventEnd, timezone),
       Event.find({
         cafeId,
-        date: { $gte: earliestBaselineDate, $lt: eventEndDate },
-      }).select('date').lean(),
+        ...eventRange(earliestBaselineDate, eventEndDate, false),
+      }).select('date dateKey').lean(),
     ]);
 
     const salesByDate = new Map(dailySales.map((row) => [row._id, row]));
-    const eventDateKeys = new Set(eventDates.map((event) => formatDateOnly(event.date)));
+    const eventDateKeys = new Set(eventDates.map((event) => eventDateKey(event, timezone)));
 
     const effects = events.map((event) => {
-      const eventDate = dateOnly(event.date);
-      const key = formatDateOnly(eventDate);
+      const key = eventDateKey(event, timezone);
+      const eventDate = requireEventDate(key);
       const eventSales = salesByDate.get(key) || { revenue: 0, transactions: 0 };
       const baselineStart = addDays(eventDate, -baselineWeeks * 7);
       const eventWeekday = eventDate.getUTCDay();
@@ -199,9 +229,10 @@ const eventEffects = async (req, res, next) => {
         : 0;
       const actualRevenue = Number((eventSales.revenue || 0).toFixed(2));
       const actualTransactions = eventSales.transactions || 0;
-      const revenueImpactPct = pctChange(actualRevenue, baselineRevenue);
-      const transactionImpactPct = pctChange(actualTransactions, baselineTransactions);
-      const expectedImpactPct = eventImpactPct(event, settings.events);
+      const measurable = actualTransactions > 0 && baselineRevenue > 0;
+      const revenueImpactPct = measurable ? pctChange(actualRevenue, baselineRevenue) : null;
+      const transactionImpactPct = measurable ? pctChange(actualTransactions, baselineTransactions) : null;
+      const expectedImpactPct = expectedApplied ? eventImpactPct(event, settings.events) : 0;
       const vsExpectedPct = revenueImpactPct == null
         ? null
         : Number((revenueImpactPct - expectedImpactPct).toFixed(1));
@@ -210,8 +241,11 @@ const eventEffects = async (req, res, next) => {
         eventId: event._id,
         name: event.name,
         date: event.date,
+        dateKey: key,
         impact: event.impact,
         expectedImpactPct,
+        expectedApplied,
+        expectedNote,
         actualRevenue,
         actualTransactions,
         baselineRevenue: Number(baselineRevenue.toFixed(2)),
@@ -271,7 +305,9 @@ const list = async (req, res, next) => {
       filter.date = { $gte: today };
     }
 
-    const events = await Event.find(filter).sort({ date: 1 }).lean();
+    Object.assign(filter, eventRange(filter.date.$gte, filter.date.$lte));
+    delete filter.date;
+    const events = await Event.find(filter).sort({ dateKey: 1, date: 1 }).lean();
     return res.status(200).json({ success: true, events });
   } catch (error) {
     next(error);
@@ -295,12 +331,13 @@ const create = async (req, res, next) => {
       cafeId,
       name: String(name).trim(),
       date: parsedDate,
+      dateKey: String(date),
       type: parsedType,
       closureWindow: parsedClosure,
       impact: impact || 'medium',
       impactPct: parseImpactPct(impactPct),
       notes,
-      recurring: recurring || false,
+      recurring: parseRecurring(recurring) ?? false,
     });
     await invalidatePlanningForecastsFrom(cafeId, event.date);
 
@@ -322,12 +359,17 @@ const update = async (req, res, next) => {
     }
 
     const update = {};
+    const unset = {};
     if (name !== undefined) update.name = String(name).trim();
-    if (date !== undefined) update.date = requireEventDate(date);
+    if (date !== undefined) { update.date = requireEventDate(date); update.dateKey = String(date); }
     if (impact !== undefined) update.impact = impact;
     if (notes !== undefined) update.notes = notes;
-    if (recurring !== undefined) update.recurring = recurring;
-    if (impactPct !== undefined) update.impactPct = parseImpactPct(impactPct);
+    if (recurring !== undefined) update.recurring = parseRecurring(recurring);
+    if (impactPct !== undefined) {
+      const parsed = parseImpactPct(impactPct);
+      if (parsed === undefined) unset.impactPct = 1;
+      else update.impactPct = parsed;
+    }
 
     if (type !== undefined) {
       const parsedType = parseEventType(type);
@@ -336,7 +378,7 @@ const update = async (req, res, next) => {
       if (effectiveType === 'partial_closure') {
         update.closureWindow = parseClosureWindow(effectiveType, closureWindow ?? existing.closureWindow);
       } else {
-        update.closureWindow = undefined;
+        unset.closureWindow = 1;
       }
     } else if (closureWindow !== undefined) {
       update.closureWindow = parseClosureWindow(existing.type || 'event', closureWindow);
@@ -344,7 +386,7 @@ const update = async (req, res, next) => {
 
     const event = await Event.findOneAndUpdate(
       { _id: id, cafeId },
-      { $set: update },
+      { ...(Object.keys(update).length ? { $set: update } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) },
       { new: true, runValidators: true }
     );
     const invalidateFrom = date !== undefined && update.date < existing.date

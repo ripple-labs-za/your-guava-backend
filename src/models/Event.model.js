@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { storedDayKey } = require('../utils/timezone');
 
 const eventSchema = new mongoose.Schema(
   {
@@ -20,6 +21,7 @@ const eventSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    dateKey: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
     type: {
       type: String,
       enum: ['event', 'closure', 'partial_closure'],
@@ -59,5 +61,14 @@ const eventSchema = new mongoose.Schema(
 );
 
 eventSchema.index({ cafeId: 1, date: 1 });
+eventSchema.index({ cafeId: 1, dateKey: 1 });
+eventSchema.index({ cafeId: 1, recurring: 1 });
+
+eventSchema.pre('validate', function fillDateKeyFromNominalDate() {
+  if (this.dateKey || !(this.date instanceof Date)) return;
+  const date = this.date;
+  if (date.getUTCHours() || date.getUTCMinutes() || date.getUTCSeconds() || date.getUTCMilliseconds()) return;
+  this.dateKey = storedDayKey(date, 'UTC');
+});
 
 module.exports = mongoose.model('Event', eventSchema);

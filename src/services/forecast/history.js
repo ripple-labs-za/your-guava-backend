@@ -160,20 +160,42 @@ const bucketDateKeys = (target, maxWeeks, timezone) =>
 
 const eventDateKey = (event, timezone) => event?.dateKey || storedDayKey(event?.date, timezone);
 
-// Cover nominal UTC-midnight dates and legacy cafe-local instants, then key by the owner's day.
+const isCalendarDateKey = (key) => {
+  const [year, month, day] = key.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
+
+// Keep legacy instants readable until migration; dated records use their calendar key.
 const loadEventsByDateKey = async (cafeId, fromKey, toKeyExclusive, timezone) => {
   const starts = [new Date(`${fromKey}T00:00:00.000Z`), zonedDayStart(fromKey, timezone)];
   const ends = [new Date(`${toKeyExclusive}T00:00:00.000Z`), zonedDayStart(toKeyExclusive, timezone)];
-  const events = await Event.find({
-    cafeId,
-    date: { $gte: new Date(Math.min(...starts)), $lt: new Date(Math.max(...ends)) },
-  }).lean();
+  const [events, recurring] = await Promise.all([
+    Event.find({ cafeId, $or: [
+      { dateKey: { $gte: fromKey, $lt: toKeyExclusive } },
+      { dateKey: { $exists: false }, date: { $gte: new Date(Math.min(...starts)), $lt: new Date(Math.max(...ends)) } },
+    ] }).lean(),
+    Event.find({ cafeId, recurring: true, dateKey: { $lt: fromKey } }).lean(),
+  ]);
   const byKey = new Map();
+  const add = (key, event) => {
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(event);
+  };
   for (const event of events) {
     const key = eventDateKey(event, timezone);
     if (!key || key < fromKey || key >= toKeyExclusive) continue;
-    if (!byKey.has(key)) byKey.set(key, []);
-    byKey.get(key).push(event);
+    add(key, event);
+  }
+  // D-017: anniversaries after the original date, with February 29 only in leap years.
+  for (const event of recurring) {
+    if (event.recurring !== true || typeof event.dateKey !== 'string' || event.dateKey >= fromKey) continue;
+    for (let year = Number(fromKey.slice(0, 4)); year <= Number(toKeyExclusive.slice(0, 4)); year += 1) {
+      const key = `${year}-${event.dateKey.slice(5)}`;
+      if (key > event.dateKey && key >= fromKey && key < toKeyExclusive && isCalendarDateKey(key)) {
+        add(key, { ...event, recurrenceOf: event.dateKey });
+      }
+    }
   }
   return byKey;
 };
@@ -262,7 +284,7 @@ const buildHourlyProfile = (transactions) => {
 module.exports = {
   buildHourlyProfile,
   OUTLIER_WINSOR_MULTIPLE, OUTLIER_MIN_OBSERVED_WEEKS, OUTLIER_MIN_MEDIAN_QTY,
-  bucketDateKeys, eventDateKey, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
+  bucketDateKeys, eventDateKey, isCalendarDateKey, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
   deFactorItemBuckets, winsoriseBuckets,
   MIN_HISTORY_WEEKS, requiredHistoryWeeks, forecastConfidence, groupByWeekAndItem, buildHistoryWeights, weightedAverage,
   buildHistoricalPriceMap,

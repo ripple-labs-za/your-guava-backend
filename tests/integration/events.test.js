@@ -141,6 +141,7 @@ describe('Events API', () => {
 
   describe('GET /api/events/effects', () => {
     it('compares event-day sales against comparable non-event weekdays', async () => {
+      await require('../../src/models/Organization.model').findByIdAndUpdate(user.orgId, { plan: 'growth' });
       const eventDate = new Date('2026-04-22T09:00:00.000Z');
       const baselineDates = [
         '2026-04-01T09:00:00.000Z',
