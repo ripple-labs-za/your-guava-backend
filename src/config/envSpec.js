@@ -1,0 +1,183 @@
+/**
+ * What the API reads from the environment and what each value must look like.
+ * validateEnv enforces it; tests/unit/envSpec.test.js fails when src reads a
+ * variable not listed here, so a new setting cannot skip validation.
+ */
+
+// [min, max] mirror the clamp at each use site. The code clamps, so outside
+// production a bad value only warns; production refuses to boot on it.
+const NUMERIC_ENV = Object.freeze({
+  AI_INSIGHT_LEASE_MS: { min: 1000, max: 300000 },
+  AI_ORG_CONCURRENCY_LIMIT: { min: 1, max: 100 },
+  AI_ORG_DAILY_CREDIT_LIMIT: { min: 10, max: 1000000 },
+  AI_STREAM_IDLE_TIMEOUT_MS: { min: 1000, max: 60000 },
+  AI_STREAM_MAX_DURATION_MS: { min: 10000, max: 240000 },
+  AI_USER_CONCURRENCY_LIMIT: { min: 1, max: 20 },
+  AI_USER_DAILY_CREDIT_LIMIT: { min: 10, max: 100000 },
+  ANALYTICS_MAX_RANGE_DAYS: { min: 7, max: 1830 },
+  ANALYTICS_QUERY_MAX_TIME_MS: { min: 1000, max: 120000 },
+  ANTHROPIC_MAX_RETRIES: { min: 0, max: 2 },
+  ANTHROPIC_TIMEOUT_MS: { min: 5000, max: 60000 },
+  BCRYPT_ROUNDS: { min: 4, max: 15 },
+  BILLING_GRACE_DAYS: { min: 0, max: 14 },
+  BILLING_REMINDER_INTERVAL_MS: { min: 300000, max: 86400000 },
+  COMBOS_MAX_BASKETS: { min: 1, max: 200000 },
+  EVENT_LOOP_LOG_INTERVAL_MS: { min: 5000, max: 3600000 },
+  HISTORY_BACKFILL_CREDITS_PER_DAY: { min: 0, max: 5 },
+  INDEX_INIT_TIMEOUT_MS: { min: 10000, max: 600000 },
+  MIGRATION_STARTUP_TIMEOUT_MS: { min: 5000, max: 600000 },
+  OUTBOUND_CONNECT_TIMEOUT_MS: { min: 20, max: 30000 },
+  OUTBOUND_ESKOMSEPUSH_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_ONEGATE_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_PAYSTACK_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_QUICKBOOKS_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_R2_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_RESEND_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_SAGE_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_WEATHER_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_XERO_TIMEOUT_MS: { min: 50, max: 120000 },
+  OUTBOUND_YOCO_TIMEOUT_MS: { min: 50, max: 120000 },
+  PAYMENT_RECONCILIATION_INTERVAL_MS: { min: 30000, max: 3600000 },
+  PORT: { min: 1, max: 65535 },
+  SHUTDOWN_TIMEOUT_MS: { min: 1000, max: 60000 },
+  TEAM_INVITE_TTL_HOURS: { min: 1, max: 168 },
+  TRUST_PROXY_HOPS: { min: 0, max: 5 },
+  UPLOAD_CLEANUP_INTERVAL_MS: { min: 300000, max: 86400000 },
+  UPLOAD_FAILED_RETENTION_MS: { min: 3600000, max: 2592000000 },
+  UPLOAD_MAINTENANCE_MAX_ATTEMPTS: { min: 1, max: 10 },
+  UPLOAD_MAINTENANCE_RETRY_MS: { min: 1000, max: 21600000 },
+  UPLOAD_MAX_ABSOLUTE_AMOUNT: { min: 1, max: 1000000000 },
+  UPLOAD_MAX_BYTES: { min: 1024, max: 26214400 },
+  UPLOAD_MAX_CELL_CHARS: { min: 100, max: 100000 },
+  UPLOAD_MAX_COLUMNS: { min: 2, max: 250 },
+  UPLOAD_MAX_DATE_RANGE_DAYS: { min: 1, max: 3660 },
+  UPLOAD_MAX_FUTURE_DAYS: { min: 0, max: 1830 },
+  UPLOAD_MAX_IDENTIFIER_CHARS: { min: 1, max: 1000 },
+  UPLOAD_MAX_ITEMS_PER_TRANSACTION: { min: 1, max: 500 },
+  UPLOAD_MAX_ITEM_NAME_CHARS: { min: 1, max: 1000 },
+  UPLOAD_MAX_ITEM_QUANTITY: { min: 1, max: 1000000 },
+  UPLOAD_MAX_ROWS: { min: 1, max: 25000 },
+  UPLOAD_MAX_ROW_BYTES: { min: 4096, max: 1048576 },
+  UPLOAD_MIN_YEAR: { min: 1970, max: 2100 },
+  UPLOAD_PARSING_LEASE_MS: { min: 60000, max: 3600000 },
+  UPLOAD_PENDING_RETENTION_MS: { min: 3600000, max: 2592000000 },
+  UPLOAD_READMIT_SYNC_MAX_ROWS: { min: 0, max: 200000 },
+  UPLOAD_READMIT_SYNC_MAX_UPLOADS: { min: 0, max: 20 },
+  USAGE_RECONCILIATION_INTERVAL_MS: { min: 30000, max: 3600000 },
+  XLSX_MAX_COMPRESSION_RATIO: { min: 1, max: 1000 },
+  XLSX_MAX_ENTRIES: { min: 1, max: 5000 },
+  XLSX_MAX_ENTRY_UNCOMPRESSED_BYTES: { min: 1024, max: 104857600 },
+  XLSX_MAX_PART_BYTES: { min: 65536, max: 20971520 },
+  XLSX_MAX_TOTAL_UNCOMPRESSED_BYTES: { min: 1024, max: 209715200 },
+  YOCO_SYNC_MAX_PAGES: { min: 1, max: 2000 },
+  YOCO_SYNC_TOTAL_MS: { min: 100, max: 600000 },
+});
+
+// Checked in every environment when set. The https-in-production rules for
+// CLIENT_URL, API_PUBLIC_URL, WEATHER_API_URL and the provider origins stay in validateEnv.
+const URL_ENV = Object.freeze({
+  CLIENT_URL: { origin: true }, // cors echoes it literally, so it must equal the browser's Origin
+  API_PUBLIC_URL: { noTrailingSlash: true },
+  WEATHER_API_URL: {},
+  ANTHROPIC_BASE_URL: { officialOriginInProduction: 'https://api.anthropic.com' }, // read by the SDK itself
+  PAYSTACK_API_URL: {},
+  ONEGATE_API_URL: {},
+  YOCO_API_URL: {},
+  YOCO_IAM_URL: {},
+  YOCO_REDIRECT_URI: {},
+  XERO_REDIRECT_URI: {},
+  QUICKBOOKS_REDIRECT_URI: {},
+  SAGE_REDIRECT_URI: {},
+});
+
+// Read by src with no format rule of their own (secrets, flags, names, overrides, seed inputs).
+const OTHER_ENV = Object.freeze([
+  'ACCOUNTING_INTEGRATIONS_ENABLED',
+  'AI_MODEL_CHAT',
+  'AI_MODEL_COLUMN_MAPPING',
+  'AI_MODEL_INSIGHTS',
+  'AI_MODEL_MENU_REVIEW',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_MODEL',
+  'API_CACHE_ENABLED',
+  'BACKGROUND_JOBS_INLINE',
+  'BILLING_MOCK_ENABLED',
+  'DEFAULT_TIMEZONE',
+  'DOWNLOAD_SIGNING_SECRET',
+  'EMAIL_CONSOLE_LINKS',
+  'EMAIL_DEV_CONSOLE',
+  'ESKOMSEPUSH_API_KEY',
+  'JWT_EXPIRES_IN',
+  'JWT_REFRESH_EXPIRES_IN',
+  'JWT_REFRESH_SECRET',
+  'JWT_SECRET',
+  'LOG_LEVEL',
+  'MONGODB_URI',
+  'NODE_ENV',
+  'ONEGATE_API_SALT',
+  'ONEGATE_ORGANISATION_ID',
+  'ONEGATE_ORG_ID',
+  'ORIGIN_CHECKS_ENABLED',
+  'PAYMENT_PROVIDER',
+  'PAYSTACK_CURRENCY',
+  'PAYSTACK_SECRET_KEY',
+  'PUBLIC_HOLIDAY_OVERRIDES',
+  'QUICKBOOKS_CLIENT_ID',
+  'QUICKBOOKS_CLIENT_SECRET',
+  'QUICKBOOKS_ENV',
+  'R2_ACCESS_KEY_ID',
+  'R2_ACCOUNT_ID',
+  'R2_BUCKET_NAME',
+  'R2_SECRET_ACCESS_KEY',
+  'RATE_LIMITS_ENABLED',
+  'READINESS_TOKEN',
+  'REQUEST_LOGS_ENABLED',
+  'RESEND_API_KEY',
+  'RESEND_FROM_EMAIL',
+  'RESEND_REPLY_TO',
+  'SAGE_CLIENT_ID',
+  'SAGE_CLIENT_SECRET',
+  'SA_PUBLIC_HOLIDAY_OVERRIDES',
+  'SA_SCHOOL_TERM_OVERRIDES',
+  'SCHOOL_CALENDAR_OVERRIDES',
+  'SCHOOL_TERM_OVERRIDES',
+  'SEED_CAFE_ADDRESS',
+  'SEED_CAFE_CITY',
+  'SEED_CAFE_NAME',
+  'SEED_IMPORT_FILE',
+  'SEED_ORG_NAME',
+  'SEED_USER_EMAIL',
+  'SEED_USER_NAME',
+  'SEED_USER_PASSWORD',
+  'TOKEN_ENCRYPTION_KEY',
+  'TOKEN_ENCRYPTION_KEY_PREVIOUS',
+  'TZ',
+  'WEATHER_API_KEY',
+  'WORKFORCE_ENABLED',
+  'XERO_CLIENT_ID',
+  'XERO_CLIENT_SECRET',
+  'YOCO_CLIENT_ID',
+  'YOCO_CLIENT_SECRET',
+  'YOCO_INTEGRATION_ENABLED',
+  'YOCO_WEBHOOK_SECRET',
+]);
+
+const KNOWN_ENV = new Set([...Object.keys(NUMERIC_ENV), ...Object.keys(URL_ENV), ...OTHER_ENV]);
+
+// Every value .env.example has ever shipped as a stand-in, plus the shapes new ones take.
+const PLACEHOLDER_VALUES = new Set([
+  'your_jwt_secret_here',
+  'your_jwt_refresh_secret_here',
+  'your_anthropic_api_key_here',
+  'your_weatherapi_key_here',
+  'your_eskomsepush_api_key_here',
+  'Your Guava <hello@yourdomain.com>',
+]);
+const PLACEHOLDER_PATTERNS = [/^your_[a-z0-9_]+_here$/i, /@yourdomain\.com\b/i];
+
+const isPlaceholder = (value) => {
+  const text = String(value ?? '').trim().replace(/^"(.*)"$/, '$1');
+  return text !== '' && (PLACEHOLDER_VALUES.has(text) || PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(text)));
+};
+
+module.exports = { NUMERIC_ENV, URL_ENV, OTHER_ENV, KNOWN_ENV, PLACEHOLDER_VALUES, isPlaceholder };

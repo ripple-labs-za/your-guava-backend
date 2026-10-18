@@ -3,12 +3,46 @@ const { parseTrustProxyHops } = require('./proxy');
 const { isHardenedEnvironment } = require('./posture');
 const { originChecksEnabled, workforceEnabled } = require('./flags');
 const { aiModelProblems } = require('./ai');
-const PLACEHOLDER_VALUES = new Set([
-  'your_jwt_secret_here',
-  'your_jwt_refresh_secret_here',
-  'your_anthropic_api_key_here',
-  'your_weatherapi_key_here',
-]);
+const { NUMERIC_ENV, URL_ENV, isPlaceholder } = require('./envSpec');
+
+const warned = new Set();
+const warnOnce = (message) => {
+  if (warned.has(message)) return;
+  warned.add(message);
+  logger.warn('env_warning', { message });
+};
+
+const numericProblems = () => {
+  const problems = [];
+  for (const [name, { min, max }] of Object.entries(NUMERIC_ENV)) {
+    const raw = process.env[name];
+    if (raw === undefined || raw === '') continue;
+    if (!/^\d+$/.test(raw)) problems.push(`${name} must be a whole number with no units`);
+    else if (Number(raw) < min || Number(raw) > max) problems.push(`${name} must be between ${min} and ${max}`);
+  }
+  return problems;
+};
+
+const urlProblems = (isProduction) => {
+  const problems = [];
+  for (const [name, rule] of Object.entries(URL_ENV)) {
+    const raw = process.env[name];
+    if (!raw) continue;
+    let url;
+    try { url = new URL(raw); } catch (_error) { /* Report the setting, never its potentially secret value. */ }
+    if (!url || !['http:', 'https:'].includes(url.protocol)) {
+      problems.push(`${name} must be an http(s) URL`);
+      continue;
+    }
+    if (url.username || url.password) problems.push(`${name} must not contain credentials`);
+    if (rule.origin && url.origin !== raw) problems.push(`${name} must be a bare origin with no path or trailing slash`);
+    if (rule.noTrailingSlash && raw.endsWith('/')) problems.push(`${name} must not end with a slash`);
+    if (isProduction && rule.officialOriginInProduction && url.origin !== rule.officialOriginInProduction) {
+      problems.push(`${name} must be unset or ${rule.officialOriginInProduction} in production`);
+    }
+  }
+  return problems;
+};
 
 const enabled = (name) => String(process.env[name] || '').toLowerCase() === 'true';
 
@@ -86,7 +120,7 @@ const validateEnv = () => {
   for (const name of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'MONGODB_URI']) {
     if (!process.env[name]) {
       errors.push(`${name} is required`);
-    } else if (PLACEHOLDER_VALUES.has(process.env[name])) {
+    } else if (isPlaceholder(process.env[name])) {
       errors.push(`${name} is still set to its placeholder value`);
     }
   }
@@ -225,7 +259,7 @@ const validateEnv = () => {
       if (!process.env[name]) errors.push(`${name} is required for production upload storage`);
     }
     for (const name of REQUIRED_PRODUCTION_SERVICES) {
-      if (!process.env[name] || PLACEHOLDER_VALUES.has(process.env[name])) {
+      if (!process.env[name] || isPlaceholder(process.env[name])) {
         errors.push(`${name} is required and cannot be a placeholder in production`);
       }
     }
@@ -247,10 +281,24 @@ const validateEnv = () => {
     }
   }
 
-  if (!isHardenedEnvironment()) aiModelProblems().forEach((problem) => logger.warn('env_warning', { message: problem }));
+  errors.push(...urlProblems(isProduction));
+  const numeric = numericProblems();
+  if (isProduction) errors.push(...numeric);
+  else numeric.forEach(warnOnce);
+
+  const alreadyReported = new Set(['JWT_SECRET', 'JWT_REFRESH_SECRET', 'MONGODB_URI',
+    ...(isProduction ? REQUIRED_PRODUCTION_SERVICES : [])]);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (alreadyReported.has(name) || !isPlaceholder(value)) continue;
+    const message = `${name} is still set to its .env.example placeholder; set a real value or remove it`;
+    if (isProduction) errors.push(message);
+    else warnOnce(message);
+  }
+  if (!isHardenedEnvironment()) aiModelProblems().forEach(warnOnce);
   if (errors.length > 0) {
     throw new Error(`Environment validation failed:\n - ${errors.join('\n - ')}`);
   }
 };
 
 module.exports = validateEnv;
+module.exports.resetEnvWarnings = () => warned.clear();

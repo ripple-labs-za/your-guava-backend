@@ -1,7 +1,7 @@
 const logger = require('../../src/utils/logger');
 const validateEnv = require('../../src/config/validateEnv');
 
-const KEYS = [
+const BASE_KEYS = [
   'ANTHROPIC_MODEL', 'AI_MODEL_CHAT', 'AI_MODEL_INSIGHTS', 'AI_MODEL_COLUMN_MAPPING', 'AI_MODEL_MENU_REVIEW',
   'RATE_LIMITS_ENABLED',
   'BACKGROUND_JOBS_INLINE',
@@ -42,6 +42,37 @@ const KEYS = [
   'RESEND_API_KEY',
   'RESEND_FROM_EMAIL',
 ];
+
+const fs = require('fs');
+const path = require('path');
+const { NUMERIC_ENV, URL_ENV, isPlaceholder } = require('../../src/config/envSpec');
+
+const ENV_EXAMPLE = fs.readFileSync(path.resolve(__dirname, '../../.env.example'), 'utf8');
+const exampleEntries = ENV_EXAMPLE.split(/\r?\n/)
+  .map((line) => line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/))
+  .filter(Boolean)
+  .map(([, name, raw]) => [name, raw.trim().replace(/^"(.*)"$/, '$1')]);
+const shippedPlaceholders = exampleEntries.filter(([, value]) => isPlaceholder(value));
+
+// TZ is left alone: deleting it mid-run changes the process timezone for everything after.
+const KEYS = [...new Set([
+  ...BASE_KEYS,
+  ...Object.keys(NUMERIC_ENV),
+  ...Object.keys(URL_ENV),
+  ...exampleEntries.map(([name]) => name),
+  'ESKOMSEPUSH_API_KEY',
+  'LOG_LEVEL',
+])].filter((name) => name !== 'TZ');
+
+const setDevelopmentBaseEnv = () => {
+  process.env.NODE_ENV = 'development';
+  process.env.JWT_SECRET = 'dev-secret';
+  process.env.JWT_REFRESH_SECRET = 'dev-refresh-secret';
+  process.env.MONGODB_URI = 'mongodb://localhost:27199/guava-dev';
+  // BE-02-T06 requires CLIENT_URL whenever NODE_ENV is not 'test'.
+  process.env.CLIENT_URL = 'http://localhost:5185';
+  process.env.DOWNLOAD_SIGNING_SECRET = 'local-download-signing-secret-0123456789';
+};
 
 const snapshotEnv = () =>
   KEYS.reduce((snapshot, key) => {
@@ -170,6 +201,7 @@ describe('validateEnv', () => {
 
   beforeEach(() => {
     env = snapshotEnv();
+    validateEnv.resetEnvWarnings();
     for (const key of KEYS) delete process.env[key];
     process.env.DOWNLOAD_SIGNING_SECRET = 'test-download-signing-secret-0123456789';
   });
@@ -368,4 +400,140 @@ describe('validateEnv', () => {
     process.env.NODE_ENV = 'development';
     expect(() => validateEnv()).not.toThrow(/ORIGIN_CHECKS_ENABLED/);
   });
+describe('placeholders', () => {
+  it('recognises the placeholders .env.example still ships', () => {
+    expect(shippedPlaceholders.map(([name]) => name)).toEqual(
+      expect.arrayContaining(['JWT_SECRET', 'JWT_REFRESH_SECRET', 'ANTHROPIC_API_KEY', 'WEATHER_API_KEY'])
+    );
+  });
+
+  it.each(shippedPlaceholders)('refuses to boot production with %s left at its .env.example value', (name, value) => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env[name] = value;
+    expect(() => validateEnv()).toThrow(new RegExp(`${name}[^\\n]*placeholder`, 'i'));
+  });
+
+  it('refuses the sender address older .env.example files shipped', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.RESEND_FROM_EMAIL = 'Your Guava <hello@yourdomain.com>';
+    expect(() => validateEnv()).toThrow(/RESEND_FROM_EMAIL[^\n]*placeholder/i);
+  });
+
+  it('refuses the EskomSePush placeholder older .env.example files shipped', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.ESKOMSEPUSH_API_KEY = 'your_eskomsepush_api_key_here';
+    expect(() => validateEnv()).toThrow(/ESKOMSEPUSH_API_KEY[^\n]*placeholder/i);
+  });
+
+  it('only warns about an optional placeholder outside production, once', () => {
+    setDevelopmentBaseEnv();
+    validateEnv.resetEnvWarnings();
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    process.env.ESKOMSEPUSH_API_KEY = 'your_eskomsepush_api_key_here';
+    expect(() => validateEnv()).not.toThrow();
+    validateEnv();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('env_warning', { message: expect.stringMatching(/ESKOMSEPUSH_API_KEY/) });
+  });
+
+  it('accepts .env.example as a development env once required local secrets are supplied', () => {
+    for (const [name, value] of exampleEntries) {
+      if (name !== 'TZ') process.env[name] = value;
+    }
+    setDevelopmentBaseEnv();
+    expect(() => validateEnv()).not.toThrow();
+  });
+});
+
+describe('numeric settings', () => {
+  it.each(Object.entries(NUMERIC_ENV))('refuses %s outside its range in production', (name, { min, max }) => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+      process.env[name] = String(max + 1);
+      expect(() => validateEnv()).toThrow(new RegExp(`${name} must be between ${min} and ${max}`));
+      process.env[name] = String(min - 1);
+      expect(() => validateEnv()).toThrow(new RegExp(name));
+      process.env[name] = String(name === 'BCRYPT_ROUNDS' ? 10 : min);
+      expect(() => validateEnv()).not.toThrow();
+      process.env[name] = String(max);
+      expect(() => validateEnv()).not.toThrow();
+  });
+
+  it('refuses a unit typo that parseInt would silently read as 10 bytes', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.UPLOAD_MAX_BYTES = '10MB';
+    expect(() => validateEnv()).toThrow(/UPLOAD_MAX_BYTES must be a whole number with no units/);
+  });
+
+  it('only warns outside production, because the use site clamps the value', () => {
+    setDevelopmentBaseEnv();
+    validateEnv.resetEnvWarnings();
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    process.env.UPLOAD_MAX_ROWS = '999999';
+    expect(() => validateEnv()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('env_warning', {
+      message: expect.stringMatching(/UPLOAD_MAX_ROWS must be between 1 and 25000/),
+    });
+  });
+});
+
+  describe('URL settings', () => {
+    it.each(Object.keys(URL_ENV))('refuses a non-http URL or embedded credentials in %s', (name) => {
+      setDevelopmentBaseEnv();
+      process.env[name] = 'ftp://example.invalid/callback';
+      expect(() => validateEnv()).toThrow(new RegExp(`${name} must be an http\\(s\\) URL`));
+      process.env[name] = 'https://user:private-secret@example.invalid/callback';
+      let failure;
+      try { validateEnv(); } catch (error) { failure = error; }
+      expect(failure).toBeDefined();
+      expect(failure.message).toContain(`${name} must not contain credentials`);
+      expect(failure.message).not.toContain('private-secret');
+    });
+  it('refuses a CLIENT_URL with a trailing slash in every environment, because CORS echoes it literally', () => {
+    setDevelopmentBaseEnv();
+    process.env.CLIENT_URL = 'http://localhost:5185/';
+    expect(() => validateEnv()).toThrow(/CLIENT_URL must be a bare origin/);
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.CLIENT_URL = 'https://app.yourguava.example/';
+    expect(() => validateEnv()).toThrow(/CLIENT_URL must be a bare origin/);
+    process.env.CLIENT_URL = 'https://app.yourguava.example';
+    expect(() => validateEnv()).not.toThrow();
+  });
+
+  it('refuses an API_PUBLIC_URL ending in a slash, which doubles the slash in every callback URL', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.API_PUBLIC_URL = 'https://api.yourguava.example/';
+    expect(() => validateEnv()).toThrow(/API_PUBLIC_URL must not end with a slash/);
+  });
+
+  it('keeps the Anthropic key on the official host in production', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.ANTHROPIC_BASE_URL = 'https://llm-proxy.attacker.example';
+    expect(() => validateEnv()).toThrow(/ANTHROPIC_BASE_URL must be unset or https:\/\/api\.anthropic\.com in production/);
+    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+    expect(() => validateEnv()).not.toThrow();
+  });
+
+  it('allows the local AI stub outside production', () => {
+    setDevelopmentBaseEnv();
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:5199';
+    expect(() => validateEnv()).not.toThrow();
+  });
+
+  it('refuses a redirect URI that is not an http(s) URL, and one that carries credentials', () => {
+    setDevelopmentBaseEnv();
+    process.env.XERO_REDIRECT_URI = 'localhost:5173/integrations/xero/callback';
+    expect(() => validateEnv()).toThrow(/XERO_REDIRECT_URI must be an http\(s\) URL/);
+    process.env.XERO_REDIRECT_URI = 'https://user:secret@app.yourguava.example/integrations/xero/callback';
+    expect(() => validateEnv()).toThrow(/XERO_REDIRECT_URI must not contain credentials/);
+  });
+});
+
 });
