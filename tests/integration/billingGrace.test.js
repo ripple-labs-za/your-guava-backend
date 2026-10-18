@@ -49,6 +49,30 @@ const endedPaidPeriod = (orgId, msAgo) => Organization.updateOne({ _id: orgId },
 const get = (path, token) => request.get(path).set('Authorization', `Bearer ${token}`);
 
 describe('read-only grace period after a lapse (gap-3)', () => {
+  it.each([
+    ['/api/Integrations/xero/Auth/', 'xero'],
+    ['/api/INTEGRATIONS/quickbooks/AUTH', 'quickbooks'],
+    ['/api/integrations/sage/AUTH', 'sage'],
+  ])('does not persist OAuth state through mixed-case route %s', async (path, provider) => {
+    const IntegrationOAuthState = require('../../src/models/IntegrationOAuthState.model');
+    const service = require(`../../src/services/integrations/${provider}.service`);
+    const authorize = jest.spyOn(service, 'buildAuthorizeUrl').mockReturnValue('https://fixture.invalid/authorize');
+    const savedFlag = process.env.ACCOUNTING_INTEGRATIONS_ENABLED;
+    process.env.ACCOUNTING_INTEGRATIONS_ENABLED = 'true';
+    try {
+      const owner = await createTestUser();
+      await endedPaidPeriod(owner.user.orgId, DAY);
+      const result = await get(path, owner.token);
+      expect(result.status).toBe(402);
+      expect(result.body.billing.readOnly).toBe(true);
+      expect(authorize).not.toHaveBeenCalled();
+      expect(await IntegrationOAuthState.countDocuments({})).toBe(0);
+    } finally {
+      if (savedFlag === undefined) delete process.env.ACCOUNTING_INTEGRATIONS_ENABLED;
+      else process.env.ACCOUNTING_INTEGRATIONS_ENABLED = savedFlag;
+    }
+  });
+
   it.each(['/api/integrations/yoco/auth', '/api/Integrations/Yoco/Auth/', '/api/INTEGRATIONS/SQUARE/AUTH'])('blocks OAuth connection GET %s during grace', async (path) => {
     const owner = await createTestUser();
     await endedPaidPeriod(owner.user.orgId, DAY);
