@@ -56,6 +56,17 @@ const itemNamed = (forecast, name) => forecast.items.find((item) => item.itemNam
 afterEach(() => jest.restoreAllMocks());
 
 describe('forecast totals', () => {
+  it('rounds the persisted expected quantity consistently at a half-unit boundary', async () => {
+    stubModels({
+      transactions: Array.from({ length: 8 }, (_, i) => sale(i + 1, [line('Tail', 0.49996, 20)])),
+      items: [{ name: 'Tail', category: 'food', avgPrice: 20 }],
+    });
+    const forecast = await generateForecast('cafe-1', TARGET);
+    const item = itemNamed(forecast, 'Tail');
+    expect(item.expectedQty).toBe(0.5);
+    expect(item.predictedQty).toBe(Math.round(item.expectedQty));
+  });
+
   it('sums the long tail before rounding', async () => {
     const transactions = [];
     for (let k = 1; k <= 8; k += 1) transactions.push(sale(k, [line('Flat White', 10, 30)]));

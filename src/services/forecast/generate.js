@@ -325,7 +325,9 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     );
     const storedItemFactors = [...factors, learningFactor];
     const expectedQty = Math.max(0, baseQty * multiplyFactors(factors) * learningMultiplier * trading.multiplier);
-    const finalQty = Math.round(expectedQty);
+    const storedExpectedQty = Number(expectedQty.toFixed(4));
+    // The integer must agree with the expected quantity readers actually receive.
+    const finalQty = Math.round(storedExpectedQty);
 
     // Estimate revenue using item avgPrice if available
     const itemDoc = itemDocMap.get(name);
@@ -337,7 +339,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
       forecastItems.push({
         itemName: name,
         baseQty: parseFloat(baseQty.toFixed(2)),
-        expectedQty: Number(expectedQty.toFixed(4)),
+        expectedQty: storedExpectedQty,
         predictedQty: finalQty,
         confidence: forecastConfidence(baseQty, observedWeeks),
         factors: storedItemFactors,
