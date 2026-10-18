@@ -29,6 +29,59 @@ describe('events', () => {
     cafe = await Cafe.findOne({});
   });
 
+  it('keeps past recurring events removable with their next valid anniversary', async () => {
+    await Event.create([
+      { cafeId: cafe._id, name: 'Annual market', date: new Date('2024-12-24'), recurring: true },
+      { cafeId: cafe._id, name: 'Leap market', date: new Date('2024-02-29'), recurring: true },
+      { cafeId: cafe._id, name: 'Old one-off', date: new Date('2024-12-24') },
+    ]);
+    await Event.collection.insertOne({ cafeId: cafe._id, name: 'Legacy future', date: new Date('2099-05-10'), type: 'event' });
+    const foreign = await createTestUser({ email: 'foreign-recurring@example.test', cafeName: 'Other' });
+    await Event.create({ cafeId: foreign.user.activeCafeId, name: 'Other annual', date: new Date('2024-12-24'), recurring: true });
+    const res = await request.get('/api/events').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.events.map((event) => event.name).sort()).toEqual(['Annual market', 'Leap market', 'Legacy future']);
+    const today = zonedDateKey(new Date(), cafe.timezone);
+    const year = Number(today.slice(0, 4));
+    const annual = res.body.events.find((event) => event.name === 'Annual market');
+    expect(annual.nextDateKey).toBe(`${today <= `${year}-12-24` ? year : year + 1}-12-24`);
+    const leap = res.body.events.find((event) => event.name === 'Leap market');
+    expect(leap.nextDateKey >= today).toBe(true);
+    expect(Number(leap.nextDateKey.slice(0, 4)) % 4).toBe(0);
+    const bounded = await request.get('/api/events').set(auth()).query({ from: '2099-05-10', to: '2099-05-10' });
+    expect(bounded.body.events.map((event) => event.name)).toEqual(['Legacy future']);
+  });
+
+  it('scores mixed legacy and keyed event dates across the whole sales window', async () => {
+    await Transaction.create(['2026-03-18', '2026-03-25', '2026-04-01', '2026-04-08',
+      '2026-04-29', '2026-05-06', '2026-05-13', '2026-05-20'].map((key) =>
+      sale(cafe._id, `${key}T09:00:00Z`, ['2026-04-08', '2026-05-20'].includes(key) ? 1500 : 1000)));
+    await Event.collection.insertOne({ cafeId: cafe._id, name: 'Legacy later', type: 'event', date: new Date('2026-05-20') });
+    await request.post('/api/events').set(auth()).send({ name: 'Keyed earlier', date: '2026-04-08' });
+    const res = await request.get('/api/events/effects').set(auth()).query({ from: '2026-03-01', to: '2026-06-01', baselineWeeks: 3 });
+    expect(res.status).toBe(200);
+    expect(res.body.effects.map((event) => event.name)).toEqual(['Legacy later', 'Keyed earlier']);
+    expect(res.body.effects.map((event) => event.dateKey)).toEqual(['2026-05-20', '2026-04-08']);
+    expect(res.body.effects.every((event) => event.revenueImpactPct === 50 && event.baselineDayCount === 3)).toBe(true);
+  });
+
+  it('excludes recurring anniversaries from another event normal days', async () => {
+    await Transaction.create(['2025-12-03', '2025-12-10', '2025-12-17', '2025-12-24', '2025-12-31']
+      .map((key) => sale(cafe._id, `${key}T09:00:00Z`, key === '2025-12-24' ? 5000 : key === '2025-12-31' ? 2000 : 1000)));
+    await request.post('/api/events').set(auth()).send({ name: 'Annual Xmas', date: '2024-12-24', recurring: true });
+    await request.post('/api/events').set(auth()).send({ name: 'NYE', date: '2025-12-31' });
+    const res = await request.get('/api/events/effects').set(auth()).query({ from: '2025-12-30', to: '2025-12-31', baselineWeeks: 4 });
+    expect(res.body.effects[0]).toEqual(expect.objectContaining({ name: 'NYE', baselineRevenue: 1000, baselineDayCount: 3, revenueImpactPct: 100 }));
+  });
+
+  it('returns no scored events for a valid today-only range', async () => {
+    const today = zonedDateKey(new Date(), cafe.timezone);
+    const res = await request.get('/api/events/effects').set(auth()).query({ from: today, to: today });
+    expect(res.status).toBe(200);
+    expect(res.body.effects).toEqual([]);
+    expect((await request.get('/api/events/effects').set(auth()).query({ from: '2031-01-02', to: '2031-01-01' })).status).toBe(400);
+  });
+
   it('closes Sunday, not Saturday, for a cafe at UTC−5', async () => {
     const zone = 'America/Bogota'; // UTC−5 all year, no daylight saving
     await Cafe.updateOne({ _id: cafe._id }, { $set: { timezone: zone, tradingHours: openAllWeek } });

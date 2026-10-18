@@ -5,6 +5,8 @@ const Event = require('../models/Event.model');
 const { safeTimezone, storedDayKey } = require('../utils/timezone');
 
 // Default report-only; cafeId optionally confines a local verification to its scratch cafe.
+// Rollback: clearing dateKey leaves original dates readable but stops annual
+// recurrence until keys are restored by running this migration again.
 const backfillEventDateKeys = async ({ apply = false, cafeId } = {}) => {
   const events = await Event.find({ dateKey: { $exists: false }, ...(cafeId ? { cafeId } : {}) }).select('_id cafeId date').lean();
   const cafeIds = [...new Set(events.map((event) => String(event.cafeId)))];

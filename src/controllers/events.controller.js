@@ -3,7 +3,7 @@ const { invalidatePlanningForecasts } = require('../services/forecast.service');
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const Organization = require('../models/Organization.model');
-const { eventDateKey } = require('../services/forecast/history');
+const { eventDateKey, isCalendarDateKey, loadEventsByDateKey } = require('../services/forecast/history');
 const { getForecastSettings, eventImpactPct, factorUnlocked } = require('../services/forecastFactors.service');
 const {
   DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, getCafeTimezone, zonedDayStart, cafeLocalToday, parseDateOnly,
@@ -152,7 +152,7 @@ const eventEffects = async (req, res, next) => {
     const from = req.query.from
       ? requireEventDate(req.query.from, 'from')
       : addDays(to, -365);
-    if (from > to) {
+    if (from > requestedTo) {
       return res.status(400).json({ success: false, message: 'from must be on or before to' });
     }
     const org = await Organization.findById(req.user.orgId).select('plan').lean();
@@ -169,7 +169,7 @@ const eventEffects = async (req, res, next) => {
       ...eventRange(from, to),
       type: { $nin: ['closure', 'partial_closure'] },
     })
-      .sort({ dateKey: -1, date: -1 })
+      .sort({ date: -1 })
       .limit(limit)
       .lean();
 
@@ -187,21 +187,19 @@ const eventEffects = async (req, res, next) => {
       });
     }
 
-    const earliestBaselineDate = addDays(requireEventDate(eventDateKey(events[events.length - 1], timezone)), -baselineWeeks * 7);
-    const eventEndDate = addDays(requireEventDate(eventDateKey(events[0], timezone)), 1);
+    const eventKeys = events.map((event) => eventDateKey(event, timezone)).sort();
+    const earliestBaselineDate = addDays(requireEventDate(eventKeys[0]), -baselineWeeks * 7);
+    const eventEndDate = addDays(requireEventDate(eventKeys[eventKeys.length - 1]), 1);
     const earliestBaselineStart = zonedDayStart(formatDateOnly(earliestBaselineDate), timezone);
     const eventEnd = zonedDayStart(formatDateOnly(eventEndDate), timezone);
 
     const [dailySales, eventDates] = await Promise.all([
       getDailySales(cafe._id, earliestBaselineStart, eventEnd, timezone),
-      Event.find({
-        cafeId,
-        ...eventRange(earliestBaselineDate, eventEndDate, false),
-      }).select('date dateKey').lean(),
+      loadEventsByDateKey(cafeId, formatDateOnly(earliestBaselineDate), formatDateOnly(eventEndDate), timezone),
     ]);
 
     const salesByDate = new Map(dailySales.map((row) => [row._id, row]));
-    const eventDateKeys = new Set(eventDates.map((event) => eventDateKey(event, timezone)));
+    const eventDateKeys = new Set(eventDates.keys());
 
     const effects = events.map((event) => {
       const key = eventDateKey(event, timezone);
@@ -291,6 +289,8 @@ const list = async (req, res, next) => {
     const { from, to } = req.query;
 
     const filter = { cafeId };
+    const timezone = await getCafeTimezone(cafeId);
+    const today = cafeLocalToday(timezone);
 
     if (from || to) {
       filter.date = {};
@@ -300,14 +300,28 @@ const list = async (req, res, next) => {
         return res.status(400).json({ success: false, message: 'from must be on or before to' });
       }
     } else {
-      // Default: show events from today onwards
-      const today = cafeLocalToday(await getCafeTimezone(cafeId));
+      // Annual events must remain visible and removable after their first date.
       filter.date = { $gte: today };
     }
 
     Object.assign(filter, eventRange(filter.date.$gte, filter.date.$lte));
     delete filter.date;
+    if (!from && !to) filter.$or.push({ recurring: true });
     const events = await Event.find(filter).sort({ dateKey: 1, date: 1 }).lean();
+    const todayKey = formatDateOnly(today);
+    for (const event of events) {
+      const key = eventDateKey(event, timezone);
+      if (!event.recurring || !key) continue;
+      const firstYear = Math.max(Number(todayKey.slice(0, 4)), Number(key.slice(0, 4)));
+      // Leap-day anniversaries can be eight years apart across a century.
+      for (let year = firstYear; year <= firstYear + 8; year += 1) {
+        const nextKey = `${year}-${key.slice(5)}`;
+        if (nextKey >= todayKey && isCalendarDateKey(nextKey)) {
+          event.nextDateKey = nextKey;
+          break;
+        }
+      }
+    }
     return res.status(200).json({ success: true, events });
   } catch (error) {
     next(error);
