@@ -12,6 +12,11 @@ jest.mock('../../src/services/anthropic.service', () => ({
   invalidateInsights: async () => {},
   _resetMappingCache: () => {},
 }));
+// Confirm's own eviction must work before deferred maintenance runs in production.
+jest.mock('../../src/controllers/uploads/jobs', () => ({
+  ...jest.requireActual('../../src/controllers/uploads/jobs'),
+  schedulePostImportMaintenance: jest.fn().mockResolvedValue(undefined),
+}));
 
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
@@ -68,11 +73,25 @@ describe('analytics cache invalidation', () => {
       .set('Authorization', `Bearer ${cafeA.token}`)
       .send({ columnMapping: stage.body.columnMapping, itemsMode: stage.body.itemsMode });
     expect(confirmed.status).toBe(200);
+    expect(require('../../src/controllers/uploads/jobs').schedulePostImportMaintenance).toHaveBeenCalledTimes(1);
 
     const after = await withCache(() => revenue(cafeA));
     expect(after.headers['x-guava-cache']).toBe('miss');
     expect(after.body.summary.totalRevenue).toBe(145); // 40 + 45 + 60
     expect(await cacheOf(cafeB)).toBe('hit');
+  });
+
+  it('uses only analytics query parameters in the real route cache key', async () => {
+    const owner = await createTestUser();
+    const get = (extra) => withCache(() => request.get('/api/analytics/revenue')
+      .set('Authorization', `Bearer ${owner.token}`).query({ ...FEBRUARY, ...extra }));
+    expect((await get({ nonce: '1' })).headers['x-guava-cache']).toBe('miss');
+    expect((await get({ nonce: '2' })).headers['x-guava-cache']).toBe('hit');
+    expect((await get({ startDate: '2026-02-02', nonce: '2' })).headers['x-guava-cache']).toBe('miss');
+    const getDays = (days) => withCache(() => request.get('/api/analytics/revenue')
+      .set('Authorization', `Bearer ${owner.token}`).query({ days, nonce: '3' }));
+    expect((await getDays('7')).headers['x-guava-cache']).toBe('miss');
+    expect((await getDays('30')).headers['x-guava-cache']).toBe('miss');
   });
 
   it('does not let a replayed payment callback evict anyone', async () => {
