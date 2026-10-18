@@ -16,6 +16,7 @@ beforeAll(setup);
 afterAll(teardown);
 afterEach(async () => {
   jest.restoreAllMocks();
+  process.env.API_CACHE_ENABLED = 'false';
   mongoose.set('debug', false);
   await clearDB();
 });
@@ -198,6 +199,7 @@ it('refunds a failed historical day instead of keeping its reserved credit', asy
 });
 
 it('keeps a completed day charged exactly once when credits run out mid-batch', async () => {
+  process.env.API_CACHE_ENABLED = 'true';
   await Organization.findByIdAndUpdate(user.orgId, { $set: {
     'aiCredits.included': 400, 'aiCredits.used': 399, 'aiCredits.bonus': 0, 'aiCredits.bonusUsed': 0,
     'aiCredits.resetAt': new Date(Date.now() + 86400000),
@@ -210,11 +212,18 @@ it('keeps a completed day charged exactly once when credits run out mid-batch', 
     });
   }
   const url = '/api/forecasts/history?days=7&backfill=sync&backfillLimit=2';
+  const readUrl = '/api/forecasts/history?days=7';
+  const before = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
+  expect(before.body.meta.totalRows).toBe(0);
+  expect((await request.get(readUrl).set('Authorization', `Bearer ${token}`)).headers['x-guava-cache']).toBe('hit');
   const response = await request.get(url).set('Authorization', `Bearer ${token}`);
   expect(response.status).toBe(402);
   expect(await Forecast.countDocuments({ cafeId: cafe._id })).toBe(1);
   expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
   expect((await Organization.findById(user.orgId).lean()).aiCredits.used).toBe(400);
+  const after = await request.get(readUrl).set('Authorization', `Bearer ${token}`);
+  expect(after.body.meta.totalRows).toBe(1);
+  expect(after.headers['x-guava-cache']).toBe('miss');
   expect((await request.get(url).set('Authorization', `Bearer ${token}`)).status).toBe(402);
   expect(await UsageLedger.countDocuments({ orgId: user.orgId, status: 'committed' })).toBe(1);
 });

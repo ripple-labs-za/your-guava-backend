@@ -573,6 +573,9 @@ const getHistory = async (req, res, next) => {
             forecastByDate.set(dateKey, typeof forecast.toObject === 'function' ? forecast.toObject() : forecast);
             generated += 1;
             if (!replayed) creditsUsed += creditsPerDay;
+            // A later day can exhaust credits or fail. Publish each saved day's
+            // history immediately even when the overall batch returns an error.
+            clearApiCache({ cafeId });
           }
         });
       }
@@ -601,10 +604,6 @@ const getHistory = async (req, res, next) => {
     const totalPages = Math.max(Math.ceil(totalRows / limit), 1);
     const currentPage = Math.min(page, totalPages);
     const pagedRows = rows.slice((currentPage - 1) * limit, currentPage * limit);
-
-    if (generated > 0) {
-      clearApiCache({ cafeId });
-    }
 
     return res.status(200).json({
       success: true,
