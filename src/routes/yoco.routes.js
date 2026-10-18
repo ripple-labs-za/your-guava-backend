@@ -12,7 +12,9 @@ const {
   fetchAllOrders,
   parseSyncRange,
   syncOrders,
-  subscribeWebhook,
+  businessIdFromTokens,
+  registerWebhookIfPublic,
+  isYocoId,
   processWebhookEvent,
   createOAuthState,
   verifyOAuthState,
@@ -20,6 +22,7 @@ const {
 } = require('../services/yoco.service');
 const { encryptSecret } = require('../services/secrets.service');
 const { activeCafeId } = require('../utils/tenancy');
+const { withDeadline } = require('../utils/http');
 
 // GET /api/yoco/auth — Get OAuth authorization URL
 router.get('/auth', authMiddleware, ownerOnly, (req, res) => {
@@ -41,6 +44,7 @@ router.post('/callback', authMiddleware, ownerOnly, async (req, res, next) => {
 
     const tokens = await exchangeCode(code);
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+    const businessId = businessIdFromTokens(tokens);
 
     await Cafe.findByIdAndUpdate(activeCafeId(req), {
       $set: {
@@ -48,10 +52,13 @@ router.post('/callback', authMiddleware, ownerOnly, async (req, res, next) => {
         'yocoTokens.accessToken': encryptSecret(tokens.access_token),
         'yocoTokens.refreshToken': encryptSecret(tokens.refresh_token),
         'yocoTokens.expiresAt': expiresAt,
+        ...(businessId ? { yocoBusinessId: businessId } : {}),
       },
+      $unset: { yocoWebhookSubscriptionId: 1, ...(businessId ? {} : { yocoBusinessId: 1 }) },
     });
 
-    res.json({ success: true, message: 'Yoco connected successfully' });
+    const webhook = await registerWebhookIfPublic(activeCafeId(req), tokens.access_token);
+    res.json({ success: true, message: 'Yoco connected successfully', webhookRouting: businessId ? 'ready' : 'unavailable', webhook });
   } catch (error) {
     next(error);
   }
@@ -61,13 +68,14 @@ router.post('/callback', authMiddleware, ownerOnly, async (req, res, next) => {
 router.get('/status', authMiddleware, async (req, res, next) => {
   try {
     const cafe = await Cafe.findById(activeCafeId(req)).select(
-      'yocoConnected lastSyncAt yocoTokens.expiresAt'
+      'yocoConnected lastSyncAt yocoTokens.expiresAt yocoBusinessId'
     );
     res.json({
       success: true,
       connected: cafe?.yocoConnected || false,
       lastSyncAt: cafe?.lastSyncAt || null,
       tokenExpiresAt: cafe?.yocoTokens?.expiresAt || null,
+      webhookRouting: isYocoId(cafe?.yocoBusinessId) ? 'ready' : 'unavailable',
     });
   } catch (error) {
     next(error);
@@ -88,22 +96,21 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
     if (range.error) {
       return res.status(400).json({ success: false, code: 'INVALID_SYNC_RANGE', message: range.error });
     }
-    const token = await getValidToken(cafe);
-    const { orders, pages, truncated } = await fetchAllOrders(token, range.start, range.end);
-    const result = await syncOrders(cafe._id, orders);
-
-    // Update cafe
-    await Cafe.findByIdAndUpdate(cafe._id, {
-      dataUploaded: true,
-      lastSyncAt: new Date(),
+    // One deadline for the entire sync; individual page calls must not renew it.
+    const result = await withDeadline('yoco', async (signal) => {
+      const token = await getValidToken(cafe);
+      signal.throwIfAborted();
+      const { orders, pages, truncated } = await fetchAllOrders(token, range.start, range.end, { signal });
+      signal.throwIfAborted();
+      const synced = await syncOrders(cafe._id, orders, { signal });
+      signal.throwIfAborted();
+      await Cafe.findByIdAndUpdate(cafe._id, { dataUploaded: true, lastSyncAt: new Date() });
+      return { ...synced, totalOrders: orders.length, pages, truncated };
     });
 
     res.json({
       success: true,
       ...result,
-      totalOrders: orders.length,
-      pages,
-      truncated,
       dateRange: { start: range.start.toISOString(), end: range.end.toISOString() },
     });
   } catch (error) {
@@ -119,6 +126,15 @@ router.post('/webhook', async (req, res) => {
     return res.status(401).json({ received: false, message: 'Invalid webhook signature' });
   }
 
+  if (!isYocoId(req.body?.business_id)) {
+    logger.warn('yoco_webhook_rejected', { reason: 'missing_business_id' });
+    return res.status(400).json({
+      received: false,
+      code: 'YOCO_WEBHOOK_BUSINESS_REQUIRED',
+      message: 'Webhook payload has no business_id',
+    });
+  }
+
   // Respond quickly to Yoco (must respond within 15s), then process asynchronously
   res.status(200).json({ received: true });
   processWebhookEvent(req.body).catch((err) => {
@@ -131,7 +147,7 @@ router.post('/disconnect', authMiddleware, ownerOnly, async (req, res, next) => 
   try {
     await Cafe.findByIdAndUpdate(activeCafeId(req), {
       $set: { yocoConnected: false },
-      $unset: { yocoTokens: 1, yocoBusinessId: 1 },
+      $unset: { yocoTokens: 1, yocoBusinessId: 1, yocoWebhookSubscriptionId: 1 },
     });
     res.json({ success: true, message: 'Yoco disconnected' });
   } catch (error) {

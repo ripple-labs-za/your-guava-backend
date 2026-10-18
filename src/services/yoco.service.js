@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
-const { clearApiCache } = require('../middleware/cache.middleware');
+const { safeTimezone, getZonedDateParts, zonedDayOfWeek } = require('../utils/timezone');
+const { invalidateDerivedViews } = require('./postImport.service');
 const { outboundGet, outboundPost } = require('../utils/http');
 const crypto = require('crypto');
 const Cafe = require('../models/Cafe.model');
@@ -193,8 +194,10 @@ async function getValidToken(cafe) {
  * @param {object} params – query params (cursor, limit, created_at__gte, etc.)
  * @returns {Promise<{data: object[], next_cursor: string|null}>}
  */
-async function fetchOrders(accessToken, params = {}) {
+async function fetchOrders(accessToken, params = {}, { signal } = {}) {
+  signal?.throwIfAborted();
   const { data } = await outboundGet('yoco', `${process.env.YOCO_API_URL}/v1/orders/`, {
+    signal,
     headers: { Authorization: `Bearer ${accessToken}` },
     params: { limit: 50, status: 'completed', ...params },
   });
@@ -210,7 +213,7 @@ const yocoMaxPages = () => {
 };
 
 /** Fetch a bounded number of pages and report any truncation to the caller. */
-async function fetchAllOrders(accessToken, startDate, endDate) {
+async function fetchAllOrders(accessToken, startDate, endDate, { signal } = {}) {
   const maxPages = yocoMaxPages();
   const orders = [];
   const seenCursors = new Set();
@@ -219,6 +222,7 @@ async function fetchAllOrders(accessToken, startDate, endDate) {
   let truncated = null;
 
   do {
+    signal?.throwIfAborted();
     if (pages >= maxPages) {
       truncated = 'page_limit';
       break;
@@ -230,7 +234,8 @@ async function fetchAllOrders(accessToken, startDate, endDate) {
     };
     if (cursor) params.cursor = cursor;
 
-    const result = await fetchOrders(accessToken, params);
+    const result = await fetchOrders(accessToken, params, { signal });
+    signal?.throwIfAborted();
     pages += 1;
     if (Array.isArray(result?.data)) orders.push(...result.data);
     cursor = typeof result?.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null;
@@ -279,86 +284,111 @@ function parseSyncRange(body, now = new Date()) {
  * @param {object[]} orders – raw Yoco order objects
  * @returns {Promise<{imported: number, skipped: number, errors: number}>}
  */
-async function syncOrders(cafeId, orders) {
+async function syncOrders(cafeId, orders, { signal } = {}) {
+  signal?.throwIfAborted();
+  const cafe = await Cafe.findById(cafeId).select('timezone').lean();
+  const timezone = safeTimezone(cafe?.timezone);
   let imported = 0;
   let skipped = 0;
   let errors = 0;
 
-  for (const order of orders) {
-    try {
-      if (!order.line_items || order.line_items.length === 0) {
-        skipped++;
-        continue;
-      }
+  try {
+    for (const order of orders) {
+      signal?.throwIfAborted();
+      try {
+        if (!order.line_items || order.line_items.length === 0) {
+          skipped++;
+          continue;
+        }
 
-      const createdAt = new Date(order.created_at || order.closed_at);
-      const hour = createdAt.getHours();
-      const dayOfWeek = createdAt.getDay();
+        const createdAt = new Date(order.created_at || order.closed_at);
+        if (Number.isNaN(createdAt.getTime())) {
+          errors++;
+          continue;
+        }
+        const { hour } = getZonedDateParts(createdAt, timezone);
+        const dayOfWeek = zonedDayOfWeek(createdAt, timezone);
 
-      // Convert line items — amounts are in cents
-      const items = order.line_items
-        .filter((li) => li.item_type === 'product' || li.item_type === 'custom_amount')
-        .map((li) => ({
-          name: li.name || 'Unknown Item',
-          quantity: Math.round(li.quantity) || 1,
-          unitPrice: li.unit_price ? li.unit_price.amount / 100 : 0,
-        }));
+        // Convert line items — amounts are in cents
+        const items = order.line_items
+          .filter((li) => li.item_type === 'product' || li.item_type === 'custom_amount')
+          .map((li) => ({
+            name: li.name || 'Unknown Item',
+            quantity: Math.round(li.quantity) || 1,
+            unitPrice: li.unit_price ? li.unit_price.amount / 100 : 0,
+          }));
 
-      if (items.length === 0) {
-        skipped++;
-        continue;
-      }
-      const reconciledItems = await reconcileTransactionItems(cafeId, items);
+        if (items.length === 0) {
+          skipped++;
+          continue;
+        }
+        const reconciledItems = await reconcileTransactionItems(cafeId, items);
 
-      const total = order.amounts?.gross_amount ? order.amounts.gross_amount.amount / 100 : 0;
-      const tip = order.amounts?.tip_amount ? order.amounts.tip_amount.amount / 100 : 0;
-      const discount = order.amounts?.discount_amount
-        ? order.amounts.discount_amount.amount / 100
-        : 0;
+        const total = order.amounts?.gross_amount ? order.amounts.gross_amount.amount / 100 : 0;
+        const tip = order.amounts?.tip_amount ? order.amounts.tip_amount.amount / 100 : 0;
+        const discount = order.amounts?.discount_amount
+          ? order.amounts.discount_amount.amount / 100
+          : 0;
 
-      const paymentMethod = order.payments?.[0]?.payment_method || 'unknown';
+        const paymentMethod = order.payments?.[0]?.payment_method || 'unknown';
 
-      // Use Yoco order ID as receiptId
-      const receiptId = order.id || order.order_number;
+        // Use Yoco order ID as receiptId
+        const receiptId = order.id || order.order_number;
 
-      const result = await Transaction.findOneAndUpdate(
-        { cafeId, receiptId },
-        {
-          $setOnInsert: {
-            cafeId,
-            receiptId,
-            date: createdAt,
-            hour,
-            dayOfWeek,
-            status: 'approved',
-            paymentMethod,
-            items: reconciledItems,
-            total,
-            tip,
-            discount,
-            source: 'api',
+        signal?.throwIfAborted();
+        const result = await Transaction.findOneAndUpdate(
+          { cafeId, receiptId },
+          {
+            $setOnInsert: {
+              cafeId,
+              receiptId,
+              date: createdAt,
+              hour,
+              dayOfWeek,
+              status: 'approved',
+              paymentMethod,
+              items: reconciledItems,
+              total,
+              tip,
+              discount,
+              source: 'api',
+            },
           },
-        },
-        { upsert: true, new: false }
-      );
+          { upsert: true, new: false }
+        );
 
-      if (result === null) {
-        imported++;
-      } else {
-        skipped++;
+        if (result === null) {
+          imported++;
+        } else {
+          skipped++;
+        }
+      } catch (err) {
+        signal?.throwIfAborted();
+        if (err.code === 11000) {
+          skipped++;
+        } else {
+          logger.error('yoco_order_sync_failed', logger.errorFields(err));
+          errors++;
+        }
       }
-    } catch (err) {
-      if (err.code === 11000) {
-        skipped++;
-      } else {
-        logger.error('yoco_order_sync_failed', logger.errorFields(err));
-        errors++;
+    }
+
+  } finally {
+    // Cancellation can stop a partial sync. The rows already committed must still
+    // refresh the menu and derived views before this task finishes.
+    try {
+      await rebuildItemsForCafe(cafeId);
+    } finally {
+      if (imported > 0) {
+        try {
+          await invalidateDerivedViews(cafeId);
+        } catch (error) {
+          // Committed rows stay imported even when refreshing a derived view fails.
+          logger.error('yoco_derived_invalidation_failed', { cafeId: String(cafeId), ...logger.errorFields(error) });
+        }
       }
     }
   }
-
-  await rebuildItemsForCafe(cafeId);
-  if (imported > 0) clearApiCache({ cafeId });
 
   return { imported, skipped, errors };
 }
@@ -389,33 +419,88 @@ async function subscribeWebhook(accessToken, webhookUrl) {
  * Fetches the full order and syncs it into our database.
  * @param {object} payload – webhook request body
  */
-async function processWebhookEvent(payload) {
-  const { business_id, order_id, event_type } = payload;
-
-  if (event_type !== 'payment.created' || !order_id) return;
-
-  // Find the cafe by yocoBusinessId
-  const cafe = await Cafe.findOne({ yocoBusinessId: business_id }).select(
-    '+yocoTokens.accessToken +yocoTokens.refreshToken'
-  );
-  if (!cafe) {
-    logger.warn('yoco_webhook_unknown_business', { businessId: business_id });
-    return;
+async function processWebhookEvent(payload = {}) {
+  const { business_id: businessId, order_id: orderId, event_type: eventType } = payload || {};
+  if (eventType !== 'payment.created' || !isYocoId(orderId)) return { status: 'ignored' };
+  if (!isYocoId(businessId)) {
+    logger.warn('yoco_webhook_rejected', { reason: 'missing_business_id' });
+    return { status: 'rejected', reason: 'missing_business_id' };
   }
+  const cafes = await Cafe.find({ yocoBusinessId: businessId, yocoConnected: true })
+    .select('+yocoTokens.accessToken +yocoTokens.refreshToken')
+    .limit(2);
+  if (cafes.length !== 1) {
+    logger.warn('yoco_webhook_unrouted', { reason: cafes.length ? 'ambiguous_business_id' : 'no_connected_cafe' });
+    return { status: 'unrouted', matches: cafes.length };
+  }
+  const [cafe] = cafes;
 
   const token = await getValidToken(cafe);
 
   // Fetch the full order with line items
   const { data: order } = await outboundGet('yoco',
-    `${process.env.YOCO_API_URL}/v1/orders/${encodeURIComponent(String(order_id))}`,
+    `${process.env.YOCO_API_URL}/v1/orders/${encodeURIComponent(orderId)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
   const result = await syncOrders(cafe._id, [order]);
-  logger.info('yoco_webhook_synced', { orderId: order_id, imported: result.imported });
+  logger.info('yoco_webhook_synced', { orderId, imported: result.imported });
 
   // Update last sync time
   await Cafe.findByIdAndUpdate(cafe._id, { lastSyncAt: new Date() });
+  return { status: 'synced', ...result };
+}
+
+const isYocoId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[^A-Za-z0-9_.:-]/.test(value);
+
+const claimsOf = (idToken) => {
+  if (typeof idToken !== 'string' || idToken.length > 32_768) return null;
+  try {
+    const [, payload] = idToken.split('.');
+    if (!payload || !/^[A-Za-z0-9_-]+$/.test(payload)) return null;
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return claims && typeof claims === 'object' && !Array.isArray(claims) ? claims : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Only for the token response received directly from the OAuth endpoint over TLS.
+ * Yoco's token reference names authorized_business_id as the selected business;
+ * default_business_id and business_ids do not establish that selection.
+ * https://developer.yoco.com/api-reference/oauth-api/oauth/token
+ */
+const businessIdFromTokens = (tokens) => {
+  const claims = claimsOf(tokens?.id_token);
+  const candidate = claims?.authorized_business_id ?? tokens?.business_id ?? claims?.business_id ?? claims?.ext?.business_id;
+  return isYocoId(candidate) ? candidate : null;
+};
+
+const publicWebhookUrl = () => {
+  try {
+    const url = new URL(process.env.API_PUBLIC_URL || '');
+    if (url.protocol !== 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return null;
+    if (url.username || url.password || url.search || url.hash) return null;
+    return `${url.href.replace(/\/$/, '')}/api/yoco/webhook`;
+  } catch {
+    return null;
+  }
+};
+
+async function registerWebhookIfPublic(cafeId, accessToken) {
+  const url = publicWebhookUrl();
+  if (!url) return 'skipped';
+  try {
+    const subscription = await subscribeWebhook(accessToken, url);
+    if (isYocoId(subscription?.id)) {
+      await Cafe.updateOne({ _id: cafeId }, { $set: { yocoWebhookSubscriptionId: subscription.id } });
+    }
+    return 'registered';
+  } catch (error) {
+    logger.warn('yoco_webhook_subscribe_failed', { upstreamStatus: error?.response?.status ?? null, code: error?.code ?? null });
+    return 'failed';
+  }
 }
 
 module.exports = {
@@ -432,4 +517,7 @@ module.exports = {
   createOAuthState,
   verifyOAuthState,
   verifyWebhookSignature,
+  isYocoId,
+  businessIdFromTokens,
+  registerWebhookIfPublic,
 };

@@ -36,6 +36,7 @@ const cafeSchema = new mongoose.Schema(
     },
     yocoBusinessId: String,
     yocoLocationId: String,
+    yocoWebhookSubscriptionId: String,
     timezone: {
       type: String,
       default: 'Africa/Johannesburg',
@@ -139,6 +140,8 @@ const cafeSchema = new mongoose.Schema(
 
 cafeSchema.index({ orgId: 1, createdAt: 1 });
 cafeSchema.index({ orgId: 1, archivedAt: 1 });
+// Connected business lookup is deliberately non-unique: ambiguity is refused by the webhook.
+cafeSchema.index({ yocoBusinessId: 1 }, { partialFilterExpression: { yocoBusinessId: { $type: 'string' } } });
 
 const { readAndUpgradeSecret } = require('../services/secrets.service');
 

@@ -7,7 +7,7 @@ const Upload = require('../../models/Upload.model');
 const Forecast = require('../../models/Forecast.model');
 const { zonedDayEnd, zonedDayStart } = require('../../utils/timezone');
 const { updateForecastActuals, generateWeekForecast, invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
-const { clearApiCache } = require('../../middleware/cache.middleware');
+const { invalidateDerivedViews } = require('../../services/postImport.service');
 const { boundedInteger, getCafeTimezone } = require('./shared');
 const { parsingLeaseMs, MAX_PARSING_LEASE_MS } = require('./lease');
 
@@ -92,8 +92,7 @@ const runPostImportMaintenance = async (claimedUpload, timezone) => {
   await safely('forecast invalidation', () => invalidatePlanningForecasts(cafeId, timezone));
   await safely('week forecast regeneration', () => generateWeekForecast(cafeId));
   await safely('forecast actuals refresh', () => fillActualsForRange(cafeId, dateRange, timezone));
-  await safely('AI insight invalidation', () => invalidateAiInsights(cafeId));
-  clearApiCache({ cafeId });
+  await safely('AI insight invalidation', () => invalidateDerivedViews(cafeId));
 
   const maxAttempts = maintenanceMaxAttempts();
   const canRetry = errors.length > 0 && attemptCount < maxAttempts;
