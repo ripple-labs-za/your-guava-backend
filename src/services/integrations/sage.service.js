@@ -10,13 +10,13 @@
  *   SAGE_CLIENT_SECRET
  *   SAGE_REDIRECT_URI   — e.g. http://localhost:5173/integrations/sage/callback
  *
- * After the OAuth redirect, the `businessId` for the authenticated business
- * can be fetched via GET https://api.accounting.sage.com/v3.1/business — the
- * frontend should either pass it in the callback body or a future enhancement
- * can auto-fetch it after token exchange.
+ * After token exchange, the server verifies the selected business against
+ * GET https://api.accounting.sage.com/v3.1/businesses and refuses ambiguity.
  */
 
-const { outboundPost } = require('../../utils/http');
+const { outboundGet, outboundPost } = require('../../utils/http');
+
+const { isValidAccountId, pickAccount } = require('./common');
 
 const AUTHORIZE_URL = 'https://www.sageone.com/oauth2/auth/central';
 const TOKEN_URL = 'https://oauth.accounting.sage.com/token';
@@ -46,6 +46,28 @@ const buildAuthorizeUrl = (state) => {
 
 /** Exchange an authorization code for access + refresh tokens.
  *  `providerExtras` may contain `businessId` if the frontend obtained it. */
+const REVOKE_URL = 'https://oauth.accounting.sage.com/revoke';
+
+const listBusinesses = async (accessToken) => {
+  const { data } = await outboundGet('sage', `${API_BASE}businesses`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+  });
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.$items) ? data.$items : [];
+};
+
+const revokeToken = async (refreshToken) => {
+  if (!refreshToken) return;
+  const clientId = process.env.SAGE_CLIENT_ID;
+  const clientSecret = process.env.SAGE_CLIENT_SECRET;
+  if (!clientId) throw new Error('SAGE_CLIENT_ID is not set — see docs/integrations.md');
+  if (!clientSecret) throw new Error('SAGE_CLIENT_SECRET is not set — see docs/integrations.md');
+  const body = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, token: refreshToken });
+  await outboundPost('sage', REVOKE_URL, body.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  });
+};
+
 const exchangeCodeForTokens = async (code, providerExtras = {}) => {
   const clientId = process.env.SAGE_CLIENT_ID;
   const clientSecret = process.env.SAGE_CLIENT_SECRET;
@@ -72,12 +94,12 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
 
   const data = response.data;
 
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresIn: data.expires_in,
-    businessId: providerExtras.businessId || null,
-  };
+  try {
+    return { accessToken: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in, businessId: pickAccount({ providerLabel: 'Sage', accountNoun: 'business', ids: (await listBusinesses(data.access_token)).map((business) => business?.id).filter(isValidAccountId), requestedId: providerExtras.businessId }) };
+  } catch (error) {
+    await revokeToken(data.refresh_token).catch(() => {});
+    throw error;
+  }
 };
 
 /** Refresh an expired access token. */
@@ -148,6 +170,8 @@ const pushSalesSummary = async () => {
 };
 
 module.exports = {
+  listBusinesses,
+  revokeToken,
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,

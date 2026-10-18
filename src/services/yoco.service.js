@@ -1,7 +1,9 @@
 const logger = require('../utils/logger');
 const { safeTimezone, getZonedDateParts, zonedDayOfWeek } = require('../utils/timezone');
 const { invalidateDerivedViews } = require('./postImport.service');
-const { outboundGet, outboundPost } = require('../utils/http');
+const { singleFlight } = require('../utils/singleFlight');
+const { integrationError } = require('./integrations/common');
+const { outboundGet, outboundPost, toUpstreamError } = require('../utils/http');
 const crypto = require('crypto');
 const Cafe = require('../models/Cafe.model');
 const Transaction = require('../models/Transaction.model');
@@ -173,19 +175,39 @@ async function getValidToken(cafe) {
     return Cafe.readSecret(cafe, 'yocoTokens.accessToken');
   }
 
-  // Token expired — refresh it
-  const tokens = await refreshAccessToken(decryptSecret(cafe.yocoTokens.refreshToken));
-  const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-  await Cafe.findByIdAndUpdate(cafe._id, {
-    $set: {
-      'yocoTokens.accessToken': encryptSecret(tokens.access_token),
-      'yocoTokens.refreshToken': encryptSecret(tokens.refresh_token) || cafe.yocoTokens.refreshToken,
-      'yocoTokens.expiresAt': expiresAt,
-    },
+  const storedRefresh = cafe.yocoTokens.refreshToken;
+  return singleFlight(`yoco-refresh:${cafe._id}`, async () => {
+    let tokens;
+    try {
+      tokens = await refreshAccessToken(decryptSecret(storedRefresh));
+    } catch (error) {
+      if (error?.response?.data?.error === 'invalid_grant') {
+        await Cafe.updateOne(
+          { _id: cafe._id, 'yocoTokens.refreshToken': storedRefresh },
+          { $set: { yocoConnected: false }, $unset: { yocoTokens: 1 } }
+        );
+        throw Object.assign(new Error('Yoco no longer accepts this connection. Reconnect Yoco to resume syncing.'), {
+          statusCode: 502, publicCode: 'INTEGRATION_REAUTH_REQUIRED', exposeMessage: true,
+          upstreamStatus: error.response.status ?? null,
+        });
+      }
+      throw toUpstreamError('yoco', error);
+    }
+    const written = await Cafe.updateOne(
+      { _id: cafe._id, 'yocoTokens.refreshToken': storedRefresh },
+      { $set: {
+        'yocoTokens.accessToken': encryptSecret(tokens.access_token),
+        'yocoTokens.refreshToken': encryptSecret(tokens.refresh_token) || storedRefresh,
+        'yocoTokens.expiresAt': new Date(Date.now() + tokens.expires_in * 1000),
+      } }
+    );
+    if (written.matchedCount === 1) return tokens.access_token;
+    const current = await Cafe.findById(cafe._id).select('+yocoTokens.accessToken').lean();
+    if (!current?.yocoConnected || !current?.yocoTokens?.accessToken) {
+      throw integrationError(409, 'INTEGRATION_DISCONNECTED', 'Yoco was disconnected while this sync was running.');
+    }
+    return decryptSecret(current.yocoTokens.accessToken);
   });
-
-  return tokens.access_token;
 }
 
 /**

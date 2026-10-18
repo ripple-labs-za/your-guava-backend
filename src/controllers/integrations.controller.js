@@ -10,7 +10,10 @@ const xeroService = require('../services/integrations/xero.service');
 const quickbooksService = require('../services/integrations/quickbooks.service');
 const sageService = require('../services/integrations/sage.service');
 const { activeCafeId } = require('../utils/tenancy');
-const { demandLines } = require('../utils/demand');
+const { singleFlight } = require('../utils/singleFlight');
+const { refreshIntegrationAccessToken } = require('../services/integrations/tokens');
+const { syncWindow, buildSalesSummary } = require('../services/integrations/salesSummary');
+const { PROVIDER_LABELS, ACCOUNT_ID_FIELD, isValidAccountId } = require('../services/integrations/common');
 
 const SERVICES = Object.freeze({
   xero: xeroService,
@@ -115,194 +118,181 @@ const getAuthUrl = async (req, res, next) => {
  * The frontend calls this after the provider redirects back with an auth code.
  * We exchange the code for tokens and store them on the cafe document.
  *
- * Xero note: the tenantId (Xero org GUID) is obtained by the frontend after
- * the redirect by calling GET https://api.xero.com/connections with the new
- * access token, then passed back here.
+ * Xero and Sage accounts are checked against the provider's list for the new
+ * token. An optional requested id must be in that list; ambiguity is refused.
  *
  * QuickBooks note: Intuit appends `realmId` to the redirect URL as a query
  * param — the frontend must extract it and pass it in this request body.
  *
- * Sage note: the businessId can be fetched from
- * GET https://api.accounting.sage.com/v3.1/business after token exchange.
+ * QuickBooks realm access is verified server-side before the grant is stored.
  */
+const isHttpStatus = (value) => Number.isInteger(value) && value >= 400 && value <= 599;
+const pushFailureStatus = (statusCode) => (statusCode === 501 ? 501 : 502);
+
+// callback: validate the account id before spending the one-time state, pass only that one field on,
+// and answer a provider-authored refusal (400/409/502/504 with publicCode) as it is.
 const callback = async (req, res, _next) => {
+  const { provider } = req.params;
   try {
     if (!accountingIntegrationsEnabled()) return unavailable(res);
-
-    const { provider } = req.params;
-    const { code, state, ...providerExtras } = req.body || {};
     const service = getService(provider);
     if (!service) return res.status(400).json({ success: false, message: 'Unknown provider' });
+    const { code, state } = req.body || {};
     if (typeof code !== 'string' || code.length < 1 || code.length > 4096) {
       return res.status(400).json({ success: false, message: 'Invalid authorization code' });
     }
-
-    const validState = await consumeIntegrationOAuthState({
-      state,
-      cafeId: activeCafeId(req),
-      userId: req.user.id,
-      provider,
-    });
-    if (!validState) {
+    const accountField = ACCOUNT_ID_FIELD[provider];
+    const requestedAccountId = req.body?.[accountField];
+    if (requestedAccountId != null && !isValidAccountId(requestedAccountId)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid or expired authorization state',
+        code: 'INVALID_PROVIDER_ACCOUNT_ID',
+        message: `${accountField} must be a short identifier issued by ${PROVIDER_LABELS[provider]}`,
       });
     }
 
-    const tokens = await service.exchangeCodeForTokens(code, providerExtras);
-    const expiresAt = new Date(Date.now() + (tokens.expiresIn || 1800) * 1000);
+    const validState = await consumeIntegrationOAuthState({
+      state, cafeId: activeCafeId(req), userId: req.user.id, provider,
+    });
+    if (!validState) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired authorization state' });
+    }
 
-    const update = {
-      [`accountingIntegrations.${provider}.connected`]: true,
-      [`accountingIntegrations.${provider}.accessToken`]: encryptSecret(tokens.accessToken),
-      [`accountingIntegrations.${provider}.refreshToken`]: encryptSecret(tokens.refreshToken),
-      [`accountingIntegrations.${provider}.expiresAt`]: expiresAt,
-      [`accountingIntegrations.${provider}.connectedAt`]: new Date(),
-    };
-    if (tokens.tenantId) update[`accountingIntegrations.${provider}.tenantId`] = tokens.tenantId;
-    if (tokens.realmId) update[`accountingIntegrations.${provider}.realmId`] = tokens.realmId;
-    if (tokens.businessId) update[`accountingIntegrations.${provider}.businessId`] = tokens.businessId;
-
-    await Cafe.findByIdAndUpdate(activeCafeId(req), { $set: update });
+    const tokens = await service.exchangeCodeForTokens(
+      code,
+      requestedAccountId ? { [accountField]: requestedAccountId } : {}
+    );
+    const base = `accountingIntegrations.${provider}`;
+    await Cafe.updateOne({ _id: activeCafeId(req) }, { $set: {
+      [`${base}.connected`]: true,
+      [`${base}.accessToken`]: encryptSecret(tokens.accessToken),
+      [`${base}.refreshToken`]: encryptSecret(tokens.refreshToken),
+      [`${base}.expiresAt`]: new Date(Date.now() + (tokens.expiresIn || 1800) * 1000),
+      [`${base}.connectedAt`]: new Date(),
+      [`${base}.${accountField}`]: tokens[accountField],
+    } });
     return res.status(200).json({ success: true });
   } catch (error) {
-    logger.error('integration_oauth_callback_failed', { provider: req.params?.provider, ...logger.errorFields(error) });
-    return res.status(isConfigError(error) ? 503 : 502).json({
+    if (isConfigError(error)) {
+      return res.status(503).json({ success: false, code: 'INTEGRATION_NOT_CONFIGURED', message: error.message });
+    }
+    if (error?.publicCode && isHttpStatus(error.statusCode)) {
+      return res.status(error.statusCode).json({ success: false, code: error.publicCode, message: error.message });
+    }
+    logger.error('integration_oauth_callback_failed', { provider, ...logger.errorFields(error) });
+    return res.status(502).json({
       success: false,
-      code: isConfigError(error) ? 'INTEGRATION_NOT_CONFIGURED' : 'OAUTH_CALLBACK_FAILED',
-      message: isConfigError(error)
-        ? error.message
-        : 'The accounting provider could not complete authorization',
+      code: 'OAUTH_CALLBACK_FAILED',
+      message: 'The accounting provider could not complete authorization',
     });
   }
 };
+
 
 /**
  * POST /api/integrations/:provider/sync
- * Aggregates the last 7 days of approved transactions and pushes a summary
+ * Aggregates closed cafe-local days after the high-water mark and pushes a summary
  * to the accounting provider. Token refresh is handled automatically.
  */
+// A flight includes the fresh read, provider push and watermark write. Sharing only
+// the refresh would still let two tabs send the same period with an unexpired token.
+const syncConnection = async (cafeId, provider, service) => {
+  const base = `accountingIntegrations.${provider}`;
+  const cafe = await Cafe.findById(cafeId).select(`+${base}.accessToken +${base}.refreshToken`);
+  const integ = cafe?.accountingIntegrations?.[provider];
+  if (!integ?.connected) return { status: 400, body: { success: false, message: 'Not connected' } };
+  const period = syncWindow({ timezone: cafe.timezone, lastSyncedThrough: integ.lastSyncedThrough });
+  if (!period) return { status: 200, body: {
+    success: true, upToDate: true, syncedThrough: integ.lastSyncedThrough,
+    message: `${PROVIDER_LABELS[provider]} already has every closed day`,
+  } };
+  const accessToken = service.isTokenExpired(integ.expiresAt)
+    ? await refreshIntegrationAccessToken({ cafeId, provider, service, storedRefreshToken: integ.refreshToken })
+    : await Cafe.readSecret(cafe, `${base}.accessToken`);
+  const summary = await buildSalesSummary({ cafeId, cafeName: cafe.name, ...period });
+  const result = await service.pushSalesSummary({ ...cafe.toObject(), accessToken }, summary);
+  const failureMessage = result.statusCode === 501
+    ? `${PROVIDER_LABELS[provider]} sales posting is not implemented yet`
+    : `${PROVIDER_LABELS[provider]} could not complete the sync. Please try again in a minute.`;
+  await Cafe.updateOne({ _id: cafeId, [`${base}.connected`]: true, [`${base}.connectedAt`]: integ.connectedAt || null }, { $set: {
+    [`${base}.lastSyncAt`]: new Date(),
+    [`${base}.lastSyncStatus`]: result.ok ? 'success' : 'failed',
+    [`${base}.lastSyncError`]: result.ok ? null : failureMessage,
+    ...(result.ok ? { [`${base}.lastSyncedThrough`]: period.periodEnd } : {}),
+  } });
+  return { status: result.ok ? 200 : pushFailureStatus(result.statusCode), body: {
+    success: result.ok, providerRef: result.providerRef,
+    summary: { ...summary, periodStart: summary.periodStart.toISOString(), periodEnd: summary.periodEnd.toISOString() },
+    message: result.ok ? `Sales summary sent to ${provider}` : failureMessage,
+  } };
+};
+
 const sync = async (req, res, next) => {
   try {
     if (!accountingIntegrationsEnabled()) return unavailable(res);
-
     const { provider } = req.params;
     const service = getService(provider);
     if (!service) return res.status(400).json({ success: false, message: 'Unknown provider' });
-
-    const cafe = await Cafe.findById(activeCafeId(req)).select(
-      `+accountingIntegrations.${provider}.accessToken +accountingIntegrations.${provider}.refreshToken`
-    );
-    const integ = cafe?.accountingIntegrations?.[provider];
-    if (!integ?.connected) {
-      return res.status(400).json({ success: false, message: 'Not connected' });
-    }
-
-    // Proactively refresh if the token is within 60 s of expiry
-    if (service.isTokenExpired(integ.expiresAt)) {
-      try {
-        const refreshed = await service.refreshAccessToken(decryptSecret(integ.refreshToken));
-        const newExpiresAt = new Date(Date.now() + (refreshed.expiresIn || 1800) * 1000);
-        await Cafe.findByIdAndUpdate(activeCafeId(req), {
-          $set: {
-            [`accountingIntegrations.${provider}.accessToken`]: encryptSecret(refreshed.accessToken),
-            [`accountingIntegrations.${provider}.refreshToken`]:
-              encryptSecret(refreshed.refreshToken) || integ.refreshToken,
-            [`accountingIntegrations.${provider}.expiresAt`]: newExpiresAt,
-          },
-        });
-        integ.accessToken = refreshed.accessToken;
-      } catch (err) {
-        return res
-          .status(401)
-          .json({ success: false, message: 'Token refresh failed: ' + err.message });
-      }
-    }
-
-    // Build last-7-days sales summary
-    const Transaction = require('../models/Transaction.model');
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    const txns = await Transaction.find({
-      cafeId: activeCafeId(req),
-      status: 'approved',
-      date: { $gte: sevenDaysAgo },
-    }).lean();
-
-    const summary = {
-      cafeName: cafe.name,
-      periodStart: sevenDaysAgo,
-      periodEnd: new Date(),
-      transactionCount: txns.length,
-      totalRevenue: txns.reduce((s, t) => s + (t.total || 0), 0),
-      totalTip: txns.reduce((s, t) => s + (t.tip || 0), 0),
-      // No prototype: keyed by POS item names (see getService).
-      itemBreakdown: Object.create(null),
-    };
-
-    // An ignored line (a delivery fee) is not an item sale; totalRevenue above still counts it as takings.
-    for (const tx of txns) {
-      for (const item of demandLines(tx.items)) {
-        summary.itemBreakdown[item.name] =
-          (summary.itemBreakdown[item.name] || 0) + (item.unitPrice || 0) * item.quantity;
-      }
-    }
-
-    const result = await service.pushSalesSummary(
-      { ...cafe.toObject(), accessToken: await Cafe.readSecret(cafe, `accountingIntegrations.${provider}.accessToken`) },
-      summary
-    );
-
-    const updateFields = {
-      [`accountingIntegrations.${provider}.lastSyncAt`]: new Date(),
-      [`accountingIntegrations.${provider}.lastSyncStatus`]: result.ok ? 'success' : 'failed',
-      [`accountingIntegrations.${provider}.lastSyncError`]: result.ok
-        ? null
-        : result.error || 'Unknown error',
-    };
-    await Cafe.findByIdAndUpdate(activeCafeId(req), { $set: updateFields });
-
-    return res.status(result.ok ? 200 : result.statusCode || 500).json({
-      success: result.ok,
-      providerRef: result.providerRef,
-      summary: {
-        ...summary,
-        periodStart: summary.periodStart.toISOString(),
-        periodEnd: summary.periodEnd.toISOString(),
-      },
-      message: result.ok
-        ? `Sales summary sent to ${provider}`
-        : `Sync failed: ${result.error}`,
-    });
+    const cafeId = activeCafeId(req);
+    const outcome = await singleFlight(`integration-sync:${cafeId}:${provider}`, () => syncConnection(cafeId, provider, service));
+    return res.status(outcome.status).json(outcome.body);
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
+
 
 /**
  * POST /api/integrations/:provider/disconnect
  * Clears stored tokens and marks the provider as disconnected.
  */
+const revokeQuietly = async (provider, service, storedRefreshToken) => {
+  if (!storedRefreshToken) return 'not_needed';
+  try {
+    await service.revokeToken(decryptSecret(storedRefreshToken));
+    return 'revoked';
+  } catch (error) {
+    const outcome = isConfigError(error) ? 'skipped' : 'failed';
+    logger.warn('integration_revoke_failed', {
+      provider,
+      outcome,
+      upstreamStatus: error?.response?.status ?? null,
+      code: error?.code ?? null,
+    });
+    return outcome;
+  }
+};
+
 const disconnect = async (req, res, next) => {
   try {
     const { provider } = req.params;
-    if (!getService(provider)) {
-      return res.status(400).json({ success: false, message: 'Unknown provider' });
-    }
-    await Cafe.findByIdAndUpdate(activeCafeId(req), {
+    const service = getService(provider);
+    if (!service) return res.status(400).json({ success: false, message: 'Unknown provider' });
+    const cafeId = activeCafeId(req);
+    const base = `accountingIntegrations.${provider}`;
+    const cafe = await Cafe.findById(cafeId).select(`+${base}.refreshToken`).lean();
+    const revocation = await revokeQuietly(provider, service, cafe?.accountingIntegrations?.[provider]?.refreshToken);
+    await Cafe.updateOne({ _id: cafeId }, {
       $set: {
-        [`accountingIntegrations.${provider}.connected`]: false,
-        [`accountingIntegrations.${provider}.accessToken`]: null,
-        [`accountingIntegrations.${provider}.refreshToken`]: null,
-        [`accountingIntegrations.${provider}.expiresAt`]: null,
+        [`${base}.connected`]: false,
+        [`${base}.accessToken`]: null,
+        [`${base}.refreshToken`]: null,
+        [`${base}.expiresAt`]: null,
+      },
+      $unset: {
+        [`${base}.${ACCOUNT_ID_FIELD[provider]}`]: '',
+        [`${base}.connectedAt`]: '',
+        [`${base}.lastSyncAt`]: '',
+        [`${base}.lastSyncStatus`]: '',
+        [`${base}.lastSyncError`]: '',
+        [`${base}.lastSyncedThrough`]: '',
       },
     });
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, revocation });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
+
 
 module.exports = { list, getAuthUrl, callback, sync, disconnect, isKnownProvider, validateProviderParam };

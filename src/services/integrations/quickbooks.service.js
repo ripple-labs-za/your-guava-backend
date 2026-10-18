@@ -16,7 +16,9 @@
  * must forward it in the callback POST body.
  */
 
-const { outboundPost } = require('../../utils/http');
+const { outboundGet, outboundPost } = require('../../utils/http');
+
+const { isValidAccountId, integrationError } = require('./common');
 
 const AUTHORIZE_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -50,6 +52,40 @@ const buildAuthorizeUrl = (state) => {
 
 /** Exchange an authorization code for access + refresh tokens.
  *  `providerExtras` must contain `realmId` (Intuit appends it to the redirect). */
+const REVOKE_URL = 'https://developer.api.intuit.com/v2/oauth2/tokens/revoke';
+const apiBase = () => (process.env.QUICKBOOKS_ENV === 'production'
+  ? 'https://quickbooks.api.intuit.com'
+  : 'https://sandbox-quickbooks.api.intuit.com');
+
+/** Intuit puts realmId on the redirect; prove the new token can read that company before storing it. */
+const verifyRealm = async (accessToken, realmId) => {
+  const mismatch = () => integrationError(400, 'INTEGRATION_ACCOUNT_MISMATCH',
+    'QuickBooks did not authorise that company for this connection. Connect again and choose it on the QuickBooks screen.');
+  if (!isValidAccountId(realmId)) throw mismatch();
+  const id = encodeURIComponent(realmId);
+  try {
+    await outboundGet('quickbooks', `${apiBase()}/v3/company/${id}/companyinfo/${id}`, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    });
+    return realmId;
+  } catch (error) {
+    if ([401, 403, 404].includes(error?.response?.status)) throw mismatch();
+    throw error;
+  }
+};
+
+const revokeToken = async (refreshToken) => {
+  if (!refreshToken) return;
+  const clientId = process.env.QUICKBOOKS_CLIENT_ID;
+  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
+  if (!clientId) throw new Error('QUICKBOOKS_CLIENT_ID is not set — see docs/integrations.md');
+  if (!clientSecret) throw new Error('QUICKBOOKS_CLIENT_SECRET is not set — see docs/integrations.md');
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  await outboundPost('quickbooks', REVOKE_URL, { token: refreshToken }, {
+    headers: { Authorization: `Basic ${basicAuth}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+  });
+};
+
 const exchangeCodeForTokens = async (code, providerExtras = {}) => {
   const clientId = process.env.QUICKBOOKS_CLIENT_ID;
   const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET;
@@ -78,12 +114,12 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
 
   const data = response.data;
 
-  return {
-    accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresIn: data.expires_in,
-    realmId: providerExtras.realmId || null,
-  };
+  try {
+    return { accessToken: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in, realmId: await verifyRealm(data.access_token, providerExtras.realmId) };
+  } catch (error) {
+    await revokeToken(data.refresh_token).catch(() => {});
+    throw error;
+  }
 };
 
 /** Refresh an expired access token. */
@@ -157,6 +193,8 @@ const pushSalesSummary = async () => {
 };
 
 module.exports = {
+  verifyRealm,
+  revokeToken,
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,

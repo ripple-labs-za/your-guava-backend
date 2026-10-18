@@ -110,6 +110,7 @@ const cafeSchema = new mongoose.Schema(
         lastSyncAt: { type: Date },
         lastSyncStatus: { type: String, enum: ['success', 'failed', null], default: null },
         lastSyncError: { type: String },
+        lastSyncedThrough: { type: Date },
       },
       quickbooks: {
         connected: { type: Boolean, default: false },
@@ -121,6 +122,7 @@ const cafeSchema = new mongoose.Schema(
         lastSyncAt: { type: Date },
         lastSyncStatus: { type: String, enum: ['success', 'failed', null], default: null },
         lastSyncError: { type: String },
+        lastSyncedThrough: { type: Date },
       },
       sage: {
         connected: { type: Boolean, default: false },
@@ -132,6 +134,7 @@ const cafeSchema = new mongoose.Schema(
         lastSyncAt: { type: Date },
         lastSyncStatus: { type: String, enum: ['success', 'failed', null], default: null },
         lastSyncError: { type: String },
+        lastSyncedThrough: { type: Date },
       },
     },
   },

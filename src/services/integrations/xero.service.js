@@ -1,4 +1,3 @@
-const logger = require('../../utils/logger');
 /**
  * Xero OAuth + sync service
  *
@@ -11,14 +10,14 @@ const logger = require('../../utils/logger');
  *   XERO_CLIENT_SECRET
  *   XERO_REDIRECT_URI   — e.g. http://localhost:5173/integrations/xero/callback
  *
- * After the user grants consent, Xero sends a code AND a list of authorised
- * tenants.  The frontend should pass `tenantId` in the callback body after
- * calling GET /api/integrations/xero/auth (Xero surfaces the tenant list at
- * https://api.xero.com/connections after the first token exchange — a future
- * enhancement can auto-select the single tenant or let the user pick).
+ * After exchanging the code, the server lists authorised tenants at
+ * https://api.xero.com/connections. It keeps only a verified requested tenant
+ * or the sole authorised tenant; an ambiguous grant is revoked and refused.
  */
 
-const { outboundGet, outboundPost, isOutboundTimeout } = require('../../utils/http');
+const { outboundGet, outboundPost } = require('../../utils/http');
+
+const { pickAccount, isValidAccountId } = require('./common');
 
 const AUTHORIZE_URL = 'https://login.xero.com/identity/connect/authorize';
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
@@ -49,6 +48,29 @@ const buildAuthorizeUrl = (state) => {
 /** Exchange an authorization code for access + refresh tokens.
  *  `providerExtras` may contain `tenantId` if the frontend obtained it
  *  via the Xero connections endpoint after redirect. */
+const CONNECTIONS_URL = 'https://api.xero.com/connections';
+const REVOCATION_URL = 'https://identity.xero.com/connect/revocation';
+
+const listConnections = async (accessToken) => {
+  const { data } = await outboundGet('xero', CONNECTIONS_URL, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  return Array.isArray(data) ? data : [];
+};
+
+const revokeToken = async (refreshToken) => {
+  if (!refreshToken) return;
+  const clientId = process.env.XERO_CLIENT_ID;
+  const clientSecret = process.env.XERO_CLIENT_SECRET;
+  if (!clientId) throw new Error('XERO_CLIENT_ID is not set — see docs/integrations.md');
+  if (!clientSecret) throw new Error('XERO_CLIENT_SECRET is not set — see docs/integrations.md');
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  await outboundPost('xero', REVOCATION_URL, new URLSearchParams({ token: refreshToken }).toString(), {
+    headers: { Authorization: `Basic ${basicAuth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+  });
+};
+
+
 const exchangeCodeForTokens = async (code, providerExtras = {}) => {
   const clientId = process.env.XERO_CLIENT_ID;
   const clientSecret = process.env.XERO_CLIENT_SECRET;
@@ -75,33 +97,20 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
   });
 
   const data = response.data;
-  const accessToken = data.access_token;
-
-  // Fetch the tenant ID from the Xero connections endpoint.
-  // Xero does not include tenantId in the token response — it must be
-  // retrieved separately from GET https://api.xero.com/connections.
-  let tenantId = providerExtras.tenantId || null;
-  if (!tenantId) {
-    try {
-      const connectionsRes = await outboundGet('xero', 'https://api.xero.com/connections', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const connections = connectionsRes.data;
-      if (Array.isArray(connections) && connections.length > 0) {
-        tenantId = connections[0].tenantId || null;
-      }
-    } catch (err) {
-      if (isOutboundTimeout(err)) throw err;
-      logger.warn('xero_tenant_lookup_failed', logger.errorFields(err));
-    }
+  try {
+    const connections = await listConnections(data.access_token);
+    const tenantId = pickAccount({
+      providerLabel: 'Xero',
+      accountNoun: 'organisation',
+      ids: connections.map((connection) => connection?.tenantId).filter(isValidAccountId),
+      requestedId: providerExtras.tenantId,
+    });
+    return { accessToken: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in, tenantId };
+  } catch (error) {
+    // A grant we will not store must not stay live at Xero.
+    await revokeToken(data.refresh_token).catch(() => {});
+    throw error;
   }
-
-  return {
-    accessToken,
-    refreshToken: data.refresh_token,
-    expiresIn: data.expires_in,
-    tenantId,
-  };
 };
 
 /** Refresh an expired access token using the stored refresh token. */
@@ -174,6 +183,8 @@ const pushSalesSummary = async () => {
 };
 
 module.exports = {
+  listConnections,
+  revokeToken,
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshAccessToken,
