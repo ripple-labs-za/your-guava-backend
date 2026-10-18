@@ -449,6 +449,34 @@ describe('placeholders', () => {
 });
 
 describe('numeric settings', () => {
+  it('uses the production numeric rules for a normalised NODE_ENV', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.NODE_ENV = ' Production';
+    process.env.UPLOAD_MAX_BYTES = '10MB';
+    expect(() => validateEnv()).toThrow(/UPLOAD_MAX_BYTES must be a whole number with no units/);
+  });
+
+  it('requires production storage for a normalised NODE_ENV', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.NODE_ENV = 'Production';
+    delete process.env.R2_ACCOUNT_ID;
+    expect(() => validateEnv()).toThrow(/R2_ACCOUNT_ID is required for production upload storage/);
+  });
+
+  it('keeps staging on the non-production storage and numeric rules', () => {
+    setProductionBaseEnv();
+    setProductionPaystackEnv();
+    process.env.NODE_ENV = ' staging ';
+    for (const name of ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']) {
+      delete process.env[name];
+    }
+    process.env.DOWNLOAD_SIGNING_SECRET = 'local-download-signing-secret-0123456789';
+    process.env.UPLOAD_MAX_BYTES = '10MB';
+    expect(() => validateEnv()).not.toThrow();
+  });
+
   it.each(Object.entries(NUMERIC_ENV))('refuses %s outside its range in production', (name, { min, max }) => {
     setProductionBaseEnv();
     setProductionPaystackEnv();

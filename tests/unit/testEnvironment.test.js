@@ -27,6 +27,17 @@ const expectBlocked = (open) => {
 };
 
 describe('hermetic test environment', () => {
+  it('clears SDK, feature-model and migration settings inherited from the shell', () => {
+    const { HERMETIC_ENV_NAMES } = require('../env');
+    for (const name of [
+      'AI_MODEL_CHAT', 'AI_MODEL_COLUMN_MAPPING', 'AI_MODEL_INSIGHTS', 'AI_MODEL_MENU_REVIEW',
+      'ANTHROPIC_BASE_URL', 'MIGRATION_STARTUP_TIMEOUT_MS',
+    ]) {
+      expect(HERMETIC_ENV_NAMES).toContain(name);
+      expect(process.env[name]).toBeUndefined();
+    }
+  });
+
   it('pins the process timezone to the production zone (or GUAVA_TEST_TZ)', () => {
     const expected = process.env.GUAVA_TEST_TZ || 'Africa/Johannesburg';
     expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(expected);

@@ -23,6 +23,7 @@ const refreshCookieOptions = ({ clearing = false } = {}) => {
 
 module.exports = {
   REFRESH_COOKIE_MAX_AGE_MS,
+  nodeEnv,
   isRelaxedEnvironment,
   isHardenedEnvironment,
   refreshCookieOptions,

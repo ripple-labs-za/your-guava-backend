@@ -1,6 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const { NUMERIC_ENV, KNOWN_ENV } = require('../../src/config/envSpec');
+const { maxObjectBytes } = require('../../src/services/r2.service');
+const { yocoSyncTotalMs } = require('../../src/services/yoco.service');
+const { parserLimits } = require('../../src/services/parser/limits');
 
 const SRC_ROOT = path.resolve(__dirname, '../../src');
 const walk = (dir) =>
@@ -18,6 +21,26 @@ const collect = (pattern) => {
 };
 
   describe('environment catalogue', () => {
+    it.each([
+      ['UPLOAD_MAX_BYTES', maxObjectBytes],
+      ['YOCO_SYNC_TOTAL_MS', yocoSyncTotalMs],
+      ['UPLOAD_MAX_ROWS', () => parserLimits().maxRows],
+      ['UPLOAD_MAX_COLUMNS', () => parserLimits().maxColumns],
+      ['UPLOAD_MAX_CELL_CHARS', () => parserLimits().maxCellChars],
+    ])('matches the real %s getter at both catalogue boundaries', (name, read) => {
+      const previous = process.env[name];
+      const { min, max } = NUMERIC_ENV[name];
+      try {
+        process.env[name] = String(min - 1);
+        expect(read()).toBe(min);
+        process.env[name] = String(max + 1);
+        expect(read()).toBe(max);
+      } finally {
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+      }
+    });
+
     it('classifies dynamically selected outbound deadlines and feature model overrides', () => {
       const { OUTBOUND_SERVICES } = require('../../src/utils/http');
       const { FEATURES } = require('../../src/config/ai');
