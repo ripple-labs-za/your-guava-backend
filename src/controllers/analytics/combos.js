@@ -22,6 +22,7 @@ const getCombos = async (req, res, next) => {
     };
 
     const maxBaskets = combosMaxBaskets();
+    const distinctNames = { $setUnion: [{ $map: { input: demandItemsExpression(), as: 'line', in: '$$line.name' } }, []] };
     const [result] = await Transaction.aggregate([
       { $match: matchStage },
       { $match: { 'items.1': { $exists: true } } },
@@ -31,12 +32,17 @@ const getCombos = async (req, res, next) => {
       {
         $facet: {
           baskets: [{ $count: 'n' }],
+          basketsClipped: [
+            { $limit: maxBaskets },
+            { $match: { $expr: { $gt: [{ $size: distinctNames }, COMBO_MAX_ITEMS_PER_BASKET] } } },
+            { $count: 'n' },
+          ],
           pairs: [
             { $limit: maxBaskets },
             {
               $project: {
                 itemNames: {
-                  $slice: [{ $sortArray: { input: { $setUnion: [{ $map: { input: demandItemsExpression(), as: 'line', in: '$$line.name' } }, []] }, sortBy: 1 } }, COMBO_MAX_ITEMS_PER_BASKET],
+                  $slice: [{ $sortArray: { input: distinctNames, sortBy: 1 } }, COMBO_MAX_ITEMS_PER_BASKET],
                 },
               },
             },
@@ -84,12 +90,14 @@ const getCombos = async (req, res, next) => {
     ], aggregateOptions());
 
     const basketsSeen = result?.baskets?.[0]?.n || 0;
+    const basketsClipped = result?.basketsClipped?.[0]?.n || 0;
     return res.status(200).json({
       success: true,
       data: result?.pairs || [],
       meta: {
         ...analyticsRangeMeta(req.query, dateMatch, timezone),
-        truncated: basketsSeen > maxBaskets,
+        truncated: basketsSeen > maxBaskets || basketsClipped > 0,
+        basketsClipped,
         basketsConsidered: Math.min(basketsSeen, maxBaskets),
         maxBaskets,
         maxItemsPerBasket: COMBO_MAX_ITEMS_PER_BASKET,
@@ -116,9 +124,11 @@ const getCombos = async (req, res, next) => {
         let truncated = transactions.length > cap;
         let pairWork = 0;
         let basketsConsidered = 0;
+        let basketsClipped = 0;
         const pairCounts = new Map();
         for (const tx of transactions.slice(0, cap)) {
-          const names = [...new Set(demandLines(tx.items).map((item) => item.name))].sort().slice(0, COMBO_MAX_ITEMS_PER_BASKET);
+          const allNames = [...new Set(demandLines(tx.items).map((item) => item.name))].sort();
+          const names = allNames.slice(0, COMBO_MAX_ITEMS_PER_BASKET);
           const work = (names.length * (names.length - 1)) / 2;
           if (pairWork + work > MAX_COMBO_FALLBACK_PAIR_WORK) {
             truncated = true;
@@ -126,6 +136,7 @@ const getCombos = async (req, res, next) => {
           }
           pairWork += work;
           basketsConsidered += 1;
+          if (allNames.length > names.length) { basketsClipped += 1; truncated = true; }
           for (let i = 0; i < names.length; i += 1) {
             for (let j = i + 1; j < names.length; j += 1) {
               const key = JSON.stringify([names[i], names[j]]);
@@ -145,6 +156,7 @@ const getCombos = async (req, res, next) => {
             ...analyticsRangeMeta(req.query, dateMatch, timezone),
             truncated,
             basketsConsidered,
+            basketsClipped,
             maxBaskets: cap,
             maxItemsPerBasket: COMBO_MAX_ITEMS_PER_BASKET,
           },

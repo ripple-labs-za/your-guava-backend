@@ -84,6 +84,19 @@ describe('analytics limits', () => {
     expect(res.body.meta).toEqual(expect.objectContaining({ truncated: false, basketsConsidered: 3 }));
   });
 
+  it.each(['pipeline', 'fallback'])('reports baskets cut to 20 distinct demand items in the %s path', async (mode) => {
+    const names = Array.from({ length: 23 }, (_, index) => `Item ${String(index).padStart(2, '0')}`);
+    await Transaction.insertMany([
+      basket(cafeId, new Date('2026-01-13T08:00:00Z'), names),
+      basket(cafeId, new Date('2026-01-13T09:00:00Z'), ['Flat White', 'Muffin']),
+    ]);
+    if (mode === 'fallback') jest.spyOn(Transaction, 'aggregate').mockRejectedValueOnce(new Error('Unrecognized expression $sortArray'));
+    const res = await get('combos', WINDOW);
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toEqual(expect.objectContaining({ basketsClipped: 1, basketsConsidered: 2, truncated: true }));
+    expect(res.body.data.some((entry) => entry.pair.some((name) => ['Item 20', 'Item 21', 'Item 22'].includes(name)))).toBe(false);
+  });
+
   it('bounds every analytics aggregate with maxTimeMS', async () => {
     await Transaction.create(basket(cafeId, new Date('2026-01-13T09:00:00+02:00'), ['Flat White', 'Brownie']));
     const aggregate = jest.spyOn(Transaction, 'aggregate');
