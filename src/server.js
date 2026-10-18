@@ -142,6 +142,28 @@ const scheduleUsageReconciliation = () => {
   usageReconciliationTimer.unref();
 };
 
+const { runBillingReminders } = require('./services/billing/reminders');
+let billingReminderTimer;
+let billingReminderPromise;
+const runBillingReminderJob = () => {
+  if (billingReminderPromise) return billingReminderPromise;
+  billingReminderPromise = (async () => {
+    try {
+      const summary = await runBillingReminders();
+      if (summary.sent > 0 || summary.failed > 0) console.log('[billing] period-end reminders:', summary);
+    } catch (error) {
+      console.error('[billing] period-end reminders failed:', error.message);
+    }
+  })().finally(() => { billingReminderPromise = undefined; });
+  return billingReminderPromise;
+};
+const scheduleBillingReminders = () => {
+  void runBillingReminderJob();
+  const intervalMs = boundedInteger(process.env.BILLING_REMINDER_INTERVAL_MS, 60 * 60 * 1000, 5 * 60 * 1000, 24 * 60 * 60 * 1000);
+  billingReminderTimer = setInterval(() => void runBillingReminderJob(), intervalMs);
+  billingReminderTimer.unref();
+};
+
 const cleanupFailedStart = async () => {
   const partialServer = httpServer;
   httpServer = undefined;
@@ -194,6 +216,7 @@ const start = async () => {
     schedulePendingUploadCleanup();
     schedulePaymentReconciliation();
     scheduleUsageReconciliation();
+    scheduleBillingReminders();
     // The loop's own lag, logged per window and shown on /api/ready. Started
     // here, not in app.js, so suites that load the app never start an interval.
     startEventLoopMonitor({
@@ -217,6 +240,7 @@ const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
     if (cleanupTimer) clearInterval(cleanupTimer);
     if (paymentReconciliationTimer) clearInterval(paymentReconciliationTimer);
     if (usageReconciliationTimer) clearInterval(usageReconciliationTimer);
+    if (billingReminderTimer) clearInterval(billingReminderTimer);
     stopEventLoopMonitor();
 
     const timeoutMs = boundedInteger(
@@ -241,7 +265,7 @@ const shutdown = async (signal = 'shutdown', { exitProcess = false } = {}) => {
         await new Promise((resolve) => httpServer.close(() => resolve()));
       }
       await Promise.allSettled(
-        [cleanupPromise, paymentReconciliationPromise, usageReconciliationPromise].filter(Boolean)
+        [cleanupPromise, paymentReconciliationPromise, usageReconciliationPromise, billingReminderPromise].filter(Boolean)
       );
       if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
     })();

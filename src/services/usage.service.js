@@ -12,6 +12,7 @@ const meter = require('./usage/meter');
 module.exports = {
   FEATURE_COSTS: meter.FEATURE_COSTS,
   billingAccessForOrganization: policy.billingAccessForOrganization,
+  billingGraceDays: policy.billingGraceDays,
   billingRequiredError: policy.billingRequiredError,
   bonusUsedForCredits: credits.bonusUsedForCredits,
   consumeGuavaCredits: meter.consumeGuavaCredits,

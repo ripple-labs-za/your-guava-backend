@@ -68,9 +68,22 @@ const inferredCurrentPeriodEnd = (org) => {
   return startedAt ? addBillingCycle(startedAt, org?.billingCycle) : null;
 };
 
+const billingGraceDays = () => boundedPolicyInteger(process.env.BILLING_GRACE_DAYS, 3, 0, 14);
+
+// D-025: metered access stays closed; only reads get a short period after a real lapse.
+const withGrace = (access, current) => {
+  const closed = { ...access, readOnly: false, graceEndsAt: null };
+  if (access.allowed || access.storedStatus === 'canceled') return closed;
+  const periodEnd = asDate(access.periodEnd);
+  const days = billingGraceDays();
+  if (!periodEnd || periodEnd > current || days === 0) return closed;
+  const graceEndsAt = new Date(periodEnd.getTime() + days * 24 * 60 * 60 * 1000);
+  return graceEndsAt > current ? { ...access, status: 'grace', readOnly: true, graceEndsAt } : closed;
+};
+
 const billingAccessForOrganization = (org, now = new Date()) => {
   if (!org) {
-    return { allowed: false, status: 'missing', reason: 'organization_missing', periodEnd: null };
+    return { allowed: false, status: 'missing', reason: 'organization_missing', periodEnd: null, readOnly: false, graceEndsAt: null };
   }
 
   const current = asDate(now) || new Date();
@@ -78,36 +91,36 @@ const billingAccessForOrganization = (org, now = new Date()) => {
   if (status === 'trialing') {
     const periodEnd = inferredTrialEnd(org);
     const allowed = Boolean(periodEnd && periodEnd > current);
-    return {
+    return withGrace({
       allowed,
       status: allowed ? status : 'past_due',
       storedStatus: status,
       reason: allowed ? null : 'trial_expired',
       periodEnd,
       trialEndsAt: periodEnd,
-    };
+    }, current);
   }
 
   if (status === 'active') {
     const periodEnd = inferredCurrentPeriodEnd(org);
     const allowed = Boolean(periodEnd && periodEnd > current);
-    return {
+    return withGrace({
       allowed,
       status: allowed ? status : 'past_due',
       storedStatus: status,
       reason: allowed ? null : 'billing_period_expired',
       periodEnd,
       currentPeriodEnd: periodEnd,
-    };
+    }, current);
   }
 
-  return {
+  return withGrace({
     allowed: false,
     status,
     storedStatus: status,
     reason: status === 'canceled' ? 'subscription_canceled' : 'payment_required',
     periodEnd: inferredCurrentPeriodEnd(org) || inferredTrialEnd(org),
-  };
+  }, current);
 };
 
 const billingRequiredError = (access) => {
@@ -119,6 +132,8 @@ const billingRequiredError = (access) => {
     billingStatus: access?.status || 'past_due',
     reason: access?.reason || 'payment_required',
     periodEnd: access?.periodEnd || null,
+    readOnly: Boolean(access?.readOnly),
+    graceEndsAt: access?.graceEndsAt || null,
   };
   return err;
 };
@@ -224,6 +239,6 @@ const enforceAiUsagePolicy = async ({ orgId, userId, featureKey, credits }, sess
 };
 
 module.exports = {
-  AI_FEATURE_KEYS, aiUsagePolicy, asDate, billingAccessForOrganization, billingRequiredError, aiPolicyError,
+  AI_FEATURE_KEYS, aiUsagePolicy, asDate, billingAccessForOrganization, billingGraceDays, billingRequiredError, aiPolicyError,
   enforceAiUsagePolicy,
 };

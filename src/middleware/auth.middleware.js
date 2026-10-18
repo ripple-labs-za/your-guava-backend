@@ -1,11 +1,18 @@
 const jwt = require('jsonwebtoken');
-const { applyDuePlanChange, planChangeIsDue } = require('../services/billingPayments.service');
+const { applyDuePlanChange, formatBillingDate, planChangeIsDue } = require('../services/billingPayments.service');
 const User = require('../models/User.model');
 const Organization = require('../models/Organization.model');
 const { billingAccessForOrganization } = require('../services/usage.service');
 
 const BILLING_EXEMPT_PREFIXES = ['/api/account', '/api/auth'];
 const OBJECT_ID = '[a-f0-9]{24}';
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const GRACE_BLOCKED_READS = [/^\/api\/integrations\/[^/]+\/auth\/?$/, /^\/api\/yoco\/auth\/?$/];
+const allowedDuringGrace = (req) => {
+  const path = String(req.originalUrl || '').split('?')[0];
+  if (READ_METHODS.has(req.method)) return !GRACE_BLOCKED_READS.some((pattern) => pattern.test(path));
+  return req.method === 'POST' && path === '/api/team/switch-cafe';
+};
 // A lapsed organisation must still be able to shrink to a smaller plan, or checkout refuses the downgrade it needs (identity-7).
 // Only routes that read, or reduce seats and locations, are exempt; nothing that adds data or spends credits.
 const BILLING_EXEMPT_ROUTES = [
@@ -86,10 +93,14 @@ const authMiddleware = async (req, res, next) => {
     let billing = billingAccessForOrganization(organization);
     if (!billing.allowed && ['trialing', 'active'].includes(organization.billingStatus)) {
       await Organization.updateOne(
-        { _id: organization._id, billingStatus: organization.billingStatus },
+        {
+          _id: organization._id, billingStatus: organization.billingStatus,
+          currentPeriodEnd: organization.currentPeriodEnd ?? null,
+          trialEndsAt: organization.trialEndsAt ?? null,
+        },
         { $set: { billingStatus: 'past_due' } }
       );
-      billing = { ...billing, status: 'past_due', storedStatus: 'past_due' };
+      billing = { ...billing, storedStatus: 'past_due' };
     }
 
     req.user = {
@@ -107,15 +118,19 @@ const authMiddleware = async (req, res, next) => {
     };
     req.billing = billing;
 
-    if (!billing.allowed && !isBillingExempt(req)) {
+    if (!billing.allowed && !isBillingExempt(req) && !(billing.readOnly && allowedDuringGrace(req))) {
       return res.status(402).json({
         success: false,
         code: 'BILLING_REQUIRED',
-        message: 'An active trial or paid billing period is required',
+        message: billing.readOnly
+          ? `Your plan has ended. Guava is read-only until ${formatBillingDate(billing.graceEndsAt)}: renew in Billing to make changes.`
+          : 'An active trial or paid billing period is required',
         billing: {
           status: billing.status,
           reason: billing.reason,
           periodEnd: billing.periodEnd,
+          readOnly: Boolean(billing.readOnly),
+          graceEndsAt: billing.graceEndsAt || null,
         },
       });
     }

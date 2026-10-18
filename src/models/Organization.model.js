@@ -104,6 +104,7 @@ const organizationSchema = new mongoose.Schema(
       default: false,
     },
     pendingPlanChange: { type: pendingPlanChangeSchema, default: undefined },
+    billingRemindersSent: { type: [String], default: undefined, select: false },
     fulfilledPaymentReferences: {
       type: [String],
       default: [],

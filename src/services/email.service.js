@@ -1,3 +1,4 @@
+const { DEFAULT_TIMEZONE } = require('../utils/timezone');
 const { Resend } = require('resend');
 const { isRelaxedEnvironment } = require('../config/posture');
 
@@ -356,6 +357,46 @@ const buildTeamInviteEmail = ({ invitation, owner, cafes = [], invitationToken }
 
 const sendTeamInviteEmail = async (args) => sendEmail(buildTeamInviteEmail(args));
 
+const formatLongDate = (value) => new Intl.DateTimeFormat('en-ZA', {
+  day: 'numeric', month: 'long', year: 'numeric', timeZone: DEFAULT_TIMEZONE,
+}).format(new Date(value));
+
+/** Pure, so the copy and the escaping are testable without a transport. */
+const billingReminderMessage = ({ ownerName, orgName, planName, kind, endsAt, daysLeft, graceDays }) => {
+  const billingUrl = `${appUrl()}/settings?section=billing`;
+  const what = kind === 'trial' ? 'free trial' : `${planName} plan`;
+  const when = daysLeft <= 1 ? 'tomorrow' : `on ${formatLongDate(endsAt)}`;
+  const afterEnd = graceDays > 0
+    ? `After it ends, Guava stays readable for ${graceDays} days (forecasts, analytics and history), but imports, edits and AI tools pause until payment.`
+    : 'After it ends, Guava pauses until payment.';
+  const subject = `Your Guava: your ${what} ends ${when}`;
+  const html = baseHtml({
+    title: `Your ${what} ends ${when}`,
+    intro: `Hi ${ownerName || 'there'}, ${orgName}'s ${what} ends on ${formatLongDate(endsAt)}.`,
+    ctaLabel: kind === 'trial' ? 'Choose a plan' : 'Renew in Billing',
+    ctaUrl: billingUrl,
+    children: `
+      <p style="margin:0 0 14px;">Nothing renews automatically: pay for the next period in Billing to keep full access.</p>
+      <p style="margin:0;color:#b8b8b8;">${escapeHtml(afterEnd)}</p>
+    `,
+  });
+  const text = plainLines([
+    `Hi ${ownerName || 'there'},`,
+    `${orgName}'s ${what} ends on ${formatLongDate(endsAt)}.`,
+    'Nothing renews automatically: pay for the next period in Billing to keep full access.',
+    afterEnd,
+    `Open Billing: ${billingUrl}`,
+  ]);
+  return { subject, html, text };
+};
+
+const sendBillingReminderEmail = async ({ to, daysLeft, kind, ...rest }) =>
+  sendEmail({
+    to,
+    ...billingReminderMessage({ daysLeft, kind, ...rest }),
+    tags: [{ name: 'email_type', value: `billing_reminder_${kind}_${daysLeft}d` }],
+  });
+
 const SECURITY_NOTICES = {
   password_changed: {
     subject: 'Your Your Guava password was changed',
@@ -411,6 +452,8 @@ const _resetClient = () => {
 };
 
 module.exports = {
+  billingReminderMessage,
+  sendBillingReminderEmail,
   sendWelcomeEmail,
   sendVerificationEmail,
   sendAccountExistsEmail,

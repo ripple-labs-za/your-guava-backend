@@ -73,7 +73,8 @@ describe('production hardening regressions', () => {
     const owner = await createTestUser();
     await Organization.updateOne(
       { _id: owner.user.orgId },
-      { $set: { billingStatus: 'trialing', trialEndsAt: new Date(Date.now() - 60_000) } }
+      // D-025: reads remain available during the three-day grace period.
+      { $set: { billingStatus: 'trialing', trialEndsAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000) } }
     );
 
     const blocked = await request

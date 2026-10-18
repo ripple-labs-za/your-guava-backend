@@ -24,6 +24,7 @@ const mockUploadCleanup = jest.fn();
 const mockUploadMaintenanceRecovery = jest.fn();
 const mockPaymentReconciliation = jest.fn();
 const mockUsageReconciliation = jest.fn();
+const mockBillingReminders = jest.fn();
 const mockMongoose = { connection: { readyState: 1 }, disconnect: mockDisconnect };
 
 jest.mock('mongoose', () => mockMongoose);
@@ -56,6 +57,7 @@ jest.mock('../../src/services/billingPayments.service', () => ({
 jest.mock('../../src/services/usage.service', () => ({
   reconcileStaleUsageReservations: mockUsageReconciliation,
 }));
+jest.mock('../../src/services/billing/reminders', () => ({ runBillingReminders: mockBillingReminders }));
 
 describe('server startup cleanup', () => {
   beforeEach(() => {
@@ -87,6 +89,7 @@ describe('server startup cleanup', () => {
     mockUploadMaintenanceRecovery.mockResolvedValue({ completed: 0, failed: 0 });
     mockPaymentReconciliation.mockResolvedValue({ paid: 0, failed: 0, errors: 0 });
     mockUsageReconciliation.mockResolvedValue({ refunded: 0, errors: 0 });
+    mockBillingReminders.mockResolvedValue({ scanned: 0, sent: 0, skipped: 0, failed: 0 });
     mockMongoose.connection.readyState = 1;
   });
 
@@ -124,6 +127,8 @@ describe('server startup cleanup', () => {
     const { start, shutdown } = require('../../src/server');
 
     await start();
+
+    expect(mockBillingReminders).toHaveBeenCalledTimes(1);
 
     [
       mockPaymentInit,
