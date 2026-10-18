@@ -1,5 +1,5 @@
 const { clearApiCache } = require('../middleware/cache.middleware');
-const axios = require('axios');
+const { outboundGet, outboundPost } = require('../utils/http');
 const crypto = require('crypto');
 const Cafe = require('../models/Cafe.model');
 const Transaction = require('../models/Transaction.model');
@@ -123,7 +123,7 @@ function getAuthorizationUrl(state) {
  * @returns {Promise<{access_token: string, refresh_token: string, expires_in: number, token_type: string}>}
  */
 async function exchangeCode(code) {
-  const { data } = await axios.post(
+  const { data } = await outboundPost('yoco',
     `${process.env.YOCO_IAM_URL}/oauth2/token`,
     new URLSearchParams({
       grant_type: 'authorization_code',
@@ -143,7 +143,7 @@ async function exchangeCode(code) {
  * @returns {Promise<{access_token: string, refresh_token: string, expires_in: number}>}
  */
 async function refreshAccessToken(refreshToken) {
-  const { data } = await axios.post(
+  const { data } = await outboundPost('yoco',
     `${process.env.YOCO_IAM_URL}/oauth2/token`,
     new URLSearchParams({
       grant_type: 'refresh_token',
@@ -193,25 +193,35 @@ async function getValidToken(cafe) {
  * @returns {Promise<{data: object[], next_cursor: string|null}>}
  */
 async function fetchOrders(accessToken, params = {}) {
-  const { data } = await axios.get(`${process.env.YOCO_API_URL}/v1/orders/`, {
+  const { data } = await outboundGet('yoco', `${process.env.YOCO_API_URL}/v1/orders/`, {
     headers: { Authorization: `Bearer ${accessToken}` },
     params: { limit: 50, status: 'completed', ...params },
   });
   return data;
 }
 
-/**
- * Fetch all orders between two dates, paginating through every page.
- * @param {string} accessToken
- * @param {Date} startDate
- * @param {Date} endDate
- * @returns {Promise<object[]>}
- */
+const YOCO_DEFAULT_MAX_PAGES = 200;
+const YOCO_MAX_PAGES_CEILING = 2000;
+const yocoMaxPages = () => {
+  const configured = Number.parseInt(process.env.YOCO_SYNC_MAX_PAGES, 10);
+  if (!Number.isFinite(configured)) return YOCO_DEFAULT_MAX_PAGES;
+  return Math.max(1, Math.min(configured, YOCO_MAX_PAGES_CEILING));
+};
+
+/** Fetch a bounded number of pages and report any truncation to the caller. */
 async function fetchAllOrders(accessToken, startDate, endDate) {
-  const allOrders = [];
+  const maxPages = yocoMaxPages();
+  const orders = [];
+  const seenCursors = new Set();
   let cursor = null;
+  let pages = 0;
+  let truncated = null;
 
   do {
+    if (pages >= maxPages) {
+      truncated = 'page_limit';
+      break;
+    }
     const params = {
       created_at__gte: startDate.toISOString(),
       created_at__lte: endDate.toISOString(),
@@ -220,11 +230,43 @@ async function fetchAllOrders(accessToken, startDate, endDate) {
     if (cursor) params.cursor = cursor;
 
     const result = await fetchOrders(accessToken, params);
-    allOrders.push(...(result.data || []));
-    cursor = result.next_cursor;
+    pages += 1;
+    if (Array.isArray(result?.data)) orders.push(...result.data);
+    cursor = typeof result?.next_cursor === 'string' && result.next_cursor ? result.next_cursor : null;
+    if (cursor && seenCursors.has(cursor)) {
+      truncated = 'cursor_repeated';
+      break;
+    }
+    if (cursor) seenCursors.add(cursor);
   } while (cursor);
 
-  return allOrders;
+  if (truncated) {
+    console.warn(JSON.stringify({ level: 'warn', event: 'yoco_sync_truncated', reason: truncated, pages }));
+  }
+  return { orders, pages, truncated };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SYNC_DAYS = 180;
+const MAX_SYNC_DAYS = 366;
+
+const parseSyncDate = (value, fallback) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value !== 'string' || value.length > 40) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+/** Validate a manual sync range before any token refresh or provider call. */
+function parseSyncRange(body, now = new Date()) {
+  const end = parseSyncDate(body?.endDate, now);
+  const start = end && parseSyncDate(body?.startDate, new Date(end.getTime() - DEFAULT_SYNC_DAYS * DAY_MS));
+  if (!start || !end) return { error: 'startDate and endDate must be valid dates' };
+  if (start > end) return { error: 'startDate must be on or before endDate' };
+  if (end.getTime() - start.getTime() > MAX_SYNC_DAYS * DAY_MS) {
+    return { error: `A sync can cover at most ${MAX_SYNC_DAYS} days` };
+  }
+  return { start, end };
 }
 
 // --- Data Sync ---
@@ -329,7 +371,7 @@ async function syncOrders(cafeId, orders) {
  * @returns {Promise<object>}
  */
 async function subscribeWebhook(accessToken, webhookUrl) {
-  const { data } = await axios.post(
+  const { data } = await outboundPost('yoco',
     `${process.env.YOCO_API_URL}/v1/webhooks/subscriptions/`,
     {
       name: 'Your Guava Transaction Sync',
@@ -363,8 +405,8 @@ async function processWebhookEvent(payload) {
   const token = await getValidToken(cafe);
 
   // Fetch the full order with line items
-  const { data: order } = await axios.get(
-    `${process.env.YOCO_API_URL}/v1/orders/${order_id}`,
+  const { data: order } = await outboundGet('yoco',
+    `${process.env.YOCO_API_URL}/v1/orders/${encodeURIComponent(String(order_id))}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
@@ -382,6 +424,7 @@ module.exports = {
   getValidToken,
   fetchOrders,
   fetchAllOrders,
+  parseSyncRange,
   syncOrders,
   subscribeWebhook,
   processWebhookEvent,

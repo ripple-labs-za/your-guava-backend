@@ -17,7 +17,7 @@
  * enhancement can auto-select the single tenant or let the user pick).
  */
 
-const axios = require('axios');
+const { outboundGet, outboundPost } = require('../../utils/http');
 
 const AUTHORIZE_URL = 'https://login.xero.com/identity/connect/authorize';
 const TOKEN_URL = 'https://identity.xero.com/connect/token';
@@ -66,7 +66,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
     redirect_uri: redirectUri,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('xero', TOKEN_URL, body.toString(), {
     headers: {
       Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -82,7 +82,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
   let tenantId = providerExtras.tenantId || null;
   if (!tenantId) {
     try {
-      const connectionsRes = await axios.get('https://api.xero.com/connections', {
+      const connectionsRes = await outboundGet('xero', 'https://api.xero.com/connections', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const connections = connectionsRes.data;
@@ -117,7 +117,7 @@ const refreshAccessToken = async (refreshToken) => {
     refresh_token: refreshToken,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('xero', TOKEN_URL, body.toString(), {
     headers: {
       Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/x-www-form-urlencoded',

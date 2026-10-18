@@ -9,6 +9,7 @@ const {
   exchangeCode,
   getValidToken,
   fetchAllOrders,
+  parseSyncRange,
   syncOrders,
   subscribeWebhook,
   processWebhookEvent,
@@ -82,16 +83,12 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Yoco not connected' });
     }
 
+    const range = parseSyncRange(req.body);
+    if (range.error) {
+      return res.status(400).json({ success: false, code: 'INVALID_SYNC_RANGE', message: range.error });
+    }
     const token = await getValidToken(cafe);
-
-    // Sync last 6 months of data (or custom range)
-    const { startDate, endDate } = req.body;
-    const end = endDate ? new Date(endDate) : new Date();
-    const start = startDate
-      ? new Date(startDate)
-      : new Date(end.getTime() - 180 * 24 * 60 * 60 * 1000);
-
-    const orders = await fetchAllOrders(token, start, end);
+    const { orders, pages, truncated } = await fetchAllOrders(token, range.start, range.end);
     const result = await syncOrders(cafe._id, orders);
 
     // Update cafe
@@ -104,7 +101,9 @@ router.post('/sync', authMiddleware, ownerOnly, async (req, res, next) => {
       success: true,
       ...result,
       totalOrders: orders.length,
-      dateRange: { start: start.toISOString(), end: end.toISOString() },
+      pages,
+      truncated,
+      dateRange: { start: range.start.toISOString(), end: range.end.toISOString() },
     });
   } catch (error) {
     next(error);

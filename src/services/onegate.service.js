@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const axios = require('axios');
+const { outboundGet, outboundPost, isOutboundTimeout } = require('../utils/http');
 
 const DEFAULT_BASE_URL = 'https://payments.onegate.co.za';
 const OFFICIAL_ONEGATE_HOSTS = new Set(['payments.onegate.co.za']);
@@ -118,14 +118,14 @@ const createPaymentKey = async ({ reference, amount, customerReference }) => {
 
   let data;
   try {
-    ({ data } = await axios.post(`${config.baseUrl}/api/v2/payment-key`, body, {
+    ({ data } = await outboundPost('onegate', `${config.baseUrl}/api/v2/payment-key`, body, {
       headers: {
         ...buildAuthHeaders(),
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      timeout: 20000,
     }));
   } catch (error) {
+    if (isOutboundTimeout(error)) throw error;
     const providerMessage = error.response?.data?.message || error.response?.data?.name;
     const err = new Error(providerMessage ? `OneGate checkout failed: ${providerMessage}` : error.message);
     err.statusCode = error.response?.status || 502;
@@ -147,10 +147,9 @@ const lookupGatewayTransaction = async (reference) => {
   const config = getConfig();
   assertConfigured();
 
-  const { data } = await axios.get(`${config.baseUrl}/api/v2/gateway-transaction/`, {
+  const { data } = await outboundGet('onegate', `${config.baseUrl}/api/v2/gateway-transaction/`, {
     params: { reference },
     headers: buildAuthHeaders(),
-    timeout: 20000,
   });
 
   if (Array.isArray(data)) return data[0] || null;

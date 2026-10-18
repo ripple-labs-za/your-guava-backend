@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { outboundGet, outboundPost, isOutboundTimeout } = require('../utils/http');
 
 /**
  * Paystack hosted checkout.
@@ -18,7 +18,6 @@ const axios = require('axios');
 const PAYSTACK_API_URL = 'https://api.paystack.co';
 const OFFICIAL_PAYSTACK_HOST = 'api.paystack.co';
 const CHECKOUT_ORIGIN = 'https://checkout.paystack.com';
-const REQUEST_TIMEOUT_MS = 20_000;
 
 const secretKey = () => (process.env.PAYSTACK_SECRET_KEY || '').trim();
 
@@ -115,7 +114,7 @@ const createPaymentKey = async ({ reference, amount, customerReference, email })
   }
 
   try {
-    const { data } = await axios.post(
+    const { data } = await outboundPost('paystack',
       `${baseUrl()}/transaction/initialize`,
       {
         email,
@@ -128,7 +127,7 @@ const createPaymentKey = async ({ reference, amount, customerReference, email })
           merchant_reference: reference,
         },
       },
-      { headers: authHeaders(), timeout: REQUEST_TIMEOUT_MS }
+      { headers: authHeaders() }
     );
 
     const payload = data?.data;
@@ -176,9 +175,9 @@ const cardFromAuthorization = (authorization) => {
 const lookupGatewayTransaction = async (reference) => {
   assertConfigured();
   try {
-    const { data } = await axios.get(
+    const { data } = await outboundGet('paystack',
       `${baseUrl()}/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: authHeaders(), timeout: REQUEST_TIMEOUT_MS }
+      { headers: authHeaders() }
     );
 
     const txn = data?.data;
@@ -200,6 +199,7 @@ const lookupGatewayTransaction = async (reference) => {
       ...(card ? { authorization: card } : {}),
     };
   } catch (error) {
+    if (isOutboundTimeout(error)) throw error;
     // An unknown reference is a legitimate "nothing settled yet", not a fault.
     if (error?.response?.status === 404) return null;
     throw describeAxiosError(error, 'Could not verify the Paystack transaction');

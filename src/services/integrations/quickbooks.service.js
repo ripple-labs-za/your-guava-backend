@@ -16,7 +16,7 @@
  * must forward it in the callback POST body.
  */
 
-const axios = require('axios');
+const { outboundPost } = require('../../utils/http');
 
 const AUTHORIZE_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -68,7 +68,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
     redirect_uri: redirectUri,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('quickbooks', TOKEN_URL, body.toString(), {
     headers: {
       Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -101,7 +101,7 @@ const refreshAccessToken = async (refreshToken) => {
     refresh_token: refreshToken,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('quickbooks', TOKEN_URL, body.toString(), {
     headers: {
       Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/x-www-form-urlencoded',

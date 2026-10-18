@@ -1,5 +1,6 @@
 const { DEFAULT_TIMEZONE, zonedDayOrdinal } = require('../utils/timezone');
 const { Resend } = require('resend');
+const { withDeadline, isOutboundTimeout } = require('../utils/http');
 const { isRelaxedEnvironment } = require('../config/posture');
 
 let client = null;
@@ -170,13 +171,18 @@ const sendEmail = async ({ to, subject, html, text, tags }) => {
       ...(process.env.RESEND_REPLY_TO ? { replyTo: process.env.RESEND_REPLY_TO } : {}),
       ...(tags ? { tags } : {}),
     };
-    const { data, error } = await resend.emails.send(payload);
+    const { data, error } = await withDeadline(
+      'resend',
+      (signal) => resend.emails.send(payload, { signal }),
+      { context: { method: 'POST', host: 'api.resend.com' } }
+    );
     if (error) {
       console.error('[email] Resend send failed:', error);
       return { sent: false, error };
     }
     return { sent: true, data };
   } catch (error) {
+    if (isOutboundTimeout(error)) return { sent: false, timedOut: true, error };
     console.error('[email] Resend send failed:', error.message);
     return { sent: false, error };
   }

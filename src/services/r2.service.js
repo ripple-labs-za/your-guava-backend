@@ -1,5 +1,6 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const { withDeadline, s3ClientTimeoutConfig } = require('../utils/http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -89,6 +90,7 @@ const getClient = () => {
     throw new Error('R2_ACCOUNT_ID is not set');
   }
   client = new S3Client({
+    ...s3ClientTimeoutConfig('r2'),
     region: 'auto',
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: {
@@ -100,6 +102,11 @@ const getClient = () => {
 };
 
 const bucket = () => process.env.R2_BUCKET_NAME;
+const R2_HOST = 'r2.cloudflarestorage.com';
+const sendToR2 = (command, method) =>
+  withDeadline('r2', (signal) => getClient().send(command, { abortSignal: signal }), {
+    context: { method, host: R2_HOST },
+  });
 
 /**
  * Uploads a buffer to R2 under the given key.
@@ -117,13 +124,14 @@ const uploadFile = async (buffer, key, contentType = 'application/octet-stream')
     return;
   }
 
-  await getClient().send(
+  await sendToR2(
     new PutObjectCommand({
       Bucket: bucket(),
       Key: key,
       Body: buffer,
       ContentType: contentType,
-    })
+    }),
+    'PutObject'
   );
 };
 
@@ -144,23 +152,36 @@ const downloadFile = async (key) => {
     return fs.promises.readFile(filePath);
   }
 
-  const res = await getClient().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
-  if (Number.isFinite(Number(res.ContentLength)) && Number(res.ContentLength) > maxObjectBytes()) {
-    if (typeof res.Body?.destroy === 'function') res.Body.destroy();
-    throw storageError('Stored upload exceeds the configured size limit', 413, 'OBJECT_TOO_LARGE');
-  }
-  const chunks = [];
-  let totalBytes = 0;
-  for await (const chunk of res.Body) {
-    const buffered = Buffer.from(chunk);
-    totalBytes += buffered.length;
-    if (totalBytes > maxObjectBytes()) {
-      if (typeof res.Body.destroy === 'function') res.Body.destroy();
-      throw storageError('Stored upload exceeds the configured size limit', 413, 'OBJECT_TOO_LARGE');
+  return withDeadline('r2', async (signal) => {
+    const res = await getClient().send(
+      new GetObjectCommand({ Bucket: bucket(), Key: key }), { abortSignal: signal }
+    );
+    const destroyBody = () => {
+      if (typeof res.Body?.destroy === 'function') res.Body.destroy();
+    };
+    if (signal.aborted) destroyBody();
+    signal.addEventListener('abort', destroyBody, { once: true });
+    try {
+      if (Number.isFinite(Number(res.ContentLength)) && Number(res.ContentLength) > maxObjectBytes()) {
+        destroyBody();
+        throw storageError('Stored upload exceeds the configured size limit', 413, 'OBJECT_TOO_LARGE');
+      }
+      const chunks = [];
+      let totalBytes = 0;
+      for await (const chunk of res.Body) {
+        const buffered = Buffer.from(chunk);
+        totalBytes += buffered.length;
+        if (totalBytes > maxObjectBytes()) {
+          destroyBody();
+          throw storageError('Stored upload exceeds the configured size limit', 413, 'OBJECT_TOO_LARGE');
+        }
+        chunks.push(buffered);
+      }
+      return Buffer.concat(chunks);
+    } finally {
+      signal.removeEventListener('abort', destroyBody);
     }
-    chunks.push(buffered);
-  }
-  return Buffer.concat(chunks);
+  }, { context: { method: 'GetObject', host: R2_HOST } });
 };
 
 /**
@@ -209,7 +230,7 @@ const deleteFile = async (key) => {
     return;
   }
 
-  await getClient().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
+  await sendToR2(new DeleteObjectCommand({ Bucket: bucket(), Key: key }), 'DeleteObject');
 };
 
 const getLocalDownloadPath = (key, expires, sig) => {

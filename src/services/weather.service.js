@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { outboundGet } = require('../utils/http');
 
 // In-memory cache: { key -> { data, fetchedAt } }
 const weatherCache = new Map();
@@ -161,7 +161,7 @@ const getWeatherForecast = async (lat, lng, date) => {
   failedWeatherRequests.delete(pendingKey);
   try {
     const response = await runDedupe(pendingKey, () =>
-      axios.get(`${baseUrl}/${useHistory ? 'history.json' : 'forecast.json'}`, {
+      outboundGet('weather', `${baseUrl}/${useHistory ? 'history.json' : 'forecast.json'}`, {
         params: useHistory
           ? {
               key: apiKey,
@@ -173,7 +173,6 @@ const getWeatherForecast = async (lat, lng, date) => {
               q: `${lat},${lng}`,
               days: 7,
             },
-        timeout: 8000,
       })
     );
 

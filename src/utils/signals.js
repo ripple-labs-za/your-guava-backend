@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { outboundGet } = require('./http');
 const { zonedDateKey, zonedDateTimeToUtc } = require('./timezone');
 
 // Shared current and announced load-shedding status for both reported areas.
@@ -344,9 +344,8 @@ const parseAreaStatus = (area) => ({
 
 // One /status call serves every cafe: both areas, current stage and announced changes. Cached 30 minutes on success.
 const requestLoadSheddingStatus = async () => {
-  const response = await axios.get('https://developer.sepush.co.za/business/2.0/status', {
+  const response = await outboundGet('eskomsepush', 'https://developer.sepush.co.za/business/2.0/status', {
     headers: { Token: process.env.ESKOMSEPUSH_API_KEY },
-    timeout: 5000,
   });
   const status = {
     capetown: parseAreaStatus(response.data?.status?.capetown),

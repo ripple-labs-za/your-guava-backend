@@ -16,7 +16,7 @@
  * can auto-fetch it after token exchange.
  */
 
-const axios = require('axios');
+const { outboundPost } = require('../../utils/http');
 
 const AUTHORIZE_URL = 'https://www.sageone.com/oauth2/auth/central';
 const TOKEN_URL = 'https://oauth.accounting.sage.com/token';
@@ -64,7 +64,7 @@ const exchangeCodeForTokens = async (code, providerExtras = {}) => {
     redirect_uri: redirectUri,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('sage', TOKEN_URL, body.toString(), {
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
@@ -95,7 +95,7 @@ const refreshAccessToken = async (refreshToken) => {
     refresh_token: refreshToken,
   });
 
-  const response = await axios.post(TOKEN_URL, body.toString(), {
+  const response = await outboundPost('sage', TOKEN_URL, body.toString(), {
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
