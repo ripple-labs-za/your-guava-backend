@@ -4,6 +4,9 @@ const axios = require('axios');
 const weatherCache = new Map();
 const pendingWeatherRequests = new Map();
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const WEATHER_CACHE_MAX_ENTRIES = 2000;
+const WEATHER_FAILURE_TTL_MS = 2 * 60 * 1000;
+const failedWeatherRequests = new Map();
 const RAIN_MIN_MM = 1;
 const RAIN_MIN_CHANCE_PCT = 70;
 
@@ -36,10 +39,14 @@ const cacheKeyFor = (lat, lng, dateStr) => `${lat},${lng},${dateStr}`;
 
 const readCache = (cacheKey) => {
   const cached = weatherCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.data;
+  if (!cached) return null;
+  if (Date.now() - cached.fetchedAt >= CACHE_TTL_MS) {
+    weatherCache.delete(cacheKey);
+    return null;
   }
-  return null;
+  weatherCache.delete(cacheKey);
+  weatherCache.set(cacheKey, cached);
+  return cached.data;
 };
 
 const normaliseDay = (dayData) => {
@@ -90,7 +97,10 @@ const rememberDay = (lat, lng, dayData) => {
   const result = normaliseDay(dayData);
   if (!result || !dayData.date) return null;
 
-  weatherCache.set(cacheKeyFor(lat, lng, dayData.date), { data: result, fetchedAt: Date.now() });
+  const key = cacheKeyFor(lat, lng, dayData.date);
+  weatherCache.delete(key);
+  weatherCache.set(key, { data: result, fetchedAt: Date.now() });
+  while (weatherCache.size > WEATHER_CACHE_MAX_ENTRIES) weatherCache.delete(weatherCache.keys().next().value);
   return result;
 };
 
@@ -142,9 +152,14 @@ const getWeatherForecast = async (lat, lng, date) => {
     return cached;
   }
 
+  const useHistory = isPastDate(targetDate);
+  const pendingKey = useHistory ? `history:${cacheKey}` : `forecast:${lat},${lng}`;
+  const retryAt = failedWeatherRequests.get(pendingKey);
+  if (retryAt && retryAt > Date.now()) {
+    return { ...unavailableWeatherSignal('Weather data is temporarily unavailable'), transient: true };
+  }
+  failedWeatherRequests.delete(pendingKey);
   try {
-    const useHistory = isPastDate(targetDate);
-    const pendingKey = useHistory ? `history:${cacheKey}` : `forecast:${lat},${lng}`;
     const response = await runDedupe(pendingKey, () =>
       axios.get(`${baseUrl}/${useHistory ? 'history.json' : 'forecast.json'}`, {
         params: useHistory
@@ -173,6 +188,9 @@ const getWeatherForecast = async (lat, lng, date) => {
     }
     return result;
   } catch (error) {
+    failedWeatherRequests.delete(pendingKey);
+    failedWeatherRequests.set(pendingKey, Date.now() + WEATHER_FAILURE_TTL_MS);
+    while (failedWeatherRequests.size > 500) failedWeatherRequests.delete(failedWeatherRequests.keys().next().value);
     console.error('[weather] API error:', error.message);
     return { ...unavailableWeatherSignal('Weather data is temporarily unavailable'), transient: true };
   }
@@ -181,6 +199,9 @@ const getWeatherForecast = async (lat, lng, date) => {
 const clearWeatherCache = () => {
   weatherCache.clear();
   pendingWeatherRequests.clear();
+  failedWeatherRequests.clear();
 };
 
-module.exports = { getWeatherForecast, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };
+module.exports = {
+  _test: { cacheSize: () => weatherCache.size, WEATHER_CACHE_MAX_ENTRIES, WEATHER_FAILURE_TTL_MS },
+  getWeatherForecast, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };

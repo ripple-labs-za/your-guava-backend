@@ -326,6 +326,9 @@ const loadSheddingAreaForCity = (city = '') =>
 const LOAD_SHEDDING_SCHEDULE_DAYS = 7;
 const LOAD_SHEDDING_WINDOW = { startHour: 6, endHour: 20 };
 let loadSheddingCache = { status: null, fetchedAt: null };
+const LOAD_SHEDDING_FAILURE_TTL_MS = 2 * 60 * 1000;
+let pendingStatusRequest = null;
+let statusRetryAt = 0;
 
 const parseStage = (value) => {
   if (value === undefined || value === null || value === '') return null;
@@ -341,9 +344,7 @@ const parseAreaStatus = (area) => ({
 });
 
 // One /status call serves every cafe: both areas, current stage and announced changes. Cached 30 minutes on success.
-const fetchLoadSheddingStatus = async () => {
-  const now = Date.now();
-  if (loadSheddingCache.status && now - loadSheddingCache.fetchedAt < LOAD_SHEDDING_CACHE_MS) return loadSheddingCache.status;
+const requestLoadSheddingStatus = async () => {
   const response = await axios.get('https://developer.sepush.co.za/business/2.0/status', {
     headers: { Token: process.env.ESKOMSEPUSH_API_KEY },
     timeout: 5000,
@@ -352,8 +353,22 @@ const fetchLoadSheddingStatus = async () => {
     capetown: parseAreaStatus(response.data?.status?.capetown),
     eskom: parseAreaStatus(response.data?.status?.eskom),
   };
-  loadSheddingCache = { status, fetchedAt: now };
+  loadSheddingCache = { status, fetchedAt: Date.now() };
   return status;
+};
+
+const fetchLoadSheddingStatus = async () => {
+  const now = Date.now();
+  if (loadSheddingCache.status && now - loadSheddingCache.fetchedAt < LOAD_SHEDDING_CACHE_MS) return loadSheddingCache.status;
+  if (statusRetryAt > now) throw Object.assign(new Error('Load-shedding provider failed recently'), { cachedFailure: true });
+  if (pendingStatusRequest) return pendingStatusRequest;
+  pendingStatusRequest = requestLoadSheddingStatus()
+    .catch((error) => {
+      statusRetryAt = Date.now() + LOAD_SHEDDING_FAILURE_TTL_MS;
+      throw error;
+    })
+    .finally(() => { pendingStatusRequest = null; });
+  return pendingStatusRequest;
 };
 
 const unknownStage = (unavailableReason, extra = {}) => ({ available: false, stage: null, unavailableReason, ...extra });
@@ -367,7 +382,7 @@ const getLoadSheddingStage = async (city) => {
       ? { available: true, stage: area.stage }
       : unknownStage('Load-shedding provider returned no stage for this area');
   } catch (error) {
-    console.error('[signals] Load shedding API error:', error.message);
+    if (!error.cachedFailure) console.error('[signals] Load shedding API error:', error.message);
     return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
 };
@@ -394,7 +409,7 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
   try {
     area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
   } catch (error) {
-    console.error('[signals] Load shedding API error:', error.message);
+    if (!error.cachedFailure) console.error('[signals] Load shedding API error:', error.message);
     return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
   if (!Number.isFinite(area?.stage)) return unknownStage('Load-shedding provider returned no stage for this area');
@@ -414,6 +429,8 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
 
 const clearLoadSheddingCache = () => {
   loadSheddingCache = { status: null, fetchedAt: null };
+  pendingStatusRequest = null;
+  statusRetryAt = 0;
 };
 
 /**
