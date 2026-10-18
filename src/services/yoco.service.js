@@ -321,7 +321,10 @@ async function syncHistory(cafe, range) {
   try {
     return await Promise.race([work(), deadline]);
   } catch (error) {
-    if (error.code === 'UPSTREAM_TIMEOUT') error.syncProgress = { ...progress, truncated: 'deadline' };
+    if (error.code === 'UPSTREAM_TIMEOUT') {
+      error.syncProgress = { ...progress, truncated: 'deadline', countsAreLowerBound: true };
+      error.message = `Yoco sync did not finish in time. At least ${progress.imported} orders were imported and ${progress.skipped} skipped. Retry to continue importing your orders.`;
+    }
     throw error;
   } finally {
     clearTimeout(timer);
@@ -362,6 +365,14 @@ function parseSyncRange(body, now = new Date()) {
  */
 async function syncOrders(cafeId, orders, { signal } = {}) {
   signal?.throwIfAborted();
+  const pageIds = orders.map((order) => order?.id || order?.order_number)
+    .filter((id) => typeof id === 'string' || typeof id === 'number').map(String);
+  // A retried range revisits its committed prefix. One scoped read per page
+  // avoids reconciling menu items and issuing an upsert for every known order.
+  const existing = pageIds.length
+    ? await Transaction.find({ cafeId, receiptId: { $in: pageIds } }).select('receiptId').lean()
+    : [];
+  const knownReceipts = new Set(existing.map((order) => order.receiptId));
   const cafe = await Cafe.findById(cafeId).select('timezone').lean();
   const timezone = safeTimezone(cafe?.timezone);
   let imported = 0;
@@ -372,6 +383,11 @@ async function syncOrders(cafeId, orders, { signal } = {}) {
     for (const order of orders) {
       signal?.throwIfAborted();
       try {
+        const receiptId = order.id || order.order_number;
+        if (knownReceipts.has(String(receiptId))) {
+          skipped++;
+          continue;
+        }
         if (!order.line_items || order.line_items.length === 0) {
           skipped++;
           continue;
@@ -408,9 +424,6 @@ async function syncOrders(cafeId, orders, { signal } = {}) {
 
         const paymentMethod = order.payments?.[0]?.payment_method || 'unknown';
 
-        // Use Yoco order ID as receiptId
-        const receiptId = order.id || order.order_number;
-
         signal?.throwIfAborted();
         const result = await Transaction.findOneAndUpdate(
           { cafeId, receiptId },
@@ -438,6 +451,7 @@ async function syncOrders(cafeId, orders, { signal } = {}) {
         } else {
           skipped++;
         }
+        knownReceipts.add(String(receiptId));
       } catch (err) {
         signal?.throwIfAborted();
         if (err.code === 11000) {

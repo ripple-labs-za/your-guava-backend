@@ -114,7 +114,14 @@ describe('yoco.service', () => {
     };
 
     const first = await syncOrders(cafeId, [order]);
-    const second = await syncOrders(cafeId, [order]);
+    const upsert = jest.spyOn(Transaction, 'findOneAndUpdate');
+    let second;
+    try {
+      second = await syncOrders(cafeId, [order]);
+      expect(upsert).not.toHaveBeenCalled();
+    } finally {
+      upsert.mockRestore();
+    }
 
     expect(first.imported).toBe(1);
     expect(second.imported).toBe(0);
@@ -125,6 +132,9 @@ describe('yoco.service', () => {
     expect(item.totalSold).toBe(2);
     expect(item.avgPrice).toBe(35);
     expect(item.category).toBe('coffee');
+    const otherCafeId = new mongoose.Types.ObjectId();
+    expect(await syncOrders(otherCafeId, [order])).toMatchObject({ imported: 1, skipped: 0 });
+    expect(await Transaction.countDocuments({ cafeId: otherCafeId })).toBe(1);
   });
 });
 
