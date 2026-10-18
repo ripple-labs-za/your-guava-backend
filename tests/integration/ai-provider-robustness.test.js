@@ -36,12 +36,15 @@ const abortable = (signal) => new Promise((_resolve, reject) => {
 const messageStart = { type: 'message_start', message: { id: 'msg_rb', model: 'test-model', usage: { input_tokens: 700 } } };
 const textDelta = (text) => ({ type: 'content_block_delta', delta: { type: 'text_delta', text } });
 // Yields the given events, then stalls until the request is aborted.
-const stallAfter = (events) => (_request, options = {}) => Promise.resolve({
+const stallAfter = (events, signals = []) => (_request, options = {}) => {
+  signals.push(options.signal);
+  return Promise.resolve({
   async *[Symbol.asyncIterator]() {
     for (const event of events) yield event;
     await abortable(options.signal);
   },
-});
+  });
+};
 const eventData = (text, name) => {
   const match = text.match(new RegExp(`event: ${name}\\ndata: (.*)\\n`));
   return match ? JSON.parse(match[1]) : null;
@@ -138,7 +141,8 @@ describe('stalled streams', () => {
     const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const owner = await createTestUser();
     await seedCompletedDaySales(owner.user.activeCafeId);
-    mockAnthropicMessageCreate.mockImplementation(stallAfter([messageStart]));
+    const signals = [];
+    mockAnthropicMessageCreate.mockImplementation(stallAfter([messageStart], signals));
 
     const started = Date.now();
     const response = await request
@@ -149,6 +153,8 @@ describe('stalled streams', () => {
       .send({ messages: [{ role: 'user', content: 'Anything?' }] });
 
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[0].reason.code).toBe('AI_PROVIDER_TIMEOUT');
     expect(eventData(response.text, 'error')).toEqual(expect.objectContaining({
       code: 'AI_PROVIDER_TIMEOUT', charged: false, retryable: true,
     }));
@@ -165,7 +171,8 @@ describe('stalled streams', () => {
     jest.spyOn(console, 'error').mockImplementation(() => {});
     const owner = await createTestUser();
     await seedCompletedDaySales(owner.user.activeCafeId);
-    mockAnthropicMessageCreate.mockImplementation(stallAfter([messageStart, textDelta('Mornings are ')]));
+    const signals = [];
+    mockAnthropicMessageCreate.mockImplementation(stallAfter([messageStart, textDelta('Mornings are ')], signals));
 
     const started = Date.now();
     const response = await request
@@ -175,6 +182,8 @@ describe('stalled streams', () => {
       .send({ messages: [{ role: 'user', content: 'When am I busy?' }] });
 
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[0].reason.code).toBe('AI_PROVIDER_TIMEOUT');
     expect(eventData(response.text, 'error')).toEqual(expect.objectContaining({ code: 'AI_STREAM_INTERRUPTED', charged: true }));
     const row = await UsageLedger.findOne({ idempotencyKey: 'stall-after-delta' }).lean();
     expect(row.status).toBe('committed');
