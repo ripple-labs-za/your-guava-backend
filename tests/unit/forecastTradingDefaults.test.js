@@ -108,6 +108,30 @@ describe('partial closures', () => {
     expect(forecast.factors.find((factor) => factor.key === 'tradingHours').multiplier).toBe(0.5);
     expect(forecast.items[0].expectedQty).toBeCloseTo(50, 4);
   });
+
+  it('removes historical closure effects with the same hourly profile used for a future closure', async () => {
+    const transactions = [];
+    for (let week = 1; week <= 8; week += 1) {
+      for (const [hour, units] of breakfastHeavy) {
+        // The most recent Wednesday lost its breakfast sales to the recorded closure.
+        if (week === 1 && hour < 10) continue;
+        transactions.push({
+          date: at(WEDNESDAY, 7 * week, hour), dayOfWeek: 3, hour,
+          items: [{ name: 'Flat White', quantity: units, unitPrice: 30 }],
+        });
+      }
+    }
+    stubModels({
+      cafe, transactions,
+      events: [{ ...breakfastClosure[0], date: new Date(Date.UTC(2030, 1, 27)) }],
+    });
+
+    const forecast = await generateForecast('cafe-1', WEDNESDAY);
+
+    // The pooled profile has 350 breakfast and 400 later units: open share 0.5333.
+    // Recent-week weight is 0.35. Minutes (0.7) would incorrectly leave only 90 units.
+    expect(forecast.items[0].expectedQty).toBeCloseTo(100 * 0.65 + (50 / 0.5333) * 0.35, 3);
+  });
 });
 
 describe('staleness', () => {

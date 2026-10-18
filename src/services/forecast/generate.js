@@ -317,7 +317,9 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     const factorProduct = multiplyFactors(
       buildItemFactors({ category, signals: daySignals, weather: dayWeather, events: dayEvents, settings })
     );
-    const dayTrading = getTradingAvailability(cafe, dayEvents, targetDayOfWeek);
+    const dayTrading = getTradingAvailability(cafe, dayEvents, targetDayOfWeek, {
+      hasSalesHistory: observedWeeks > 0, hourlyProfile,
+    });
     const value = factorProduct * (dayTrading.multiplier > 0 ? dayTrading.multiplier : 1);
     pastDayMultiplierCache.set(cacheKey, value);
     return value;
