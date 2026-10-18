@@ -4,6 +4,19 @@ jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
   messages: { create: mockAnthropicMessageCreate },
 })));
 
+const mockChatRequestProbe = jest.fn();
+jest.mock('../../src/controllers/insightChats.controller', () => {
+  const actual = jest.requireActual('../../src/controllers/insightChats.controller');
+  return {
+    ...actual,
+    create: (req, res, next) => {
+      mockChatRequestProbe({ rawBody: req.rawBody, body: req.body });
+      return actual.create(req, res, next);
+    },
+  };
+});
+
+
 const supertest = require('supertest');
 const {
   setup,
@@ -100,4 +113,53 @@ afterEach(async () => {
     expect(response.status).toBe(413);
     expect(response.body.details).toEqual(expect.objectContaining({ code: 'PAYLOAD_TOO_LARGE', limitBytes: 100 * 1024 }));
   });
+});
+
+it.each([
+  '/api/insight-chats',
+  '/api/forecasts/insights/chat',
+  '/api/forecasts/insights/chat/stream',
+])('authenticates %s before parsing malformed JSON', async (url) => {
+  const response = await request.post(url).type('json').send('{"messages":');
+  expect(response.status).toBe(401);
+  expect(response.body.message).toBe('No token provided');
+});
+
+it('authenticates a two-megabyte chat body before parsing it', async () => {
+  const response = await request.post('/api/forecasts/insights/chat/stream')
+    .send({ padding: 'x'.repeat(2 * 1024 * 1024) });
+  expect(response.status).toBe(401);
+  expect(response.body.message).toBe('No token provided');
+});
+
+it('does not retain a raw-body duplicate on authenticated chat routes', async () => {
+  const owner = await createTestUser();
+  mockChatRequestProbe.mockClear();
+  const response = await request.post('/api/insight-chats')
+    .set('Authorization', `Bearer ${owner.token}`)
+    .send({ title: 'Parsed once', messages: [{ role: 'user', content: 'Hello' }] });
+  expect(response.status).toBe(201);
+  expect(mockChatRequestProbe).toHaveBeenCalledWith({
+    rawBody: undefined,
+    body: { title: 'Parsed once', messages: [{ role: 'user', content: 'Hello' }] },
+  });
+});
+
+it('preserves exact signature bytes for a correctly signed Paystack webhook', async () => {
+  const crypto = require('node:crypto');
+  const previous = process.env.PAYSTACK_SECRET_KEY;
+  process.env.PAYSTACK_SECRET_KEY = 'sk_test_chat_parser_fixture_only';
+  // Whitespace makes accidental JSON reserialization fail the signature check.
+  const raw = '{ "event": "fixture.ping", "data": {} }';
+  const signature = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+    .update(raw).digest('hex');
+  try {
+    const response = await request.post('/api/account/payments/paystack/webhook')
+      .type('json').set('x-paystack-signature', signature).send(raw);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ success: true });
+  } finally {
+    if (previous === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+    else process.env.PAYSTACK_SECRET_KEY = previous;
+  }
 });

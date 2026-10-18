@@ -6,6 +6,8 @@ const { list, create, getOne, update, remove } = require('../controllers/insight
 const router = express.Router();
 
 router.use(authMiddleware);
+// Authenticate before allocating a legitimate saved chat's larger JSON body.
+router.use(express.json({ limit: '2mb' }));
 
 router.get('/', list);
 router.post('/', chatWriteLimiter, create);

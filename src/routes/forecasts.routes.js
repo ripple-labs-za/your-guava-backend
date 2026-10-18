@@ -46,7 +46,8 @@ router.post('/generate', ownerOnly, forecastComputeLimiter, generate);
 router.get('/accuracy', getAccuracy);
 router.get('/insights', getInsights);
 router.post('/insights/refresh', requireCreditSpend, aiLimiter, refreshGeneratedInsights);
-router.post('/insights/chat', requireCreditSpend, aiLimiter, chatInsights);
-router.post('/insights/chat/stream', requireCreditSpend, aiLimiter, streamChatInsights);
+const chatJson = express.json({ limit: '2mb' });
+router.post('/insights/chat', requireCreditSpend, aiLimiter, chatJson, chatInsights);
+router.post('/insights/chat/stream', requireCreditSpend, aiLimiter, chatJson, streamChatInsights);
 
 module.exports = router;

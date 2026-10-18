@@ -63,9 +63,8 @@ const CHAT_BODY_ROUTES = [
   /^\/api\/forecasts\/insights\/chat(?:\/stream)?\/?$/i,
 ];
 const defaultJson = express.json({ limit: '100kb', verify: (req, _res, buf) => { req.rawBody = buf; } });
-const chatJson = express.json({ limit: '2mb' });
 app.use((req, res, next) =>
-  (CHAT_BODY_ROUTES.some((route) => route.test(req.path)) ? chatJson : defaultJson)(req, res, next));
+  CHAT_BODY_ROUTES.some((route) => route.test(req.path)) ? next() : defaultJson(req, res, next));
 app.use(express.urlencoded({ extended: true }));
 app.use(ensureRequestBody);
 app.use(cookieParser());
