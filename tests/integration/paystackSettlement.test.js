@@ -125,6 +125,82 @@ describe('Paystack in-flight statuses (billing-1)', () => {
 });
 
 describe('captures that do not match the session (billing-2)', () => {
+  it('does not grant a requested amount that the provider did not capture', async () => {
+    const owner = await createTestUser();
+    const session = await creditSession(owner, 'under-captured');
+    verifyReturns(verifyResponse('success', {
+      reference: session.reference, amountRand: 1, requestedRand: 99, id: 5150004,
+    }));
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await reconcileOneGatePayment(session.reference)).status).toBe('needs_attention');
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(0);
+  });
+
+  it('expires a declined then abandoned retry even when it retains a transaction id', async () => {
+    const owner = await createTestUser();
+    const session = await creditSession(owner, 'declined-retried-abandoned');
+    verifyReturns(
+      verifyResponse('failed', { reference: session.reference, amountRand: 99, id: 5150007 }),
+      verifyResponse('abandoned', { reference: session.reference, amountRand: 99, id: 5150007 })
+    );
+    expect((await reconcileOneGatePayment(session.reference)).status).toBe('failed');
+    await age(session._id, { failedAt: minutesAgo(5), updatedAt: minutesAgo(5) });
+    await reconcilePendingOneGatePayments({ minAgeMs: 0 });
+    const pending = await PaymentSession.findById(session._id).lean();
+    expect(pending.status).toBe('pending');
+    expect(pending.providerStatus).toBe('abandoned');
+    expect(pending.providerTransactionId).toBe('5150007');
+    await age(session._id, { createdAt: new Date(Date.now() - 25 * HOUR) });
+    const summary = await reconcilePendingOneGatePayments({ minAgeMs: 0 });
+    expect((await PaymentSession.findById(session._id).lean()).status).toBe('cancelled');
+    expect(summary.scanned).toBe(0);
+    expect(axios.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('records a capture after a failed paid write and escalates it when expired', async () => {
+    const owner = await createTestUser();
+    const session = await creditSession(owner, 'grant-finalization-failed');
+    verifyReturns(verifyResponse('success', {
+      reference: session.reference, amountRand: 99, id: 5150008,
+    }));
+    const original = PaymentSession.findOneAndUpdate.bind(PaymentSession);
+    jest.spyOn(PaymentSession, 'findOneAndUpdate').mockImplementation((filter, update, options) => {
+      if (update.$set?.status === 'paid') return Promise.reject(new Error('paid write failed'));
+      return original(filter, update, options);
+    });
+    await expect(reconcileOneGatePayment(session.reference)).rejects.toThrow('paid write failed');
+    const pending = await PaymentSession.findById(session._id).lean();
+    expect(pending.status).toBe('pending');
+    expect(pending.providerStatus).toBe('success');
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(500);
+    await age(session._id, { createdAt: new Date(Date.now() - 25 * HOUR) });
+    await reconcilePendingOneGatePayments({ minAgeMs: 0 });
+    expect((await PaymentSession.findById(session._id).lean()).status).toBe('needs_attention');
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ongoing', 'processing', 'unknown'])('escalates an expired bound %s session for manual review', async (status) => {
+    const owner = await createTestUser();
+    const session = await creditSession(owner, `bound-${status}`, {
+      providerStatus: status, providerTransactionId: `bound-id-${status}`,
+    });
+    await age(session._id, { createdAt: new Date(Date.now() - 25 * HOUR) });
+    const lookup = jest.spyOn(axios, 'get');
+    await reconcilePendingOneGatePayments({ minAgeMs: 0 });
+    expect((await PaymentSession.findById(session._id).lean()).status).toBe('needs_attention');
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('does not claim or verify a needs_attention replay', async () => {
+    const owner = await createTestUser();
+    const session = await creditSession(owner, 'held-replay', { status: 'needs_attention' });
+    const lookup = jest.spyOn(axios, 'get');
+    const result = await reconcileOneGatePayment(session.reference, null, { recheckPaid: true });
+    expect(result.status).toBe('needs_attention');
+    expect(result.fulfillmentAttempts).toBe(0);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   it('holds a capture for the wrong amount as needs_attention and never expires it as unpaid', async () => {
     const owner = await createTestUser();
     const session = await creditSession(owner, 'mismatched-capture');
@@ -182,6 +258,37 @@ describe('captures that do not match the session (billing-2)', () => {
 });
 
   describe('transaction identity (WS-05-T03)', () => {
+    it('three different sessions racing on one provider id grant exactly once', async () => {
+      await PaymentSession.init();
+      const owner = await createTestUser();
+      const sessions = await Promise.all(['race-a', 'race-b', 'race-c'].map((ref) => creditSession(owner, ref)));
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest.spyOn(axios, 'get').mockImplementation(async (url) => {
+        const reference = decodeURIComponent(String(url).split('/').pop());
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { data: verifyResponse('success', { reference, amountRand: 99, id: 424242 }) };
+      });
+      await Promise.all(sessions.map((session) => reconcileOneGatePayment(session.reference)));
+      expect((await PaymentSession.find({}).lean()).map((session) => session.status).sort())
+        .toEqual(['needs_attention', 'needs_attention', 'paid']);
+      expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(500);
+    });
+
+    it('settles the legacy OneGate complete/successful=1 transaction shape', async () => {
+      process.env.PAYMENT_PROVIDER = 'onegate';
+      const owner = await createTestUser();
+      const session = await creditSession(owner, 'onegate-legacy-shape', { provider: 'onegate' });
+      const onegate = require('../../src/services/onegate.service');
+      jest.spyOn(onegate, 'lookupGatewayTransaction').mockResolvedValue({
+        callpay_transaction_id: 'OG-1', status: 'complete', successful: 1,
+        amount: 99, currency: 'ZAR', merchant_reference: session.reference,
+      });
+      const paid = await reconcileOneGatePayment(session.reference);
+      expect(paid.status).toBe('paid');
+      expect(paid.providerTransactionId).toBe('OG-1');
+      expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.bonus).toBe(500);
+    });
+
     it('return, webhook and sweeper reconciliation of one capture grant exactly once', async () => {
       const owner = await createTestUser();
       const session = await creditSession(owner, 'three-concurrent-paths');

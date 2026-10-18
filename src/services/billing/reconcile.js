@@ -47,6 +47,7 @@ const validateTransactionForSession = (paymentSession, transaction) => {
   return (
     txReference === paymentSession.reference &&
     Math.abs(txAmount - paymentSession.amount) < 0.01 &&
+    Number(transaction.amount) >= txAmount - 0.01 &&
     (!txCurrency || txCurrency === String(paymentSession.currency || 'ZAR').toUpperCase())
   );
 };
@@ -273,8 +274,9 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
   }
 
   let financialEffectApplied = false;
+  let transaction;
   try {
-    const transaction = await paymentProvider
+    transaction = await paymentProvider
       .providerForSession(paymentSession)
       .lookupGatewayTransaction(reference);
     if (!validateTransactionForSession(paymentSession, transaction)) {
@@ -383,7 +385,8 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
         paymentSession._id,
         paymentSession.processingStartedAt,
         'pending',
-        financialEffectApplied ? 'Fulfillment recorded; finalization will retry' : error.message
+        financialEffectApplied ? 'Fulfillment recorded; finalization will retry' : error.message,
+        financialEffectApplied ? observedFields(transaction) : {}
       ).catch(() => null);
     }
     throw error;
@@ -402,21 +405,30 @@ const reconcilePendingOneGatePayments = async ({
   const staleProcessingBefore = new Date(now.getTime() - PROCESSING_LEASE_MS);
   const expiredBefore = new Date(now.getTime() - PENDING_SESSION_TTL_MS);
   const hostedProviders = paymentProvider.hostedProviderNames();
+  const nonCaptureStatuses = ['failed', 'abandoned', 'not_found'];
 
   await PaymentSession.updateMany(
-    { provider: { $in: hostedProviders }, status: 'pending', providerStatus: 'success', createdAt: { $lt: expiredBefore } },
+    {
+      provider: { $in: hostedProviders }, status: 'pending', createdAt: { $lt: expiredBefore },
+      $or: [
+        { providerStatus: 'success' },
+        { providerTransactionId: { $exists: true }, providerStatus: { $nin: nonCaptureStatuses } },
+      ],
+    },
     { $set: { status: 'needs_attention', failedAt: now, providerReason: 'A captured payment was still unapplied after 24 hours' } }
   );
 
   // Retire checkouts the customer abandoned. Nothing is lost by doing so: the
-  // provider never recorded a transaction against them, and if one ever settles
-  // late the return or webhook can still claim a cancelled session.
+  // last observation was a known non-capture, or no transaction was bound. If
+  // one settles late the return or webhook can still claim a cancelled session.
   await PaymentSession.updateMany(
     {
       provider: { $in: hostedProviders },
       status: 'pending',
-      providerTransactionId: { $exists: false },
-      providerStatus: { $ne: 'success' },
+      $or: [
+        { providerStatus: { $in: nonCaptureStatuses } },
+        { providerTransactionId: { $exists: false }, providerStatus: { $ne: 'success' } },
+      ],
       createdAt: { $lt: expiredBefore },
     },
     {
