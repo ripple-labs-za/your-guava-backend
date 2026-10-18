@@ -32,6 +32,8 @@ const leaveRequestSchema = new mongoose.Schema(
     },
     reason: {
       type: String,
+      trim: true,
+      maxlength: 500,
     },
     status: {
       type: String,

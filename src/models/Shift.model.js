@@ -50,6 +50,8 @@ const shiftSchema = new mongoose.Schema(
     },
     notes: {
       type: String,
+      trim: true,
+      maxlength: 500,
     },
   },
   { timestamps: true }

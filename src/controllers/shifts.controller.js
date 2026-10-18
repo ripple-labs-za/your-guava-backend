@@ -1,10 +1,21 @@
 const Shift = require('../models/Shift.model');
 const Staff = require('../models/Staff.model');
-const { parseDateOnly, formatDateOnly, inclusiveDateOnlyDays, TIME_OF_DAY_RE } = require('../utils/timezone');
+const { formatDateOnly, inclusiveDateOnlyDays, TIME_OF_DAY_RE } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
+const {
+  WORKFORCE_TEXT_LIMITS, invalid, objectIdString, requiredText, optionalText,
+  dateOnlyInput, assertPlainBody, parseEnum, SHIFT_STATUSES,
+} = require('../services/workforce/input');
+const { sendWorkforceError } = require('../services/workforce/errors');
 
 const WEEKLY_HOUR_THRESHOLD = 45; // South African BCEA law
 const MAX_SHIFT_RANGE_DAYS = 93;
+
+const timeInput = (value, field) => {
+  const time = requiredText(value, field, 5);
+  if (!TIME_OF_DAY_RE.test(time)) throw invalid(field, `${field} must use HH:MM`);
+  return time;
+};
 
 /**
  * Calculate hours between two HH:MM time strings.
@@ -107,25 +118,17 @@ async function getWeeklyHours(cafeId, staffId, date, excludeShiftId = null) {
 const create = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { staffId, date, startTime, endTime, status, notes } = req.body;
-    const shiftDate = parseDateOnly(date);
-
-    if (!staffId || !date || !startTime || !endTime) {
-      return res.status(400).json({
-        success: false,
-        message: 'staffId, date, startTime, and endTime are required',
-      });
-    }
-    if (!shiftDate) {
-      return res.status(400).json({ success: false, message: 'date must use YYYY-MM-DD' });
-    }
+    const body = assertPlainBody(req.body);
+    const staffId = objectIdString(body.staffId, 'staffId');
+    const shiftDate = dateOnlyInput(body.date, 'date');
+    const startTime = timeInput(body.startTime, 'startTime');
+    const endTime = timeInput(body.endTime, 'endTime');
+    const status = body.status === undefined ? undefined : parseEnum(body.status, SHIFT_STATUSES, 'status');
+    const notes = optionalText(body.notes, 'notes', WORKFORCE_TEXT_LIMITS.notes);
 
     const hoursWorked = calcHours(startTime, endTime);
     if (!Number.isFinite(hoursWorked) || hoursWorked <= 0 || hoursWorked > 24) {
-      return res.status(400).json({
-        success: false,
-        message: 'endTime must be after startTime and both times must use HH:MM',
-      });
+      throw invalid('endTime', 'endTime must be after startTime and both times must use HH:MM');
     }
 
     if (!(await staffBelongsToCafe(staffId, cafeId))) {
@@ -159,7 +162,8 @@ const create = async (req, res, next) => {
 
     return res.status(201).json({ success: true, shift });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -170,24 +174,18 @@ const list = async (req, res, next) => {
     let { startDate, endDate } = req.query;
 
     // Default to current week Mon-Sun
-    if (!startDate || !endDate) {
+    if (startDate === undefined && endDate === undefined) {
       const { monday, sunday } = getWeekBounds(new Date());
       startDate = monday;
       endDate = sunday;
     } else {
-      startDate = parseDateOnly(startDate);
-      endDate = parseDateOnly(endDate);
+      startDate = dateOnlyInput(startDate, 'startDate');
+      endDate = dateOnlyInput(endDate, 'endDate');
       if (!startDate || !endDate || endDate < startDate) {
-        return res.status(400).json({
-          success: false,
-          message: 'startDate and endDate must be a valid YYYY-MM-DD range',
-        });
+        throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
       }
       if (inclusiveDateOnlyDays(startDate, endDate) > MAX_SHIFT_RANGE_DAYS) {
-        return res.status(400).json({
-          success: false,
-          message: `Shift ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`,
-        });
+        throw invalid('endDate', `Shift ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`);
       }
       endDate.setUTCHours(23, 59, 59, 999);
     }
@@ -202,7 +200,8 @@ const list = async (req, res, next) => {
 
     return res.status(200).json({ success: true, shifts });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -242,7 +241,8 @@ const getWeek = async (req, res, next) => {
 
     return res.status(200).json({ success: true, roster: Object.values(roster) });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -252,24 +252,18 @@ const getSummary = async (req, res, next) => {
     const cafeId = activeCafeId(req);
     let { startDate, endDate } = req.query;
 
-    if (!startDate || !endDate) {
+    if (startDate === undefined && endDate === undefined) {
       const { monday, sunday } = getWeekBounds(new Date());
       startDate = monday;
       endDate = sunday;
     } else {
-      startDate = parseDateOnly(startDate);
-      endDate = parseDateOnly(endDate);
+      startDate = dateOnlyInput(startDate, 'startDate');
+      endDate = dateOnlyInput(endDate, 'endDate');
       if (!startDate || !endDate || endDate < startDate) {
-        return res.status(400).json({
-          success: false,
-          message: 'startDate and endDate must be a valid YYYY-MM-DD range',
-        });
+        throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
       }
       if (inclusiveDateOnlyDays(startDate, endDate) > MAX_SHIFT_RANGE_DAYS) {
-        return res.status(400).json({
-          success: false,
-          message: `Summary ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`,
-        });
+        throw invalid('endDate', `Summary ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`);
       }
       endDate.setUTCHours(23, 59, 59, 999);
     }
@@ -332,7 +326,8 @@ const getSummary = async (req, res, next) => {
 
     return res.status(200).json({ success: true, summary, summaries: summary });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -340,28 +335,27 @@ const getSummary = async (req, res, next) => {
 const update = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
-    const { staffId, date, startTime, endTime, status, notes } = req.body;
+    const id = objectIdString(req.params.id, 'id');
+    const body = assertPlainBody(req.body);
+    const staffId = body.staffId === undefined ? undefined : objectIdString(body.staffId, 'staffId');
+    const date = body.date === undefined ? undefined : dateOnlyInput(body.date, 'date');
+    const startTime = body.startTime === undefined ? undefined : timeInput(body.startTime, 'startTime');
+    const endTime = body.endTime === undefined ? undefined : timeInput(body.endTime, 'endTime');
+    const status = body.status === undefined ? undefined : parseEnum(body.status, SHIFT_STATUSES, 'status');
+    const notes = optionalText(body.notes, 'notes', WORKFORCE_TEXT_LIMITS.notes);
 
     const existing = await Shift.findOne({ _id: id, cafeId });
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Shift not found' });
     }
 
-    const newStartTime = startTime || existing.startTime;
-    const newEndTime = endTime || existing.endTime;
-    const newDate = date ? parseDateOnly(date) : existing.date;
-    const newStaffId = staffId || existing.staffId;
-
-    if (date && !newDate) {
-      return res.status(400).json({ success: false, message: 'date must use YYYY-MM-DD' });
-    }
+    const newStartTime = startTime ?? existing.startTime;
+    const newEndTime = endTime ?? existing.endTime;
+    const newDate = date ?? existing.date;
+    const newStaffId = staffId ?? existing.staffId;
     const hoursWorked = calcHours(newStartTime, newEndTime);
     if (!Number.isFinite(hoursWorked) || hoursWorked <= 0 || hoursWorked > 24) {
-      return res.status(400).json({
-        success: false,
-        message: 'endTime must be after startTime and both times must use HH:MM',
-      });
+      throw invalid('endTime', 'endTime must be after startTime and both times must use HH:MM');
     }
 
     if (staffId && !(await staffBelongsToCafe(staffId, cafeId))) {
@@ -407,7 +401,8 @@ const update = async (req, res, next) => {
 
     return res.status(200).json({ success: true, shift });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -415,7 +410,7 @@ const update = async (req, res, next) => {
 const remove = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
+    const id = objectIdString(req.params.id, 'id');
 
     const shift = await Shift.findOneAndDelete({ _id: id, cafeId });
 
@@ -425,7 +420,8 @@ const remove = async (req, res, next) => {
 
     return res.status(200).json({ success: true, message: 'Shift deleted' });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 

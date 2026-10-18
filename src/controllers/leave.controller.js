@@ -2,11 +2,12 @@ const mongoose = require('mongoose');
 const LeaveRequest = require('../models/LeaveRequest.model');
 const LeaveBalance = require('../models/LeaveBalance.model');
 const Staff = require('../models/Staff.model');
-const { parseDateOnly, formatDateOnly, inclusiveDateOnlyDays } = require('../utils/timezone');
+const { formatDateOnly, inclusiveDateOnlyDays } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const { WorkforceError, sendWorkforceError } = require('../services/workforce/errors');
 const {
   WORKFORCE_TEXT_LIMITS, invalid, objectIdString, requiredText, optionalText, dateOnlyInput,
+  assertPlainBody, parseEnum, LEAVE_TYPES, LEAVE_STATUSES,
 } = require('../services/workforce/input');
 const { cafeToday } = require('../services/workforce/cafeCalendar');
 const {
@@ -18,35 +19,20 @@ const { findOverlappingLeave, leaveOverlapError } = require('../services/workfor
 
 const MAX_LEAVE_SPAN_DAYS = 366;
 const MAX_CALENDAR_SPAN_DAYS = 93;
-const LEAVE_TYPES = new Set(['annual', 'sick', 'family', 'unpaid']);
 
 // POST /api/leave — Submit leave request
 const create = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { staffId, type, startDate, endDate, reason } = req.body;
-
-    if (!staffId || !type || !startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        message: 'staffId, type, startDate, and endDate are required',
-      });
-    }
-    if (!LEAVE_TYPES.has(type)) {
-      return res.status(400).json({
-        success: false,
-        message: 'type must be annual, sick, family, or unpaid',
-      });
-    }
-
-    const start = parseDateOnly(startDate);
-    const end = parseDateOnly(endDate);
-
-    if (!start || !end || end < start) {
-      return res.status(400).json({ success: false, message: 'startDate and endDate must be a valid YYYY-MM-DD range' });
-    }
+    const body = assertPlainBody(req.body);
+    const staffId = objectIdString(body.staffId, 'staffId');
+    const type = parseEnum(body.type, LEAVE_TYPES, 'type');
+    const start = dateOnlyInput(body.startDate, 'startDate');
+    const end = dateOnlyInput(body.endDate, 'endDate');
+    const reason = optionalText(body.reason, 'reason', WORKFORCE_TEXT_LIMITS.reason);
+    if (end < start) throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
     if (inclusiveDateOnlyDays(start, end) > MAX_LEAVE_SPAN_DAYS) {
-      return res.status(400).json({ success: false, message: `Leave periods cannot exceed ${MAX_LEAVE_SPAN_DAYS} days` });
+      throw invalid('endDate', `Leave periods cannot exceed ${MAX_LEAVE_SPAN_DAYS} days`);
     }
 
     const staffMember = await Staff.findOne({ _id: staffId, cafeId }).select('name startDate workDays').lean();
@@ -99,7 +85,8 @@ const create = async (req, res, next) => {
 const list = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { status, staffId } = req.query;
+    const staffId = req.query.staffId === undefined ? undefined : objectIdString(req.query.staffId, 'staffId');
+    const status = req.query.status === undefined ? undefined : parseEnum(req.query.status, LEAVE_STATUSES, 'status');
 
     const filter = { cafeId };
     if (status) filter.status = status;
@@ -112,7 +99,8 @@ const list = async (req, res, next) => {
 
     return res.status(200).json({ success: true, leaveRequests, requests: leaveRequests });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -121,7 +109,7 @@ const approve = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
+    const id = objectIdString(req.params.id, 'id');
     let leaveRequest;
 
     await session.withTransaction(async () => {
@@ -174,8 +162,8 @@ const approve = async (req, res, next) => {
 const cancel = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
-    const reason = optionalText((req.body ?? {}).reason, 'reason', WORKFORCE_TEXT_LIMITS.reason);
+    const id = objectIdString(req.params.id, 'id');
+    const reason = optionalText(assertPlainBody(req.body).reason, 'reason', WORKFORCE_TEXT_LIMITS.reason);
 
     const leaveRequest = await LeaveRequest.findOneAndUpdate(
       { _id: id, cafeId, status: { $in: ['pending', 'approved'] } },
@@ -205,7 +193,7 @@ const cancel = async (req, res, next) => {
 const reject = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
+    const id = objectIdString(req.params.id, 'id');
 
     const leaveRequest = await LeaveRequest.findOneAndUpdate(
       { _id: id, cafeId, status: 'pending' },
@@ -220,7 +208,8 @@ const reject = async (req, res, next) => {
 
     return res.status(200).json({ success: true, leaveRequest });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -230,22 +219,22 @@ const getCalendar = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
     let range;
-    if (!req.query.startDate || !req.query.endDate) {
+    if (req.query.startDate === undefined && req.query.endDate === undefined) {
       const today = await cafeToday(cafeId);
       range = {
         start: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)),
         end: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0)),
       };
     } else {
-      const start = parseDateOnly(String(req.query.startDate));
-      const end = parseDateOnly(String(req.query.endDate));
+      const start = dateOnlyInput(req.query.startDate, 'startDate');
+      const end = dateOnlyInput(req.query.endDate, 'endDate');
       if (!start || !end || end < start) {
-        return res.status(400).json({ success: false, message: 'startDate and endDate must be a valid YYYY-MM-DD range' });
+        throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
       }
       range = { start, end };
     }
     if (inclusiveDateOnlyDays(range.start, range.end) > MAX_CALENDAR_SPAN_DAYS) {
-      return res.status(400).json({ success: false, message: `Calendar ranges cannot exceed ${MAX_CALENDAR_SPAN_DAYS} days` });
+      throw invalid('endDate', `Calendar ranges cannot exceed ${MAX_CALENDAR_SPAN_DAYS} days`);
     }
 
     const leaveRequests = await LeaveRequest.find({
@@ -272,6 +261,7 @@ const getCalendar = async (req, res, next) => {
     const calendar = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
     return res.status(200).json({ success: true, calendar });
   } catch (error) {
+    if (sendWorkforceError(res, error)) return undefined;
     return next(error);
   }
 };
@@ -299,7 +289,7 @@ const adjustBalance = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
     const staffId = objectIdString(req.params.staffId, 'staffId');
-    const body = req.body ?? {};
+    const body = assertPlainBody(req.body);
     if (!isCycleType(body.type)) throw invalid('type', 'type must be annual, sick or family');
     const { total } = body;
     if (typeof total !== 'number' || !Number.isFinite(total) || total < 0 || total > 366 || !Number.isInteger(total * 2)) {

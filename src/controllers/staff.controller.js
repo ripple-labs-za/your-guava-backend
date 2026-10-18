@@ -1,11 +1,13 @@
 const mongoose = require('mongoose');
 const Staff = require('../models/Staff.model');
 const LeaveBalance = require('../models/LeaveBalance.model');
-const { parseDateOnly } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const { balanceViews } = require('../services/workforce/leaveCycles');
 const { cafeToday } = require('../services/workforce/cafeCalendar');
-const { parseWorkDays } = require('../services/workforce/input');
+const {
+  parseWorkDays, WORKFORCE_TEXT_LIMITS, objectIdString, requiredText, optionalText,
+  dateOnlyInput, assertPlainBody, parseHourlyRate, parseRole, parseBoolean, optionalEmail,
+} = require('../services/workforce/input');
 const { sendWorkforceError } = require('../services/workforce/errors');
 const { assertStartDateMovable } = require('../services/workforce/startDateLock');
 
@@ -16,28 +18,20 @@ const staffDto = (staff, user) => {
   return withoutRate;
 };
 
-// A start date is optional: empty means none, anything else must be a real YYYY-MM-DD (null otherwise).
-const optionalDateOnly = (value) => (value == null || value === '' ? undefined : parseDateOnly(value));
-
 // POST /api/staff — Create staff member + leave balance
 const create = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
-    const { name, email, phone, role, hourlyRate, startDate } = req.body;
-    const parsedRate = Number(hourlyRate);
-    const parsedStartDate = optionalDateOnly(startDate);
-
-    if (!String(name || '').trim() || hourlyRate == null) {
-      return res.status(400).json({ success: false, message: 'name and hourlyRate are required' });
-    }
-    if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 10000) {
-      return res.status(400).json({ success: false, message: 'hourlyRate must be between 0 and 10000' });
-    }
-    if (startDate && !parsedStartDate) {
-      return res.status(400).json({ success: false, message: 'startDate must use YYYY-MM-DD' });
-    }
-    const workDays = parseWorkDays(req.body.workDays);
+    const body = assertPlainBody(req.body);
+    const name = requiredText(body.name, 'name', WORKFORCE_TEXT_LIMITS.name);
+    const hourlyRate = parseHourlyRate(body.hourlyRate, { required: true });
+    const email = optionalEmail(body.email);
+    const phone = optionalText(body.phone, 'phone', WORKFORCE_TEXT_LIMITS.phone);
+    const role = parseRole(body.role);
+    const parsedStartDate = body.startDate === undefined || body.startDate === ''
+      ? undefined : dateOnlyInput(body.startDate, 'startDate');
+    const workDays = parseWorkDays(body.workDays);
     // The cafe's date, not the server's clock: a hire recorded between 00:00 and
     // 02:00 SAST would otherwise start a day early, and so would every cycle.
     const employmentStart = parsedStartDate || (await cafeToday(cafeId));
@@ -46,11 +40,11 @@ const create = async (req, res, next) => {
     await session.withTransaction(async () => {
       [staff] = await Staff.create([{
         cafeId,
-        name: String(name).trim(),
+        name,
         email,
         phone,
         role,
-        hourlyRate: parsedRate,
+        hourlyRate,
         startDate: employmentStart,
         ...(workDays ? { workDays } : {}),
       }], { session });
@@ -80,7 +74,8 @@ const list = async (req, res, next) => {
 
     return res.status(200).json({ success: true, staff: staffWithBalances });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -88,7 +83,7 @@ const list = async (req, res, next) => {
 const getOne = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
+    const id = objectIdString(req.params.id, 'id');
 
     const staff = await Staff.findOne({ _id: id, cafeId }).lean();
 
@@ -107,7 +102,8 @@ const getOne = async (req, res, next) => {
       .status(200)
       .json({ success: true, staff: staffDto({ ...staff, leaveBalance }, req.user) });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
@@ -116,35 +112,29 @@ const update = async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
-    const { name, email, phone, role, hourlyRate, startDate, isActive } = req.body;
-    const parsedStartDate = startDate !== undefined ? optionalDateOnly(startDate) : undefined;
-    const parsedRate = hourlyRate !== undefined ? Number(hourlyRate) : undefined;
-
-    if (startDate !== undefined && !parsedStartDate) {
-      return res.status(400).json({ success: false, message: 'startDate must use YYYY-MM-DD' });
-    }
-    if (hourlyRate !== undefined && (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 10000)) {
-      return res.status(400).json({ success: false, message: 'hourlyRate must be between 0 and 10000' });
-    }
-    const workDays = parseWorkDays(req.body.workDays);
+    const id = objectIdString(req.params.id, 'id');
+    const body = assertPlainBody(req.body);
+    const parsedStartDate = body.startDate === undefined ? undefined : dateOnlyInput(body.startDate, 'startDate');
+    const isActive = parseBoolean(body.isActive, 'isActive');
+    const workDays = parseWorkDays(body.workDays);
+    const changes = {
+      ...(body.name !== undefined && { name: requiredText(body.name, 'name', WORKFORCE_TEXT_LIMITS.name) }),
+      ...(body.email !== undefined && { email: optionalEmail(body.email) }),
+      ...(body.phone !== undefined && { phone: optionalText(body.phone, 'phone', WORKFORCE_TEXT_LIMITS.phone) }),
+      ...(body.role !== undefined && { role: parseRole(body.role) }),
+      ...(body.hourlyRate !== undefined && { hourlyRate: parseHourlyRate(body.hourlyRate, { required: true }) }),
+      ...(parsedStartDate !== undefined && { startDate: parsedStartDate }),
+      ...(isActive !== undefined && { isActive }),
+      ...(workDays !== undefined && { workDays }),
+    };
 
     let staff;
     await session.withTransaction(async () => {
-      if (startDate !== undefined) await assertStartDateMovable({ cafeId, staffId: id, startDate: parsedStartDate, session });
+      if (parsedStartDate !== undefined) await assertStartDateMovable({ cafeId, staffId: id, startDate: parsedStartDate, session });
       staff = await Staff.findOneAndUpdate(
         { _id: id, cafeId },
         {
-          $set: {
-            ...(name !== undefined && { name: String(name).trim() }),
-            ...(email !== undefined && { email }),
-            ...(phone !== undefined && { phone }),
-            ...(role !== undefined && { role }),
-            ...(hourlyRate !== undefined && { hourlyRate: parsedRate }),
-            ...(startDate !== undefined && { startDate: parsedStartDate }),
-            ...(isActive !== undefined && { isActive }),
-            ...(workDays !== undefined && { workDays }),
-          },
+          $set: changes,
         },
         { new: true, runValidators: true, session }
       );
@@ -167,7 +157,7 @@ const update = async (req, res, next) => {
 const remove = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { id } = req.params;
+    const id = objectIdString(req.params.id, 'id');
 
     const staff = await Staff.findOneAndUpdate(
       { _id: id, cafeId },
@@ -181,7 +171,8 @@ const remove = async (req, res, next) => {
 
     return res.status(200).json({ success: true, message: 'Staff member deactivated' });
   } catch (error) {
-    next(error);
+    if (sendWorkforceError(res, error)) return undefined;
+    return next(error);
   }
 };
 
