@@ -7,7 +7,7 @@ const paymentProvider = require('../paymentProvider.service');
 const { getPlanCapacity } = require('../planCapacity.service');
 const { bonusUsedForCredits } = require('../usage.service');
 const { planChangeForPayment, isScheduledChange, planChangeIsDue, invalidateFutureForecastsForOrg } = require('./periods');
-const { normalizePaymentIdempotencyKey, generateReference, paymentRequestFingerprint } = require('./sessions');
+const { normalizePaymentIdempotencyKey, generateReference, paymentRequestFingerprint, paymentInitiationError } = require('./sessions');
 
 const cardDetailsFromTransaction = (transaction, provider) => {
   // Paystack reports the card under `authorization` with discrete fields.
@@ -249,46 +249,39 @@ const applyCreditPayment = async (paymentSession, transaction) => {
   throw new Error('Could not apply Guava Credit payment');
 };
 
-/**
- * Grants a mock credit pack through the same reference-keyed fulfilment a real
- * payment uses.
- *
- * The mock path used to `$inc` the bonus balance directly, with no session and
- * no reference, so a double-click, a retried request or a refreshed tab
- * granted the pack again. Real purchases have been idempotent since
- * `fulfilledPaymentReferences` existed; only the path used for testing and
- * demos was not, which is the path most likely to be clicked twice.
- *
- * Without an Idempotency-Key there is nothing to be idempotent against, and a
- * purchase that 400s because a header is missing is a worse failure than a
- * duplicate, so it still proceeds — just with a session of its own.
- */
-const fulfilMockCreditPurchase = async ({ org, userId, credits, amount, idempotencyKey }) => {
-  // Validated when supplied, not demanded. `normalizePaymentIdempotencyKey`
-  // throws on a missing key because a card payment must never be replayable;
-  // a mock grant that 400s on a missing header would be a worse failure than
-  // the duplicate it prevents, and no client is obliged to send one today.
+const mockCard = (paymentMethod) => ({
+  brand: typeof paymentMethod?.brand === 'string' && /^[a-z ]{2,24}$/i.test(paymentMethod.brand.trim())
+    ? paymentMethod.brand.trim().toLowerCase()
+    : 'visa',
+  last4: typeof paymentMethod?.last4 === 'string' && /^\d{4}$/.test(paymentMethod.last4)
+    ? paymentMethod.last4 : '4242',
+  exp_month: '12',
+  exp_year: '2030',
+});
+
+/** Mock purchases share real reference-keyed fulfilment; clients without a key get their own session. */
+const fulfilMockPayment = async ({ org, userId, kind, plan, billingCycle, credits, amount, idempotencyKey, paymentMethod }) => {
   const key = idempotencyKey ? normalizePaymentIdempotencyKey(idempotencyKey) : null;
-  const find = () =>
-    PaymentSession.findOne({ orgId: org._id, kind: 'credits', idempotencyKey: key });
+  const requestFingerprint = paymentRequestFingerprint({ kind, plan, billingCycle, credits, amount });
+  const find = () => PaymentSession.findOne({ orgId: org._id, kind, idempotencyKey: key });
 
   let session = key ? await find() : null;
   if (!session) {
-    const reference = generateReference('credits');
+    const reference = generateReference(kind);
     try {
       session = await PaymentSession.create({
         orgId: org._id,
         userId,
         provider: 'mock',
-        kind: 'credits',
+        kind,
         idempotencyKey: key,
-        requestFingerprint: paymentRequestFingerprint({ kind: 'credits', credits, amount }),
+        requestFingerprint,
         initializationStatus: 'ready',
         reference,
         providerTransactionId: `mock-${reference}`,
         amount,
         currency: 'ZAR',
-        credits,
+        ...(kind === 'plan' ? { plan, billingCycle } : { credits }),
         status: 'pending',
       });
     } catch (error) {
@@ -300,17 +293,31 @@ const fulfilMockCreditPurchase = async ({ org, userId, credits, amount, idempote
     }
   }
 
-  const { org: updated, applied } = await applyCreditPayment(session);
-
-  if (session.status !== 'paid') {
-    await PaymentSession.updateOne(
-      { _id: session._id },
-      { $set: { status: 'paid', paidAt: session.paidAt || new Date() } }
+  if (session.provider !== 'mock' ||
+    (session.requestFingerprint || paymentRequestFingerprint(session)) !== requestFingerprint) {
+    throw paymentInitiationError(
+      'Idempotency-Key was already used for a different payment request',
+      'PAYMENT_IDEMPOTENCY_CONFLICT', 409, { reference: session.reference }
     );
   }
 
-  return { org: updated, session, applied };
+  const transaction = { authorization: mockCard(paymentMethod) };
+  const result = kind === 'plan'
+    ? await applyPlanPayment(session, transaction)
+    : await applyCreditPayment(session, null);
+  const shown = cardDetailsFromTransaction(transaction, 'mock');
+  await PaymentSession.updateOne(
+    { _id: session._id, status: { $ne: 'paid' } },
+    { $set: {
+      status: 'paid', paidAt: new Date(),
+      ...(kind === 'plan' ? { card: { brand: shown.brand, last4: shown.last4 } } : {}),
+    } }
+  );
+  return { ...result, session };
 };
+
+/** Compatibility for callers that predate mock plan sessions. */
+const fulfilMockCreditPurchase = (args) => fulfilMockPayment({ ...args, kind: 'credits' });
 
 /** Spent credits remain spent; withdraw only as much of the reversed pack as is still available. */
 const revokeUnusedPackCredits = (paymentSession, session) => Organization.updateOne(
@@ -330,5 +337,5 @@ const revokeUnusedPackCredits = (paymentSession, session) => Organization.update
 );
 
 module.exports = {
-  cardDetailsFromTransaction, applyDuePlanChange, applyPlanPayment, applyCreditPayment, fulfilMockCreditPurchase, revokeUnusedPackCredits,
+  cardDetailsFromTransaction, applyDuePlanChange, applyPlanPayment, applyCreditPayment, fulfilMockPayment, fulfilMockCreditPurchase, revokeUnusedPackCredits,
 };

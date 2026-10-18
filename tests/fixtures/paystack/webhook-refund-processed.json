@@ -1,0 +1,14 @@
+{
+  "event": "refund.processed",
+  "data": {
+    "id": 91000001,
+    "domain": "test",
+    "status": "processed",
+    "transaction_reference": "GGPFIXTUREREFERENCE",
+    "refund_reference": null,
+    "amount": 89900,
+    "currency": "ZAR",
+    "processor": "card",
+    "customer": { "email": "owner@fixture.example" }
+  }
+}

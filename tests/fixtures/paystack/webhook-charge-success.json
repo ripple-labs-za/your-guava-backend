@@ -1,0 +1,35 @@
+{
+  "event": "charge.success",
+  "data": {
+    "id": 5012345678,
+    "domain": "test",
+    "status": "success",
+    "reference": "GGPFIXTUREREFERENCE",
+    "amount": 89900,
+    "message": null,
+    "gateway_response": "Successful",
+    "paid_at": "2026-09-22T10:15:02.000Z",
+    "created_at": "2026-09-22T10:14:24.000Z",
+    "channel": "card",
+    "currency": "ZAR",
+    "ip_address": "198.51.100.7",
+    "metadata": { "customer_reference": "Fixture Org", "merchant_reference": "GGPFIXTUREREFERENCE" },
+    "fees": 2607,
+    "customer": { "id": 123456789, "email": "owner@fixture.example", "customer_code": "CUS_fixture_not_real" },
+    "authorization": {
+      "authorization_code": "AUTH_fixture_not_real",
+      "bin": "408408",
+      "last4": "4081",
+      "exp_month": "12",
+      "exp_year": "2030",
+      "channel": "card",
+      "card_type": "visa ",
+      "bank": "TEST BANK",
+      "country_code": "ZA",
+      "brand": "visa",
+      "reusable": true,
+      "signature": "SIG_fixture_not_real"
+    },
+    "requested_amount": 89900
+  }
+}

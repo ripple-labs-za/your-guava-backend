@@ -21,6 +21,7 @@ module.exports = {
   applyDuePlanChange: fulfilment.applyDuePlanChange,
   createHostedPaymentSession: sessions.createHostedPaymentSession,
   fulfilMockCreditPurchase: fulfilment.fulfilMockCreditPurchase,
+  fulfilMockPayment: fulfilment.fulfilMockPayment,
   generateReference: sessions.generateReference,
   getCreditPack: sessions.getCreditPack,
   invalidateFutureForecastsForOrg: periods.invalidateFutureForecastsForOrg,

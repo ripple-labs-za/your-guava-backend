@@ -1,0 +1,15 @@
+{
+  "event": "charge.dispute.create",
+  "data": {
+    "id": 81000001,
+    "domain": "test",
+    "refund_amount": 89900,
+    "currency": "ZAR",
+    "status": "awaiting-merchant-feedback",
+    "resolution": null,
+    "category": "chargeback",
+    "transaction": { "id": 5012345678, "reference": "GGPFIXTUREREFERENCE", "amount": 89900, "currency": "ZAR", "status": "success" },
+    "createdAt": "2026-09-25T09:00:00.000Z",
+    "dueAt": "2026-10-02T09:00:00.000Z"
+  }
+}

@@ -12,10 +12,10 @@ const {
   normalisePlanId,
 } = require('../services/billingPlans.service');
 const {
-  applyPlanPayment, generateReference, planChangeForPayment,
+  planChangeForPayment,
   previewPlanChanges, serialisePlanChange, formatBillingDate,
   createHostedPaymentSession,
-  fulfilMockCreditPurchase,
+  fulfilMockPayment,
   getCreditPack,
   invalidateFutureForecastsForOrg,
   reconcilePayment,
@@ -379,22 +379,16 @@ const updateProfile = async (req, res, next) => {
 };
 
 const mockCheckout = async ({ req, org, selectedPlan, billingCycle, paymentMethod }) => {
-  const reference = generateReference('plan');
-  const { planChanged, change } = await applyPlanPayment(
-    { orgId: org._id, reference, plan: selectedPlan.id, billingCycle },
-    null
-  );
+  const amount = billingCycle === 'annual' ? selectedPlan.priceAnnual : selectedPlan.priceMonthly;
+  const { session, planChanged, change } = await fulfilMockPayment({
+    org, userId: req.user.id, kind: 'plan', plan: selectedPlan.id,
+    billingCycle, amount, idempotencyKey: req.get('Idempotency-Key'), paymentMethod,
+  });
   await Organization.updateOne(
-    { _id: org._id },
+    { _id: org._id, mockCustomerId: { $exists: false } },
     {
       $set: {
         mockCustomerId: org.mockCustomerId || `mock_cus_${org._id.toString().slice(-8)}`,
-        paymentMethod: {
-          brand: paymentMethod?.brand || 'visa',
-          last4: paymentMethod?.last4 || '4242',
-          expiresAt: paymentMethod?.expiresAt || '12/30',
-          provider: 'mock',
-        },
       },
     }
   );
@@ -404,8 +398,9 @@ const mockCheckout = async ({ req, org, selectedPlan, billingCycle, paymentMetho
   return {
     checkout: {
       provider: 'mock',
-      receiptId: reference,
-      amount: billingCycle === 'annual' ? selectedPlan.priceAnnual : selectedPlan.priceMonthly,
+      reference: session.reference,
+      receiptId: session.reference,
+      amount,
       currency: 'ZAR',
       status: 'paid',
       planChange: change ? serialisePlanChange(change) : null,
@@ -430,8 +425,19 @@ const checkout = async (req, res, next) => {
     if (!org) {
       return res.status(404).json({ success: false, message: 'Organization not found' });
     }
-    if (org.pendingPlanChange?.effectiveAt) return planChangeAlreadyScheduled(res, org.pendingPlanChange);
     const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
+    // A retry of an already-paid mock session is a receipt lookup, even when
+    // that very payment scheduled a change. New payments still get the early 409.
+    const mockKey = !paymentProvider.isHostedCheckoutEnabled() && mockBillingEnabled()
+      && typeof req.get('Idempotency-Key') === 'string' ? req.get('Idempotency-Key').trim() : null;
+    const mockReplay = mockKey && await PaymentSession.findOne({
+      orgId: org._id, kind: 'plan', provider: 'mock', status: 'paid', idempotencyKey: mockKey,
+    }).lean();
+    if (mockReplay) {
+      const result = await mockCheckout({ req, org, selectedPlan, billingCycle: cycle, paymentMethod });
+      return res.status(200).json({ success: true, ...result });
+    }
+    if (org.pendingPlanChange?.effectiveAt) return planChangeAlreadyScheduled(res, org.pendingPlanChange);
     const planChange = serialisePlanChange(planChangeForPayment(org, { plan: selectedPlan.id, billingCycle: cycle }));
     await assertPlanChangeCapacity(org._id, org.plan, selectedPlan.id);
 
@@ -534,8 +540,9 @@ const buyAiCredits = async (req, res, next) => {
     // than a bare $inc: a replayed request must grant the pack once. The
     // receipt is the session reference, so it names a row that exists instead
     // of a timestamp that identifies nothing.
-    const { session } = await fulfilMockCreditPurchase({
+    const { session } = await fulfilMockPayment({
       org,
+      kind: 'credits',
       userId: req.user.id,
       credits: pack.credits,
       amount: pack.price,

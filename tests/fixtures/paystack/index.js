@@ -31,4 +31,27 @@ const verifyResponse = (status, { reference, amountRand, requestedRand, id } = {
   return body;
 };
 
-module.exports = { clone, verifyResponse };
+const WEBHOOKS = {
+  'charge.success': require('./webhook-charge-success.json'),
+  'refund.processed': require('./webhook-refund-processed.json'),
+  'charge.dispute.create': require('./webhook-dispute-create.json'),
+};
+
+/** A recorded webhook body with this test's reference and amount written into every place Paystack puts them. */
+const webhookEvent = (event, { reference, amountRand } = {}) => {
+  const body = clone(WEBHOOKS[event]);
+  if (reference) {
+    if ('reference' in body.data) body.data.reference = reference;
+    if ('transaction_reference' in body.data) body.data.transaction_reference = reference;
+    if (body.data.transaction) body.data.transaction.reference = reference;
+    if (body.data.metadata) body.data.metadata.merchant_reference = reference;
+  }
+  if (amountRand != null) {
+    body.data.amount = Math.round(amountRand * 100);
+    if ('requested_amount' in body.data) body.data.requested_amount = body.data.amount;
+    if (body.data.transaction) body.data.transaction.amount = body.data.amount;
+  }
+  return body;
+};
+
+module.exports = { clone, verifyResponse, webhookEvent };
