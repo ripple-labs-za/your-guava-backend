@@ -82,6 +82,37 @@ describe('events', () => {
     expect((await request.get('/api/events/effects').set(auth()).query({ from: '2031-01-02', to: '2031-01-01' })).status).toBe(400);
   });
 
+  it('excludes an in-window recurring event anniversary from another event baseline', async () => {
+    const days = ['2026-08-20', '2026-08-27', '2026-09-03', '2026-09-10',
+      '2026-09-17', '2026-09-24', '2026-10-01', '2026-10-08'];
+    await Transaction.create(days.map((key) => sale(cafe._id, `${key}T09:00:00Z`,
+      key === '2026-09-10' ? 8000 : key === '2026-10-08' ? 2000 : 1000)));
+    for (const event of [
+      { name: 'Heritage market', date: '2025-09-10', recurring: true },
+      { name: 'Old fair', date: '2025-08-21' },
+      { name: 'Oct fair', date: '2026-10-08' },
+    ]) {
+      expect((await request.post('/api/events').set(auth()).send(event)).status).toBe(201);
+    }
+    const res = await request.get('/api/events/effects').set(auth())
+      .query({ from: '2025-08-01', to: '2026-10-17', baselineWeeks: 8 });
+    expect(res.status).toBe(200);
+    expect(res.body.effects.find((event) => event.name === 'Oct fair')).toEqual(expect.objectContaining({
+      baselineRevenue: 1000, baselineDayCount: 6, revenueImpactPct: 100,
+    }));
+  });
+
+  it('keys a legacy Johannesburg instant locally and returns a migrated row once', async () => {
+    const { loadEventsByDateKey } = require('../../src/services/forecast/history');
+    await Event.collection.insertMany([
+      { cafeId: cafe._id, name: 'Legacy local', type: 'event', date: new Date('2031-05-09T22:00:00Z'), recurring: false },
+      { cafeId: cafe._id, name: 'Migrated', type: 'event', date: new Date('2031-05-09T22:00:00Z'), dateKey: '2031-05-10', recurring: false },
+    ]);
+    const events = await loadEventsByDateKey(cafe._id, '2031-05-10', '2031-05-11', 'Africa/Johannesburg');
+    expect([...events.keys()]).toEqual(['2031-05-10']);
+    expect(events.get('2031-05-10').map((event) => event.name).sort()).toEqual(['Legacy local', 'Migrated']);
+  });
+
   it('closes Sunday, not Saturday, for a cafe at UTC−5', async () => {
     const zone = 'America/Bogota'; // UTC−5 all year, no daylight saving
     await Cafe.updateOne({ _id: cafe._id }, { $set: { timezone: zone, tradingHours: openAllWeek } });

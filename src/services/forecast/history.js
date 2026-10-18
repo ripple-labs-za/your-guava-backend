@@ -175,7 +175,7 @@ const loadEventsByDateKey = async (cafeId, fromKey, toKeyExclusive, timezone) =>
       { dateKey: { $gte: fromKey, $lt: toKeyExclusive } },
       { dateKey: { $exists: false }, date: { $gte: new Date(Math.min(...starts)), $lt: new Date(Math.max(...ends)) } },
     ] }).lean(),
-    Event.find({ cafeId, recurring: true, dateKey: { $lt: fromKey } }).lean(),
+    Event.find({ cafeId, recurring: true, dateKey: { $lt: toKeyExclusive } }).lean(),
   ]);
   const byKey = new Map();
   const add = (key, event) => {
@@ -189,7 +189,7 @@ const loadEventsByDateKey = async (cafeId, fromKey, toKeyExclusive, timezone) =>
   }
   // D-017: anniversaries after the original date, with February 29 only in leap years.
   for (const event of recurring) {
-    if (event.recurring !== true || typeof event.dateKey !== 'string' || event.dateKey >= fromKey) continue;
+    if (event.recurring !== true || typeof event.dateKey !== 'string') continue;
     for (let year = Number(fromKey.slice(0, 4)); year <= Number(toKeyExclusive.slice(0, 4)); year += 1) {
       const key = `${year}-${event.dateKey.slice(5)}`;
       if (key > event.dateKey && key >= fromKey && key < toKeyExclusive && isCalendarDateKey(key)) {
