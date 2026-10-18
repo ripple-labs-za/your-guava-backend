@@ -22,7 +22,13 @@ const reminderTarget = (org) => {
   if (org.billingStatus === 'trialing' && org.trialEndsAt) return { kind: 'trial', endsAt: new Date(org.trialEndsAt) };
   if (org.billingStatus === 'active') {
     const endsAt = effectivePaidThrough(org);
-    if (endsAt) return { kind: 'paid', endsAt };
+    if (endsAt) {
+      const pending = org.pendingPlanChange;
+      const plan = pending?.periodEnd && new Date(pending.periodEnd).getTime() === endsAt.getTime()
+        ? pending.plan
+        : org.plan;
+      return { kind: 'paid', endsAt, plan };
+    }
   }
   return null;
 };
@@ -80,7 +86,7 @@ const runBillingReminders = async ({ now = new Date() } = {}) => {
         to,
         ownerName: owner?.name,
         orgName: org.name,
-        planName: getPlan(org.plan).name,
+        planName: getPlan(target.plan || org.plan).name,
         kind: target.kind,
         endsAt: target.endsAt,
         daysLeft,

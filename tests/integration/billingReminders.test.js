@@ -105,6 +105,7 @@ describe('period-end reminders (gap-3)', () => {
     await runBillingReminders();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0].daysLeft).toBe(7);
+    expect(send.mock.calls[0][0].planName).toBe('Starter');
   });
 
   it('retries a reminder whose delivery failed, and records it once', async () => {
