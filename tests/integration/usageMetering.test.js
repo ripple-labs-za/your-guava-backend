@@ -75,7 +75,9 @@ describe('metered Guava Credit amounts', () => {
 });
 
 describe('Guava Credit reservation lease breach', () => {
-  it.each(['failure', 'success', 'delivered failure'])('a swept attempt finishing with %s cannot settle its retry reservation', async (outcome) => {
+  it.each(['failure', 'success', 'delivered failure', 'consumed failure'].flatMap((outcome) =>
+    ['reserved', 'refunded'].map((retryStatus) => [outcome, retryStatus])
+  ))('a swept attempt finishing with %s cannot settle its %s retry reservation', async (outcome, retryStatus) => {
     const owner = await createTestUser();
     const request = {
       orgId: owner.user.orgId, userId: owner.user.id,
@@ -89,7 +91,9 @@ describe('Guava Credit reservation lease breach', () => {
           meter.markDelivered();
           meter.recordPartialResult({ answer: 'obsolete partial', interrupted: true });
         }
-        reject(new Error('obsolete provider failure'));
+        const error = new Error('obsolete provider failure');
+        if (outcome === 'consumed failure') error.providerDiagnostics = { inputTokens: 100, outputTokens: 0 };
+        reject(error);
       };
     }) }).catch((error) => error);
     const held = await waitFor(() => UsageLedger.findOne({ idempotencyKey: request.idempotencyKey }).lean());
@@ -98,6 +102,10 @@ describe('Guava Credit reservation lease breach', () => {
     let finishRetry;
     const retry = meterGuavaCredits({ ...request, run: () => new Promise((resolve) => { finishRetry = resolve; }) });
     await waitFor(() => finishRetry);
+    if (retryStatus === 'refunded') {
+      await UsageLedger.updateOne({ _id: held._id }, { $set: { reservedAt: new Date(Date.now() - 600_000) } });
+      expect((await reconcileStaleUsageReservations({ leaseMs: 60_000 })).refunded).toBe(1);
+    }
     await waitFor(() => finishOld);
     finishOld();
     await old;
@@ -105,7 +113,8 @@ describe('Guava Credit reservation lease breach', () => {
     // Release the retry before asserting so a regression cannot leave an unsettled test promise.
     finishRetry({ answer: 'retry answer' });
     const retryOutcome = await retry.catch((error) => error);
-    expect(live).toMatchObject({ status: 'reserved', replayCount: 1 });
+    expect(live).toMatchObject({ status: retryStatus, replayCount: 1 });
+    if (retryStatus === 'refunded') expect(live.recoveryReason).toBe('stale_reservation');
     expect(live.resultPayload).toBeUndefined();
     expect(retryOutcome.result).toEqual({ answer: 'retry answer' });
     expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(3);
