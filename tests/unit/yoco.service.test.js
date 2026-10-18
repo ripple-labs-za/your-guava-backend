@@ -1,3 +1,4 @@
+const { apiCache, clearApiCache } = require('../../src/middleware/cache.middleware');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { setup, teardown, clearDB } = require('../setup');
@@ -125,4 +126,42 @@ describe('yoco.service', () => {
     expect(item.avgPrice).toBe(35);
     expect(item.category).toBe('coffee');
   });
+});
+
+it('evicts the synced cafe from the response cache when it imports orders, and only that cafe', async () => {
+  const cafeId = new mongoose.Types.ObjectId();
+  const otherCafeId = new mongoose.Types.ObjectId();
+  const cache = apiCache({ ttlMs: 60000, keyPrefix: 'analytics' });
+  const cacheStateOf = (id) => new Promise((resolve) => {
+    const headers = {};
+    const req = { method: 'GET', baseUrl: '/api/analytics', path: '/revenue', query: {}, user: { orgId: 'org-yoco', cafeId: String(id), id: 'owner' } };
+    const res = {
+      statusCode: 200,
+      set(name, value) { headers[name] = value; return this; },
+      status(code) { this.statusCode = code; return this; },
+      json() { resolve(headers['X-Guava-Cache']); return this; },
+    };
+    cache(req, res, () => res.json({}));
+  });
+  const order = {
+    id: 'order-cache-1',
+    created_at: '2026-04-01T08:30:00Z',
+    line_items: [{ item_type: 'product', name: 'Flat White', quantity: 1, unit_price: { amount: 3500 } }],
+    amounts: { gross_amount: { amount: 3500 } },
+    payments: [{ payment_method: 'card' }],
+  };
+  const previousCacheEnabled = process.env.API_CACHE_ENABLED;
+  process.env.API_CACHE_ENABLED = 'true';
+  try {
+    await cacheStateOf(cafeId);
+    await cacheStateOf(otherCafeId);
+
+    await syncOrders(cafeId, [order]);
+
+    expect(await cacheStateOf(cafeId)).toBe('miss');
+    expect(await cacheStateOf(otherCafeId)).toBe('hit');
+  } finally {
+    process.env.API_CACHE_ENABLED = previousCacheEnabled;
+    clearApiCache({ orgId: 'org-yoco' });
+  }
 });

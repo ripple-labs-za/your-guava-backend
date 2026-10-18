@@ -59,6 +59,7 @@ describe('event forecast invalidation', () => {
 
     expect(mockForecastDeleteMany).toHaveBeenCalledTimes(1);
     expect(mockClearApiCache).toHaveBeenCalledTimes(1);
+    expect(mockClearApiCache).toHaveBeenCalledWith({ cafeId: '507f1f77bcf86cd799439011' });
     expect(res.status).toHaveBeenCalledWith(201);
     expect(next).not.toHaveBeenCalled();
   });

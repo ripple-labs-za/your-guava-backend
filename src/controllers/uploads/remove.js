@@ -147,7 +147,7 @@ const remove = async (req, res, next) => {
     } catch (error) {
       console.error('[uploads] delete AI insight invalidation failed:', error.message);
     }
-    clearApiCache();
+    clearApiCache({ cafeId });
     return res.status(200).json({
       success: true,
       readmitted: readmission.summariseReadmission(outcome.applied),

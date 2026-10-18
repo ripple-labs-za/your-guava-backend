@@ -1,5 +1,6 @@
 // Reconciliation: provider-response parsing, session claims and leases, failures, and the pending-payment sweeper.
-// Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
+// Moved from billingPayments.service.js by BE-11-T04; successful settlement evicts only the paying organisation.
+const { clearApiCache } = require('../../middleware/cache.middleware');
 const PaymentSession = require('../../models/PaymentSession.model');
 const paymentProvider = require('../paymentProvider.service');
 const { invalidateFutureForecastsForOrg } = require('./periods');
@@ -248,6 +249,8 @@ const reconcileOneGatePayment = async (reference, webhookPayload = null, options
           console.error('[billing] forecast invalidation failed:', error.message);
         });
       }
+      // Only the transition to paid evicts; callback replays return before this branch.
+      clearApiCache({ orgId: paymentSession.orgId });
       return paid;
     }
 

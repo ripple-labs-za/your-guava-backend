@@ -32,7 +32,7 @@ const invalidatePlanningForecastsFrom = async (cafeId, date) => {
   const start = zonedDayStart(formatDateOnly(dateOnly(date)), timezone);
   if (start < today) start.setTime(today.getTime());
   await Forecast.deleteMany({ cafeId, date: { $gte: start } });
-  clearApiCache();
+  clearApiCache({ cafeId });
 };
 
 const parseImpactPct = (impactPct) => {

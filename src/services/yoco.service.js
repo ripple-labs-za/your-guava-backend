@@ -1,3 +1,4 @@
+const { clearApiCache } = require('../middleware/cache.middleware');
 const axios = require('axios');
 const crypto = require('crypto');
 const Cafe = require('../models/Cafe.model');
@@ -314,6 +315,7 @@ async function syncOrders(cafeId, orders) {
   }
 
   await rebuildItemsForCafe(cafeId);
+  if (imported > 0) clearApiCache({ cafeId });
 
   return { imported, skipped, errors };
 }

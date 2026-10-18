@@ -95,7 +95,7 @@ const runPostImportMaintenance = async (claimedUpload, timezone) => {
   await safely('week forecast regeneration', () => generateWeekForecast(cafeId));
   await safely('forecast actuals refresh', () => fillActualsForRange(cafeId, dateRange, timezone));
   await safely('AI insight invalidation', () => invalidateAiInsights(cafeId));
-  clearApiCache();
+  clearApiCache({ cafeId });
 
   const maxAttempts = maintenanceMaxAttempts();
   const canRetry = errors.length > 0 && attemptCount < maxAttempts;

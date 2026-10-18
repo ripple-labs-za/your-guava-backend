@@ -150,7 +150,7 @@ const remap = async (req, res, next) => {
       });
     }
 
-    clearApiCache();
+    clearApiCache({ cafeId });
     await schedulePostImportMaintenance(upload._id, cafeId, result.dateRange, timezone);
     return res.status(200).json({
       ...confirmationResponse(upload),

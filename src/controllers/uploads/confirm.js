@@ -128,7 +128,7 @@ const confirm = async (req, res, next) => {
       throw err;
     }
 
-    clearApiCache();
+    clearApiCache({ cafeId });
     await schedulePostImportMaintenance(upload._id, cafeId, result.dateRange, timezone);
     return res.status(200).json(confirmationResponse(upload));
   } catch (error) {

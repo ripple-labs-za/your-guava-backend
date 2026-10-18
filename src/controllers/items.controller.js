@@ -297,7 +297,7 @@ const update = async (req, res, next) => {
     const { item, changed } = await updateMenuItem(activeCafeId(req), req.params.id, payload);
     if (changed.identity || changed.price || changed.category) {
       await scheduleForecastRefreshAfterMenuChange(activeCafeId(req));
-      clearApiCache();
+      clearApiCache({ cafeId: activeCafeId(req) });
     }
 
     return res.status(200).json({ success: true, item });
@@ -461,7 +461,7 @@ const resolve = async (req, res, next) => {
 
     const item = await resolveMenuItem(activeCafeId(req), req.params.id, req.body);
     await scheduleForecastRefreshAfterMenuChange(activeCafeId(req));
-    clearApiCache();
+    clearApiCache({ cafeId: activeCafeId(req) });
     return res.status(200).json({ success: true, item });
   } catch (error) {
     return answerRefusal(error, res, next);

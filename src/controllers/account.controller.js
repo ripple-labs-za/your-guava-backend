@@ -331,7 +331,7 @@ const updateProfile = async (req, res, next) => {
         );
       }
     });
-    clearApiCache();
+    clearApiCache({ orgId: req.user.orgId });
 
     const account = await buildAccountPayload(req.user.id);
     return res.status(200).json({ success: true, account });
@@ -374,7 +374,7 @@ const mockCheckout = async ({ req, org, selectedPlan, billingCycle, paymentMetho
   if (planChanged) {
     await invalidateFutureForecastsForOrg(org._id);
   }
-  clearApiCache();
+  clearApiCache({ orgId: org._id });
 
   const account = await buildAccountPayload(req.user.id);
   return {
@@ -509,7 +509,7 @@ const buyAiCredits = async (req, res, next) => {
       amount: pack.price,
       idempotencyKey: req.get('Idempotency-Key'),
     });
-    clearApiCache();
+    clearApiCache({ orgId: org._id });
 
     const account = await buildAccountPayload(req.user.id);
     return res.status(200).json({
@@ -554,10 +554,6 @@ const handlePaystackReturn = async (req, res) => {
     try {
       const session = await reconcileOneGatePayment(reference);
       if (session?.status) status = session.status;
-      // A plan change deletes the org's future forecasts, and the customer is
-      // redirected straight back into the portal. Without this they land on the
-      // pre-payment cached forecast and analytics bodies.
-      if (status === 'paid') clearApiCache();
     } catch (error) {
       // A 202 means "not settled yet", which is a legitimate pending outcome.
       // Anything else still must not strand the customer on a blank page.
@@ -601,11 +597,10 @@ const handlePaystackWebhook = async (req, res, next) => {
     // Acknowledge regardless of outcome so Paystack does not retry a payment
     // this server has already recorded.
     try {
-      const session = await reconcileOneGatePayment(reference, {
+      await reconcileOneGatePayment(reference, {
         reference,
         status: req.body?.event,
       });
-      if (session?.status === 'paid') clearApiCache();
     } catch (error) {
       if (error?.statusCode !== 202) {
         console.error('[billing] paystack webhook reconciliation failed:', error.message);
@@ -631,7 +626,6 @@ const handleOneGateWebhook = async (req, res, next) => {
     // outcome, including an unknown reference, is acknowledged identically.
     try {
       await reconcileOneGatePayment(reference, req.body);
-      clearApiCache();
     } catch (error) {
       if (![202, 404, 400].includes(error?.statusCode)) {
         console.error('[billing] onegate webhook reconciliation failed:', error.message);

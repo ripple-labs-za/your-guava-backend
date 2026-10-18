@@ -3,18 +3,24 @@ const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const { clearApiCache } = require('../../src/middleware/cache.middleware');
 
+const createdOrgIds = [];
+const createCacheTestUser = async (...args) => {
+  const owner = await createTestUser(...args);
+  createdOrgIds.push(owner.user.orgId);
+  return owner;
+};
 const request = supertest(app);
 beforeAll(setup);
 afterAll(teardown);
 afterEach(async () => {
   process.env.API_CACHE_ENABLED = 'true';
-  clearApiCache();
+  createdOrgIds.splice(0).forEach((orgId) => clearApiCache({ orgId }));
   await clearDB();
 });
 
 describe('API read cache with the cache on, as in production', () => {
   it('serves the second read from cache, and a mutation that calls clearApiCache invalidates it', async () => {
-    const owner = await createTestUser();
+    const owner = await createCacheTestUser();
     const auth = { Authorization: `Bearer ${owner.token}` };
 
     const first = await request.get('/api/transactions/stats').set(auth);
@@ -31,8 +37,8 @@ describe('API read cache with the cache on, as in production', () => {
   });
 
   it('never serves one organisation a read cached for another', async () => {
-    const a = await createTestUser({ email: 'cache-a@yourguava.com', cafeName: 'Cafe A', orgName: 'Org A' });
-    const b = await createTestUser({ email: 'cache-b@yourguava.com', cafeName: 'Cafe B', orgName: 'Org B' });
+    const a = await createCacheTestUser({ email: 'cache-a@yourguava.com', cafeName: 'Cafe A', orgName: 'Org A' });
+    const b = await createCacheTestUser({ email: 'cache-b@yourguava.com', cafeName: 'Cafe B', orgName: 'Org B' });
     await request.get('/api/transactions/stats').set('Authorization', `Bearer ${a.token}`);
     const other = await request.get('/api/transactions/stats').set('Authorization', `Bearer ${b.token}`);
     expect(other.headers['x-guava-cache']).toBe('miss');
@@ -40,7 +46,7 @@ describe('API read cache with the cache on, as in production', () => {
 
   it('bypasses the cache entirely when API_CACHE_ENABLED=false', async () => {
     process.env.API_CACHE_ENABLED = 'false';
-    const owner = await createTestUser();
+    const owner = await createCacheTestUser();
     const auth = { Authorization: `Bearer ${owner.token}` };
     await request.get('/api/transactions/stats').set(auth);
     const again = await request.get('/api/transactions/stats').set(auth);

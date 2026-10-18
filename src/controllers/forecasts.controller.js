@@ -276,7 +276,7 @@ const generate = async (req, res, next) => {
     const timezone = await getCafeTimezone(cafeId);
     const targetDate = parseRequestedDay(date, timezone);
     const forecast = await generateForecast(cafeId, targetDate, { origin: 'manual' });
-    clearApiCache();
+    clearApiCache({ cafeId });
     return res.status(200).json({
       success: true,
       forecast: forecastForApi(forecast, timezone),
@@ -336,7 +336,7 @@ const updateFactors = async (req, res, next) => {
 
     const today = zonedDayStart(new Date(), safeTimezone(cafe.timezone));
     await Forecast.deleteMany({ cafeId: cafe._id, date: { $gte: today } });
-    clearApiCache();
+    clearApiCache({ cafeId: cafe._id });
 
     const effective = getForecastSettings(cafe, plan);
     return res.status(200).json({
@@ -522,7 +522,7 @@ const getHistory = async (req, res, next) => {
     const pagedRows = rows.slice((currentPage - 1) * limit, currentPage * limit);
 
     if (generated > 0) {
-      clearApiCache();
+      clearApiCache({ cafeId });
     }
 
     return res.status(200).json({

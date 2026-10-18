@@ -204,5 +204,6 @@ describe('forecast controller cafe-local dates', () => {
 
     expect(mockGenerateForecast).toHaveBeenCalledTimes(1);
     expect(mockClearApiCache).toHaveBeenCalledTimes(1);
+    expect(mockClearApiCache).toHaveBeenCalledWith({ cafeId: cafeId });
   });
 });
