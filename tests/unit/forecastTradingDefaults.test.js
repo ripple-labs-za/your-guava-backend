@@ -40,6 +40,15 @@ const sundaySales = () => Array.from({ length: 8 }, (_, i) => ({
 
 afterEach(() => jest.restoreAllMocks());
 
+it('keeps ignored POS lines and unknown hours out of the hourly demand profile', () => {
+  const { buildHourlyProfile } = require('../../src/services/forecast/history');
+  const profile = buildHourlyProfile([
+    { hour: 7, items: [{ name: 'Coffee', quantity: 10 }, { name: 'Cash out', quantity: 90, menuItemStatus: 'ignored' }] },
+    { hour: 8, hourKnown: false, items: [{ name: 'Coffee', quantity: 20 }] },
+  ]);
+  expect([...profile]).toEqual([[7, 10]]);
+});
+
 describe('trading hours a cafe never saved', () => {
   it('treats a default-closed day as open when the cafe’s own sales show it trades', async () => {
     stubModels({ transactions: sundaySales() }); // no tradingHours on the cafe
