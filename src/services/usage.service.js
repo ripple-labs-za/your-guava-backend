@@ -11,6 +11,7 @@ const meter = require('./usage/meter');
 
 module.exports = {
   FEATURE_COSTS: meter.FEATURE_COSTS,
+  historyBackfillCreditsPerDay: meter.historyBackfillCreditsPerDay,
   billingAccessForOrganization: policy.billingAccessForOrganization,
   billingGraceDays: policy.billingGraceDays,
   billingRequiredError: policy.billingRequiredError,

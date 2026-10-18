@@ -6,13 +6,16 @@ const Transaction = require('../models/Transaction.model');
 const {
   FORECAST_MODEL_VERSION,
   generateForecast,
+  generateForecastsForDates,
   invalidatePlanningForecasts,
   updateForecastActuals,
   BACKTEST_BASIS_NOTE,
 } = require('../services/forecast.service');
+const { meterGuavaCredits, historyBackfillCreditsPerDay } = require('../services/usage.service');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const {
   DEFAULT_FORECAST_SETTINGS,
+  validateForecastSettingsInput,
   applyForecastSettingsUpdate,
   getFactorEntitlements,
   getForecastSettings,
@@ -29,6 +32,27 @@ const { activeCafeId } = require('../utils/tenancy');
 
 const REQUIRED_PLANNING_FACTOR_KEYS = ['weather', 'loadShedding', 'holiday', 'payday', 'events'];
 const HISTORY_BACKFILL_BATCH_SIZE = 14;
+// D-005: serialize charged builds of a cafe/day on this single instance. Re-check
+// inside the queue so a second user never reserves credits for a day already built.
+const historyBackfills = new Map();
+const serializeHistoryBackfill = async (key, run) => {
+  const previous = historyBackfills.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(run);
+  historyBackfills.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (historyBackfills.get(key) === current) historyBackfills.delete(key);
+  }
+};
+const HISTORY_MAX_RANGE_DAYS = 366;
+// What buildHistoryRow and needsHistoryForecastRefresh read, and nothing else. Item detail is reduced to each item's factor keys.
+const HISTORY_ROW_PROJECTION = [
+  'date dateKey origin modelVersion trainingCutoff availability totalPredictedRevenue actualRevenue actualTransactionCount',
+  'actualsUpdatedAt accuracy itemAccuracy signals factors calibration trainingData generatedAt factorSettings factorEntitlements',
+  'items.factors.key',
+].join(' ');
+
 // Live scored days needed before the headline accuracy stops leaning on
 // backtests. Five is a working week: enough that one bad Saturday cannot move
 // the figure twenty points. See DECISIONS D-004.
@@ -237,34 +261,21 @@ const getWeek = async (req, res, next) => {
       { length: 7 },
       (_, index) => addZonedDays(today, index, timezone)
     );
-    // Resilient: a transient failure on one day still returns the other days.
-    const settled = await Promise.allSettled(
-      targetDates.map(async (targetDate) => {
-        const existingForecast = existingByDate.get(zonedDateKey(targetDate, timezone));
-        if (existingForecast && !needsPlanningRefresh(existingForecast, timezone, { inputsVersion })) {
-          return existingForecast;
-        }
-        return generateForecast(cafeId, targetDate, { origin: 'live' });
-      })
-    );
-    const forecasts = settled
-      .filter((result) => result.status === 'fulfilled' && result.value)
-      .map((result) => forecastForApi(result.value, timezone));
-    const failures = settled.flatMap((result, index) => (
-      result.status === 'rejected'
-        ? [{
-            dateKey: zonedDateKey(targetDates[index], timezone),
-            message: result.reason?.message || 'Forecast generation failed',
-          }]
-        : []
+    const stale = targetDates.filter((date) => needsPlanningRefresh(
+      existingByDate.get(zonedDateKey(date, timezone)), timezone, { inputsVersion }
     ));
+    const { forecasts: rebuilt, failures } = stale.length > 0
+      ? await generateForecastsForDates(cafeId, stale, { origin: 'live' })
+      : { forecasts: [], failures: [] };
+    const staleKeys = new Set(stale.map((date) => zonedDateKey(date, timezone)));
+    const byDate = new Map(existing.filter((forecast) => !staleKeys.has(zonedDateKey(forecast.date, timezone)))
+      .map((forecast) => [zonedDateKey(forecast.date, timezone), forecast]));
+    for (const forecast of rebuilt) if (forecast) byDate.set(zonedDateKey(forecast.date, timezone), forecast);
+    const forecasts = targetDates.map((date) => byDate.get(zonedDateKey(date, timezone)))
+      .filter(Boolean).map((forecast) => forecastForApi(forecast, timezone));
     const insufficientDays = forecasts
       .filter((forecast) => forecast.availability?.status === 'insufficient_data')
       .map((forecast) => forecast.dateKey);
-
-    settled
-      .filter((result) => result.status === 'rejected')
-      .forEach((result) => console.error('[forecasts] week day generation failed:', result.reason?.message));
 
     return res.status(200).json({
       success: true,
@@ -344,12 +355,15 @@ const updateFactors = async (req, res, next) => {
   try {
     const cafe = await Cafe.findById(activeCafeId(req));
     if (!cafe) return res.status(404).json({ success: false, message: 'Cafe not found' });
+    const input = Object.prototype.hasOwnProperty.call(req.body || {}, 'settings') ? req.body.settings : req.body;
+    const invalid = validateForecastSettingsInput(input);
+    if (invalid) return res.status(400).json({ success: false, code: 'INVALID_FORECAST_SETTINGS', message: invalid });
     const org = await Organization.findById(req.user.orgId).lean();
     const plan = org?.plan || 'starter';
 
     const { settings: savedSettings, lockedChange } = applyForecastSettingsUpdate(
       cafe,
-      req.body.settings || req.body || {},
+      input,
       plan
     );
     if (lockedChange) {
@@ -470,8 +484,10 @@ const getHistory = async (req, res, next) => {
     const yesterday = addZonedDays(new Date(), -1, timezone);
     const requestedEnd = parseRequestedDay(req.query.endDate, timezone) || yesterday;
     const endDay = requestedEnd > yesterday ? yesterday : requestedEnd;
+    const earliestStart = addZonedDays(endDay, -(HISTORY_MAX_RANGE_DAYS - 1), timezone);
     const requestedStart = parseRequestedDay(req.query.startDate, timezone);
-    const startDay = requestedStart || addZonedDays(endDay, -(days - 1), timezone);
+    const rangeClamped = Boolean(requestedStart && requestedStart < earliestStart);
+    const startDay = requestedStart ? (rangeClamped ? earliestStart : requestedStart) : addZonedDays(endDay, -(days - 1), timezone);
     const endExclusive = addZonedDays(endDay, 1, timezone);
 
     if (startDay > endDay) {
@@ -517,23 +533,48 @@ const getHistory = async (req, res, next) => {
       cafeId,
       date: { $gte: startDay, $lt: endExclusive },
     })
+      .select(HISTORY_ROW_PROJECTION)
       .lean();
 
     const forecastByDate = new Map(
       forecasts.map((forecast) => [zonedDateKey(forecast.date, timezone), forecast])
     );
     let generated = 0;
+    const creditsPerDay = historyBackfillCreditsPerDay();
+    let creditsUsed = 0;
     let missingDateKeys = dateKeys.filter((dateKey) => needsHistoryForecastRefresh(forecastByDate.get(dateKey)));
 
     if (syncBackfillLimit > 0 && missingDateKeys.length > 0) {
       const syncDates = missingDateKeys.slice(-syncBackfillLimit).reverse();
 
       for (const dateKey of syncDates) {
-        const forecast = await ensureHistoryForecast(cafeId, zonedDayStart(dateKey, timezone));
-        if (forecast) {
-          forecastByDate.set(dateKey, typeof forecast.toObject === 'function' ? forecast.toObject() : forecast);
-          generated += 1;
-        }
+        await serializeHistoryBackfill(`${cafeId}:${dateKey}`, async () => {
+          const current = await Forecast.findOne({ cafeId, date: zonedDayStart(dateKey, timezone) }).lean();
+          if (current && !needsHistoryForecastRefresh(current)) {
+            forecastByDate.set(dateKey, current);
+            return;
+          }
+          let built = null;
+          const { result, replayed } = await meterGuavaCredits({
+            orgId: req.user.orgId,
+            cafeId,
+            userId: req.user.id,
+            featureKey: 'history_backfill_day',
+            credits: creditsPerDay,
+            relatedEntity: { kind: 'forecast_day', id: dateKey },
+            idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}`,
+            run: async () => {
+              built = await ensureHistoryForecast(cafeId, zonedDayStart(dateKey, timezone));
+              return { forecastId: built ? String(built._id) : null, dateKey };
+            },
+          });
+          const forecast = built || (result?.forecastId ? await Forecast.findOne({ _id: result.forecastId, cafeId }).lean() : null);
+          if (forecast) {
+            forecastByDate.set(dateKey, typeof forecast.toObject === 'function' ? forecast.toObject() : forecast);
+            generated += 1;
+            if (!replayed) creditsUsed += creditsPerDay;
+          }
+        });
       }
 
       missingDateKeys = dateKeys.filter((dateKey) => needsHistoryForecastRefresh(forecastByDate.get(dateKey)));
@@ -571,6 +612,7 @@ const getHistory = async (req, res, next) => {
       rows: pagedRows,
       meta: {
         days,
+        rangeClamped,
         startDate: zonedDateKey(startDay, timezone),
         endDate: zonedDateKey(endDay, timezone),
         totalTradingDays: dateKeys.length,
@@ -583,6 +625,8 @@ const getHistory = async (req, res, next) => {
           pendingDays: missingDateKeys.length,
           batchSize: HISTORY_BACKFILL_BATCH_SIZE,
           resumable: true,
+          creditsPerDay,
+          creditsUsed,
           nextRequest: missingDateKeys.length > 0 ? 'backfill=sync' : null,
         },
         liveAccuracy,
@@ -668,7 +712,7 @@ const getRecent = async (req, res, next) => {
 };
 
 module.exports = {
-  _test: { needsPlanningRefresh, GENERATE_HORIZON_DAYS },
+  _test: { HISTORY_ROW_PROJECTION, HISTORY_MAX_RANGE_DAYS, needsPlanningRefresh, GENERATE_HORIZON_DAYS },
   getToday,
   getTomorrow,
   getWeek,

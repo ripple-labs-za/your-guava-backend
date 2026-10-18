@@ -14,6 +14,16 @@ const FEATURE_COSTS = {
   history_backfill_day: { credits: 1, label: 'Historical forecast backfill day', provider: 'weather' },
 };
 
+// D-018: backfill days are charged at the catalogue price unless the operator sets HISTORY_BACKFILL_CREDITS_PER_DAY (0 = free).
+const historyBackfillCreditsPerDay = () => {
+  const raw = process.env.HISTORY_BACKFILL_CREDITS_PER_DAY;
+  const parsed = Number(raw);
+  if (raw === undefined || raw === '' || !Number.isInteger(parsed) || parsed < 0 || parsed > 5) {
+    return FEATURE_COSTS.history_backfill_day.credits;
+  }
+  return parsed;
+};
+
 const USAGE_DIAGNOSTICS_FIELD = '__usageDiagnostics';
 
 const isInFlightConflict = (error) =>
@@ -247,5 +257,6 @@ const consumeGuavaCredits = async (orgId, amount = 1, options = {}) => {
 };
 
 module.exports = {
+  historyBackfillCreditsPerDay,
   FEATURE_COSTS, USAGE_DIAGNOSTICS_FIELD, withUsageDiagnostics, meterGuavaCredits, consumeGuavaCredits,
 };

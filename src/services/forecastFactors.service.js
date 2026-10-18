@@ -142,6 +142,14 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const isPlainObject = (value) =>
   value != null && typeof value === 'object' && !Array.isArray(value);
 
+const validateForecastSettingsInput = (input) => {
+  if (!isPlainObject(input)) return 'settings must be an object';
+  for (const section of Object.keys(DEFAULT_FORECAST_SETTINGS)) {
+    if (input[section] !== undefined && !isPlainObject(input[section])) return `settings.${section} must be an object`;
+  }
+  return null;
+};
+
 const mergeDeep = (base, override) => {
   const merged = clone(base);
   if (!isPlainObject(override)) return merged;
@@ -149,7 +157,7 @@ const mergeDeep = (base, override) => {
   for (const [key, value] of Object.entries(override)) {
     if (isPlainObject(value) && isPlainObject(merged[key])) {
       merged[key] = mergeDeep(merged[key], value);
-    } else if (value !== undefined) {
+    } else if (value !== undefined && !(isPlainObject(merged[key]) && !isPlainObject(value))) {
       merged[key] = value;
     }
   }
@@ -540,6 +548,7 @@ const multiplyFactors = (factors) =>
   factors.reduce((product, current) => product * (Number(current.multiplier) || 1), 1);
 
 module.exports = {
+  validateForecastSettingsInput,
   weatherTemperature,
   DEFAULT_FORECAST_SETTINGS,
   FACTOR_CATALOG,

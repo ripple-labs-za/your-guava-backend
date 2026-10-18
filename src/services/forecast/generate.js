@@ -24,7 +24,7 @@ const {
   bucketDateKeys, loadEventsByDateKey, loadStoredSignalsByDateKey, historicalCalendarSignals,
   deFactorItemBuckets, winsoriseBuckets, buildHourlyProfile,
 } = require('./history');
-const { computeSuggestedStockMap } = require('./stock');
+const { computeSuggestedStockMap, loadStockPairs } = require('./stock');
 
 const FORECAST_MODEL_VERSION = '2026-09-29.2';
 const MAX_STORED_FORECAST_ITEMS = 25;
@@ -184,47 +184,80 @@ const describeClosedDay = (trading, { salesCount = 0, observedWeeks = 0, maxWeek
  * @param {Date|string} targetDate
  * @returns {Promise<Forecast>}
  */
-const generateForecast = async (cafeId, targetDate, options = {}) => {
+// Only what the forecast reads. rawName, prices-at-sale, review status and ids are left in the database.
+const TRANSACTION_HISTORY_PROJECTION = 'date dayOfWeek hour hourKnown items.menuItemStatus items.name items.quantity items.unitPrice';
+
+const loadForecastContext = async (cafeId) => {
   const cafe = await Cafe.findById(cafeId).lean();
   if (!cafe) {
     const error = new Error('Cafe not found');
     error.statusCode = 404;
     throw error;
   }
-  const timezone = safeTimezone(cafe.timezone);
-  const inputsVersion = Number(cafe.forecastInputsVersion) || 0;
-  const target = zonedDayStart(targetDate, timezone);
-  if (!target) {
-    const error = new Error('Invalid forecast date');
-    error.statusCode = 400;
-    throw error;
-  }
-  const nextTarget = addZonedDays(target, 1, timezone);
-  const targetDayOfWeek = zonedDayOfWeek(target, timezone);
-
-  // Settings first: the history window depends on them. The plan is resolved
-  // here too, because the lookback is a Pro factor and the window has to follow
-  // the plan-clamped value, not whatever is stored on the cafe.
-  const org = cafe?.orgId ? await Organization.findById(cafe.orgId).lean() : null;
+  const org = cafe.orgId ? await Organization.findById(cafe.orgId).lean() : null;
   const plan = org?.plan || 'starter';
   const settings = getForecastSettings(cafe, plan);
-  const entitlements = getFactorEntitlements(plan);
-  const learningEnabled = factorUnlocked(plan, 'learning') && settings.learning.enabled;
+  return {
+    cafe,
+    plan,
+    settings,
+    entitlements: getFactorEntitlements(plan),
+    learningEnabled: factorUnlocked(plan, 'learning') && settings.learning.enabled,
+    timezone: safeTimezone(cafe.timezone),
+    inputsVersion: Number(cafe.forecastInputsVersion) || 0,
+  };
+};
 
-  // Fetch the lookback's worth of same-day-of-week transactions. This was a
-  // fixed 56 days while the Factors page let a Pro lookback go to 16 weeks, so
-  // week buckets 8-15 could never be populated and a longer lookback was
-  // inert; a shorter one merely fetched rows that groupByWeekAndItem then
-  // discarded. Bucket k holds days k*7+1 to (k+1)*7 before the target, so a
-  // window of exactly maxWeeks*7 days feeds every bucket and nothing else.
+// Everything a run of target days needs, read once. Calibration and stock are taken as of the first target: later days in a
+// planning week add no actuals, so the only difference is up to six older days at the far edge of the 60- and 30-day windows.
+const loadForecastInputs = async (cafeId, targets, context, { completedDaysOnly = false } = {}) => {
+  const { timezone, settings, learningEnabled } = context;
+  const first = targets[0];
+  const last = targets[targets.length - 1];
+  const afterLast = addZonedDays(last, 1, timezone);
+  const maxWeeks = settings.history.maxWeeks;
+  const historyCutoff = completedDaysOnly
+    ? new Date(Math.min(first.getTime(), zonedDayStart(new Date(), timezone).getTime())) : first;
+  const historyStart = addZonedDays(first, -maxWeeks * 7, timezone);
+  const historyKeys = [...new Set(targets.flatMap((target) => bucketDateKeys(target, maxWeeks, timezone)))];
+  // Only the weekdays being forecast: one for a single day (/today, /generate, each backfill day), all seven for a week. Keeps the
+  // single-day paths on the { cafeId, status, dayOfWeek, date } index instead of reading seven times the rows they need.
+  const weekdays = [...new Set(targets.map((target) => zonedDayOfWeek(target, timezone)))];
+  const [transactions, latestSale, eventsByKey, storedSignalsByKey, calibration, existing] = await Promise.all([
+    Transaction.find({ cafeId, status: 'approved', dayOfWeek: { $in: weekdays }, date: { $gte: historyStart, $lt: historyCutoff } })
+      .select(TRANSACTION_HISTORY_PROJECTION).lean(),
+    Transaction.findOne({ cafeId, status: 'approved', date: { $lt: afterLast } }).sort({ date: -1 }).select('date').lean(),
+    loadEventsByDateKey(cafeId, zonedDateKey(historyStart, timezone), zonedDateKey(afterLast, timezone), timezone),
+    loadStoredSignalsByDateKey(cafeId, historyKeys),
+    learningEnabled ? computeForecastCalibration(cafeId, first, timezone) : Promise.resolve(null),
+    Forecast.find({ cafeId, date: { $gte: first, $lt: afterLast } }).select('_id date inputsVersion').lean(),
+  ]);
+  const names = [...new Set(transactions.flatMap((tx) => (tx.items || []).map((line) => line.name).filter(Boolean)))];
+  const [itemDocs, stockPairsByItem] = await Promise.all([
+    Item.find({ cafeId, name: { $in: names } }).select('_id name category avgPrice').lean(),
+    loadStockPairs(cafeId, first, timezone, names),
+  ]);
+  return {
+    transactions,
+    latestSale,
+    eventsByKey,
+    storedSignalsByKey,
+    calibration,
+    existingByKey: new Map(existing.map((doc) => [zonedDateKey(doc.date, timezone), doc])),
+    itemDocs,
+    stockPairsByItem,
+  };
+};
+
+const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {}) => {
+  const { cafe, timezone, inputsVersion, plan, settings, entitlements, learningEnabled } = context;
+  const nextTarget = addZonedDays(target, 1, timezone);
+  const targetDayOfWeek = zonedDayOfWeek(target, timezone);
   const historyWindowStart = addZonedDays(target, -settings.history.maxWeeks * 7, timezone);
 
-  const transactions = await Transaction.find({
-    cafeId,
-    dayOfWeek: targetDayOfWeek,
-    status: 'approved',
-    date: { $gte: historyWindowStart, $lt: target },
-  }).lean();
+  const transactions = inputs.transactions.filter((tx) => (
+    tx.dayOfWeek === targetDayOfWeek && tx.date >= historyWindowStart && tx.date < target
+  ));
 
   const historyDates = transactions.map((tx) => new Date(tx.date));
   const firstTransactionDate =
@@ -243,12 +276,10 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   // Fetch signals, weather, and events in parallel
   const targetKey = zonedDateKey(target, timezone);
   const historyKeys = bucketDateKeys(target, settings.history.maxWeeks, timezone);
-  const [signals, weather, eventsByKey, storedSignalsByKey, latestSale] = await Promise.all([
+  const { eventsByKey, storedSignalsByKey, latestSale } = inputs;
+  const [signals, weather] = await Promise.all([
     getSignalsForDate(localCalendarDate, { city: cafe.location?.city, timezone }),
     hasCoordinates ? getWeatherForecast(lat, lng, localCalendarDate) : Promise.resolve(null),
-    loadEventsByDateKey(cafeId, historyKeys[historyKeys.length - 1], zonedDateKey(nextTarget, timezone), timezone),
-    loadStoredSignalsByDateKey(cafeId, historyKeys),
-    Transaction.findOne({ cafeId, status: 'approved', date: { $lt: nextTarget } }).sort({ date: -1 }).select('date').lean(),
   ]);
   const events = eventsByKey.get(targetKey) || [];
   const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
@@ -283,7 +314,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   const forecastItemNames = itemTotals.map((i) => i.name);
 
   // Fetch item categories
-  const itemDocs = await Item.find({ cafeId, name: { $in: forecastItemNames } }).lean();
+  const itemDocs = inputs.itemDocs;
   const categoryMap = new Map(itemDocs.map((i) => [i.name, i.category]));
   const itemDocMap = new Map(itemDocs.map((item) => [item.name, item]));
 
@@ -299,9 +330,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
       : `${Number(((trading.multiplier - 1) * 100).toFixed(1))}%`,
     reason: trading.reason,
   };
-  const calibration = learningEnabled
-    ? await computeForecastCalibration(cafeId, target, timezone)
-    : {
+  const calibration = inputs.calibration || {
         lookbackDays: CALIBRATION_LOOKBACK_DAYS,
         sampleSize: 0,
         overallMultiplier: 1,
@@ -393,17 +422,15 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     predictedQtyByItem,
     settings,
     target,
-    timezone
+    timezone,
+    { pairsByItem: inputs.stockPairsByItem }
   );
   for (const item of forecastItems) {
     item.suggestedStock = suggestedStockByItem.get(item.itemName) ?? item.predictedQty;
   }
 
   // Upsert forecast document
-  const existingForecast = await Forecast.findOne({
-    cafeId,
-    date: { $gte: target, $lt: nextTarget },
-  }).select('_id').lean();
+  const existingForecast = inputs.existingByKey.get(targetKey);
   const dateKey = zonedDateKey(target, timezone);
   const origin = ['live', 'backfill', 'manual'].includes(options.origin)
     ? options.origin
@@ -517,36 +544,67 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   return forecast;
 };
 
-/**
- * Generates forecasts for the next 7 days.
- * @param {string|ObjectId} cafeId
- * @returns {Promise<Forecast[]>}
- */
-const generateWeekForecast = async (cafeId) => {
-  const cafe = await Cafe.findById(cafeId).select('timezone').lean();
-  if (!cafe) {
-    const error = new Error('Cafe not found');
-    error.statusCode = 404;
+const generateForecast = async (cafeId, targetDate, options = {}) => {
+  const context = options.context || await loadForecastContext(cafeId);
+  const target = zonedDayStart(targetDate, context.timezone);
+  if (!target) {
+    const error = new Error('Invalid forecast date');
+    error.statusCode = 400;
     throw error;
   }
-  const timezone = safeTimezone(cafe.timezone);
-  const today = zonedDayStart(new Date(), timezone);
+  const inputs = options.inputs || await loadForecastInputs(cafeId, [target], context);
+  return buildAndSaveForecast(cafeId, target, context, inputs, options);
+};
 
-  const targetDates = Array.from(
-    { length: 7 },
-    (_, index) => addZonedDays(today, index, timezone)
-  );
+const generateForecastsForDates = async (cafeId, dates, { origin = 'live', context: given } = {}) => {
+  const context = given || await loadForecastContext(cafeId);
+  const targets = dates.map((date) => zonedDayStart(date, context.timezone)).sort((a, b) => a - b);
+  if (targets.length === 0) return { forecasts: [], failures: [] };
+  const inputs = await loadForecastInputs(cafeId, targets, context, { completedDaysOnly: true });
+  // Each day's item loop is synchronous. Yield between days so a shared read does not
+  // turn seven short calculations into one long event-loop stall.
+  const settled = [];
+  for (const target of targets) {
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      settled.push({ status: 'fulfilled', value: await buildAndSaveForecast(cafeId, target, context, inputs, { origin }) });
+    } catch (reason) {
+      settled.push({ status: 'rejected', reason });
+    }
+  }
+  const forecasts = [];
+  const failures = [];
+  settled.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      forecasts.push(result.value);
+      return;
+    }
+    const dateKey = zonedDateKey(targets[index], context.timezone);
+    const message = result.reason?.message || 'Forecast generation failed';
+    console.error(`[forecasts] week day generation failed for ${dateKey}:`, message);
+    failures.push({ dateKey, message });
+  });
+  return { forecasts, failures };
+};
 
-  // Resilient: a transient failure on one day must not lose the whole week.
-  const results = await Promise.allSettled(
-    targetDates.map((targetDate) => generateForecast(cafeId, targetDate, { origin: 'live' }))
-  );
-  return results
-    .filter((result) => result.status === 'fulfilled')
-    .map((result) => result.value);
+const generateWeekForecast = async (cafeId, { now = new Date() } = {}) => {
+  const context = await loadForecastContext(cafeId);
+  const today = zonedDayStart(now, context.timezone);
+  const targets = Array.from({ length: 7 }, (_, index) => addZonedDays(today, index, context.timezone));
+  const { forecasts, failures } = await generateForecastsForDates(cafeId, targets, { origin: 'live', context });
+  if (failures.length > 0) {
+    const detail = failures.map((failure) => `${failure.dateKey} (${failure.message})`).join('; ');
+    const error = new Error(`Forecast generation failed for ${failures.length} of 7 days: ${detail}`.slice(0, 500));
+    error.code = 'FORECAST_WEEK_PARTIAL';
+    error.failures = failures;
+    error.forecasts = forecasts;
+    throw error;
+  }
+  return forecasts;
 };
 
 module.exports = {
+  TRANSACTION_HISTORY_PROJECTION, loadForecastContext, loadForecastInputs, buildAndSaveForecast, generateForecastsForDates,
   invalidatePlanningForecasts, SIGNAL_RETRY_AFTER_MS,
   FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
 };

@@ -34,7 +34,11 @@ router.get('/today', forecastCache, getToday);
 router.get('/tomorrow', forecastCache, getTomorrow);
 router.get('/week', forecastCache, getWeek);
 router.get('/recent', forecastCache, getRecent);
-router.get('/history', cacheHistoryReads, getHistory);
+const limitBackfillCompute = (req, res, next) => {
+  if (req.query.backfill !== 'sync') return next();
+  return requireCreditSpend(req, res, () => forecastComputeLimiter(req, res, next));
+};
+router.get('/history', cacheHistoryReads, limitBackfillCompute, getHistory);
 router.get('/factors', getFactors);
 // Owner-only: configuration and destructive re-processing (tests/fixtures/rbacTable.js states the whole policy).
 router.put('/factors', ownerOnly, updateFactors);

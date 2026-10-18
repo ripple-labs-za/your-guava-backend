@@ -64,44 +64,38 @@ const computeSuggestedStockFromPairs = (predictedQty, pairs, settings) => {
   return Math.round(predictedQty * safetyMargin);
 };
 
+const loadStockPairs = async (cafeId, target, timezone, itemNames) => {
+  const pairsByItem = new Map(itemNames.map((name) => [name, []]));
+  if (itemNames.length === 0) return pairsByItem;
+  const docs = await Forecast.find({
+    cafeId,
+    date: { $gte: addZonedDays(target, -30, timezone), $lt: target },
+    'items.itemName': { $in: itemNames },
+    'items.actualQty': { $exists: true, $ne: null },
+    calibrationExcluded: { $ne: true },
+  }).select('items.itemName items.predictedQty items.actualQty').lean();
+  for (const doc of docs) {
+    for (const item of doc.items || []) {
+      if (pairsByItem.has(item.itemName) && item.actualQty != null && item.predictedQty != null) {
+        pairsByItem.get(item.itemName).push({ predicted: item.predictedQty, actual: item.actualQty });
+      }
+    }
+  }
+  return pairsByItem;
+};
+
 const computeSuggestedStockMap = async (
   cafeId,
   predictedQtyByItem,
   settings,
   targetDate = new Date(),
-  timezone = 'Africa/Johannesburg'
+  timezone = 'Africa/Johannesburg',
+  { pairsByItem: givenPairs } = {}
 ) => {
   const itemNames = [...predictedQtyByItem.keys()];
   if (itemNames.length === 0) return new Map();
 
-  const target = zonedDayStart(targetDate, timezone);
-  const thirtyDaysAgo = addZonedDays(target, -30, timezone);
-
-  // Days the item sold nothing are evidence too -- arguably the most important
-  // evidence for a stock buffer. Selecting only actualQty > 0 dropped every
-  // negative observation, so the measured bias could only ever point upward and
-  // the buffer could only ever over-order. A scored day where an item sold none
-  // stores actualQty 0; a day with no trading at all leaves it unset, so those
-  // are still excluded.
-  const pastForecasts = await Forecast.find({
-    calibrationExcluded: { $ne: true },
-    cafeId,
-    date: { $gte: thirtyDaysAgo, $lt: target },
-    'items.itemName': { $in: itemNames },
-    'items.actualQty': { $exists: true, $ne: null },
-  })
-    .select('items')
-    .lean();
-
-  const itemNameSet = new Set(itemNames);
-  const pairsByItem = new Map(itemNames.map((name) => [name, []]));
-  for (const doc of pastForecasts) {
-    for (const item of doc.items || []) {
-      if (itemNameSet.has(item.itemName) && item.actualQty != null && item.predictedQty != null) {
-        pairsByItem.get(item.itemName).push({ predicted: item.predictedQty, actual: item.actualQty });
-      }
-    }
-  }
+  const pairsByItem = givenPairs || await loadStockPairs(cafeId, zonedDayStart(targetDate, timezone), timezone, itemNames);
 
   return new Map(
     itemNames.map((itemName) => [
@@ -116,5 +110,5 @@ const computeSuggestedStockMap = async (
 };
 
 module.exports = {
-  computeSuggestedStockFromPairs, computeSuggestedStockMap,
+  loadStockPairs, computeSuggestedStockFromPairs, computeSuggestedStockMap,
 };

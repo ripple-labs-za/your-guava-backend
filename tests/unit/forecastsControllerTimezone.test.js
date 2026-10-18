@@ -25,6 +25,9 @@ jest.mock('../../src/services/forecast.service', () => ({
   BACKTEST_BASIS_NOTE: 'note',
   FORECAST_MODEL_VERSION: 'test-model',
   generateForecast: (...args) => mockGenerateForecast(...args),
+  generateForecastsForDates: async (id, dates, options) => ({
+    forecasts: await Promise.all(dates.map((date) => mockGenerateForecast(id, date, options))), failures: [],
+  }),
   updateForecastActuals: (...args) => mockUpdateForecastActuals(...args),
 }));
 jest.mock('../../src/middleware/cache.middleware', () => ({ clearApiCache: (...args) => mockClearApiCache(...args) }));
@@ -41,7 +44,10 @@ jest.mock('../../src/services/anthropic.service', () => ({
   refreshInsights: jest.fn(),
   streamBusinessChatResponse: jest.fn(),
 }));
-jest.mock('../../src/services/usage.service', () => ({ meterGuavaCredits: jest.fn() }));
+jest.mock('../../src/services/usage.service', () => ({
+  historyBackfillCreditsPerDay: () => 1,
+  meterGuavaCredits: async ({ run }) => ({ result: await run(), replayed: false }),
+}));
 
 const controller = require('../../src/controllers/forecasts.controller');
 
@@ -62,13 +68,18 @@ const response = () => {
 const timezoneQuery = (timezone = 'America/New_York') => ({
   select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue({ timezone }) }),
 });
+const forecastQuery = (value) => {
+  const promise = Promise.resolve(value);
+  promise.lean = () => promise;
+  return promise;
+};
 
 describe('forecast controller cafe-local dates', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers().setSystemTime(new Date('2026-03-08T07:30:00.000Z'));
     mockCafeFindById.mockReturnValue(timezoneQuery());
-    mockForecastFindOne.mockResolvedValue(null);
+    mockForecastFindOne.mockReturnValue(forecastQuery(null));
     mockGenerateForecast.mockImplementation(async (_id, date) => ({ date }));
   });
 
@@ -142,7 +153,7 @@ describe('forecast controller cafe-local dates', () => {
     jest.setSystemTime(new Date('2026-03-10T12:00:00.000Z'));
     mockCafeFindOne.mockReturnValue(timezoneQuery());
     mockTransactionAggregate.mockResolvedValue([]);
-    mockForecastFind.mockReturnValue({ lean: jest.fn().mockResolvedValue([]) });
+    mockForecastFind.mockReturnValue({ select: jest.fn().mockReturnThis(), lean: jest.fn().mockResolvedValue([]) });
     const res = response();
 
     await controller.getHistory(req({
@@ -171,8 +182,8 @@ describe('forecast controller cafe-local dates', () => {
       actualRevenue: 100,
       transactionCount: 1,
     }]);
-    mockForecastFind.mockReturnValue({ lean: jest.fn().mockResolvedValue([]) });
-    mockForecastFindOne.mockResolvedValue(null);
+    mockForecastFind.mockReturnValue({ select: jest.fn().mockReturnThis(), lean: jest.fn().mockResolvedValue([]) });
+    mockForecastFindOne.mockReturnValue(forecastQuery(null));
     mockGenerateForecast.mockResolvedValue({
       _id: 'forecast-1',
       date: new Date('2026-03-08T05:00:00.000Z'),
