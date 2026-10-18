@@ -1,4 +1,3 @@
-// Uninstalled draft for BE-09-T02. No results claimed before selection and claim.
 const { singleFlight } = require('../../src/utils/singleFlight');
 const { syncWindow } = require('../../src/services/integrations/salesSummary');
 const { pickAccount, isValidAccountId } = require('../../src/services/integrations/common');
@@ -55,6 +54,32 @@ describe('closed local day windows', () => {
 });
 
 describe('single flight lifecycle', () => {
+  it('queues exclusive work after a failed refresh and keeps later refreshes separate', async () => {
+    let rejectFirst;
+    let finishExclusive;
+    const order = [];
+    const first = singleFlight('exclusive-order', () => new Promise((_, reject) => { rejectFirst = reject; }));
+    const failed = first.catch(() => {});
+    await Promise.resolve();
+    const exclusive = singleFlight('exclusive-order', () => {
+      order.push('disconnect');
+      return new Promise((resolve) => { finishExclusive = resolve; });
+    }, { exclusive: true });
+    const refresh = singleFlight('exclusive-order', () => { order.push('refresh'); return 'access-token'; });
+    expect(singleFlight('exclusive-order', () => 'should not run')).toBe(refresh);
+    expect(exclusive).not.toBe(first);
+    expect(refresh).not.toBe(exclusive);
+    rejectFirst(new Error('old grant failed'));
+    await failed;
+    // Wait until the queued lifecycle operation starts, without a timing budget.
+    while (!finishExclusive) await Promise.resolve();
+    expect(order).toEqual(['disconnect']);
+    finishExclusive('revoked');
+    await expect(exclusive).resolves.toBe('revoked');
+    await expect(refresh).resolves.toBe('access-token');
+    expect(order).toEqual(['disconnect', 'refresh']);
+    await expect(singleFlight('exclusive-order', () => 'next')).resolves.toBe('next');
+  });
   it('releases a failed flight so the next attempt can succeed', async () => {
     const run = jest.fn().mockRejectedValueOnce(new Error('first')).mockResolvedValueOnce('second');
     const first = singleFlight('test-failure', run);

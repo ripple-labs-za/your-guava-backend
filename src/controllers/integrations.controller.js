@@ -163,14 +163,30 @@ const callback = async (req, res, _next) => {
       requestedAccountId ? { [accountField]: requestedAccountId } : {}
     );
     const base = `accountingIntegrations.${provider}`;
-    await Cafe.updateOne({ _id: activeCafeId(req) }, { $set: {
-      [`${base}.connected`]: true,
-      [`${base}.accessToken`]: encryptSecret(tokens.accessToken),
-      [`${base}.refreshToken`]: encryptSecret(tokens.refreshToken),
-      [`${base}.expiresAt`]: new Date(Date.now() + (tokens.expiresIn || 1800) * 1000),
-      [`${base}.connectedAt`]: new Date(),
-      [`${base}.${accountField}`]: tokens[accountField],
-    } });
+    const cafeId = activeCafeId(req);
+    await singleFlight(`integration-refresh:${cafeId}:${provider}`, async () => {
+      const previous = await Cafe.findById(cafeId).select(`+${base}.refreshToken`).lean();
+      await Cafe.updateOne({ _id: cafeId }, {
+        $set: {
+          [`${base}.connected`]: true,
+          [`${base}.accessToken`]: encryptSecret(tokens.accessToken),
+          [`${base}.refreshToken`]: encryptSecret(tokens.refreshToken),
+          [`${base}.expiresAt`]: new Date(Date.now() + (tokens.expiresIn || 1800) * 1000),
+          [`${base}.connectedAt`]: new Date(),
+          [`${base}.${accountField}`]: tokens[accountField],
+        },
+        $unset: {
+          [`${base}.lastSyncedThrough`]: '',
+          [`${base}.lastSyncAt`]: '',
+          [`${base}.lastSyncStatus`]: '',
+          [`${base}.lastSyncError`]: '',
+        },
+      });
+      const oldRefresh = previous?.accountingIntegrations?.[provider]?.refreshToken;
+      if (oldRefresh && decryptSecret(oldRefresh) !== tokens.refreshToken) {
+        await revokeQuietly(provider, service, oldRefresh);
+      }
+    }, { exclusive: true });
     return res.status(200).json({ success: true });
   } catch (error) {
     if (isConfigError(error)) {
@@ -270,24 +286,27 @@ const disconnect = async (req, res, next) => {
     if (!service) return res.status(400).json({ success: false, message: 'Unknown provider' });
     const cafeId = activeCafeId(req);
     const base = `accountingIntegrations.${provider}`;
-    const cafe = await Cafe.findById(cafeId).select(`+${base}.refreshToken`).lean();
-    const revocation = await revokeQuietly(provider, service, cafe?.accountingIntegrations?.[provider]?.refreshToken);
-    await Cafe.updateOne({ _id: cafeId }, {
-      $set: {
-        [`${base}.connected`]: false,
-        [`${base}.accessToken`]: null,
-        [`${base}.refreshToken`]: null,
-        [`${base}.expiresAt`]: null,
-      },
-      $unset: {
-        [`${base}.${ACCOUNT_ID_FIELD[provider]}`]: '',
-        [`${base}.connectedAt`]: '',
-        [`${base}.lastSyncAt`]: '',
-        [`${base}.lastSyncStatus`]: '',
-        [`${base}.lastSyncError`]: '',
-        [`${base}.lastSyncedThrough`]: '',
-      },
-    });
+    const revocation = await singleFlight(`integration-refresh:${cafeId}:${provider}`, async () => {
+      const cafe = await Cafe.findById(cafeId).select(`+${base}.refreshToken`).lean();
+      const outcome = await revokeQuietly(provider, service, cafe?.accountingIntegrations?.[provider]?.refreshToken);
+      await Cafe.updateOne({ _id: cafeId }, {
+        $set: {
+          [`${base}.connected`]: false,
+          [`${base}.accessToken`]: null,
+          [`${base}.refreshToken`]: null,
+          [`${base}.expiresAt`]: null,
+        },
+        $unset: {
+          [`${base}.${ACCOUNT_ID_FIELD[provider]}`]: '',
+          [`${base}.connectedAt`]: '',
+          [`${base}.lastSyncAt`]: '',
+          [`${base}.lastSyncStatus`]: '',
+          [`${base}.lastSyncError`]: '',
+          [`${base}.lastSyncedThrough`]: '',
+        },
+      });
+      return outcome;
+    }, { exclusive: true });
     return res.status(200).json({ success: true, revocation });
   } catch (error) {
     return next(error);

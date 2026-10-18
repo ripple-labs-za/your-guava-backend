@@ -16,6 +16,18 @@ const resolveStatus = (err) => {
 
 const errorMiddleware = (err, req, res, next) => {
   if (res.headersSent) return next(err);
+  // An unwrapped axios error is still an upstream failure. Ignore its message,
+  // details and any opt-in fields; those did not come from our error helpers.
+  if (err?.isAxiosError === true) {
+    const upstreamStatus = err?.response?.status;
+    err = Object.assign(new Error('The upstream service could not complete the request. Please try again in a minute.'), {
+      statusCode: 502,
+      publicCode: upstreamStatus === 401 || upstreamStatus === 403 ? 'UPSTREAM_AUTH_FAILED' : 'UPSTREAM_ERROR',
+      exposeMessage: true,
+      upstreamStatus,
+      cause: err,
+    });
+  }
   let statusCode = resolveStatus(err);
   let message = err?.message || 'Internal Server Error';
   let details = err?.details;

@@ -241,6 +241,22 @@ it('logs an error\'s logContext as context and never sends it to the client', ()
 });
 
 describe('provider status boundary', () => {
+  it.each([[401, 'UPSTREAM_AUTH_FAILED'], [403, 'UPSTREAM_AUTH_FAILED'], [500, 'UPSTREAM_ERROR']])(
+    'gives raw axios %s a safe code and message in development and production', (status, code) => {
+      jest.spyOn(logger, 'error').mockImplementation(() => {});
+      for (const env of ['development', 'production']) {
+        process.env.NODE_ENV = env;
+        const response = createResponse();
+        errorMiddleware(Object.assign(new Error('secret upstream diagnostics'), {
+          isAxiosError: true, statusCode: 401, exposeMessage: true, publicCode: 'UNTRUSTED_PROVIDER_CODE',
+          details: { secret: 'provider payload' }, response: { status },
+        }), { method: 'GET', path: '/x' }, response, jest.fn());
+        expect(response.status).toHaveBeenCalledWith(502);
+        expect(response.json.mock.calls[0][0]).toMatchObject({ code });
+        expect(JSON.stringify(response.json.mock.calls[0][0])).not.toMatch(/secret|diagnostics|provider payload/);
+      }
+    }
+  );
   const originalNodeEnv = process.env.NODE_ENV;
   afterEach(() => { process.env.NODE_ENV = originalNodeEnv; jest.restoreAllMocks(); });
 it('answers an upstream axios 401 with 502 so the portal never reads it as its own session expiring', () => {

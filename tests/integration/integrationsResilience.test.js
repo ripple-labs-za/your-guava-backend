@@ -321,7 +321,6 @@ describe('sync sends each closed cafe-local day once', () => {
   });
 });
 
-// Uninstalled draft. Append inside the selected card's integration test only after next/claim.
 describe('refresh compare-and-set remains safe during disconnect and deploy overlap', () => {
   const deferred = () => {
     let resolve;
@@ -417,6 +416,143 @@ describe('refresh compare-and-set remains safe during disconnect and deploy over
     const current = await Cafe.findById(cafe._id).select('+yocoTokens.refreshToken').lean();
     expect(current.yocoConnected).toBe(false);
     expect(current.yocoTokens?.refreshToken).toBeFalsy();
+  });
+});
+
+describe('review regressions for connection ownership and lifecycle', () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((yes) => { resolve = yes; });
+    return { promise, resolve };
+  };
+
+  it('reconnect clears the previous account history atomically and then revokes its grant', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    await connectXero(cafeId, {
+      'accountingIntegrations.xero.lastSyncedThrough': new Date(),
+      'accountingIntegrations.xero.lastSyncAt': new Date(),
+      'accountingIntegrations.xero.lastSyncStatus': 'failed',
+      'accountingIntegrations.xero.lastSyncError': 'old account failure',
+    });
+    const state = await authState(token);
+    jest.spyOn(xeroService, 'exchangeCodeForTokens').mockResolvedValue({
+      accessToken: 'new-access', refreshToken: 'new-refresh', tenantId: 'tenant-2', expiresIn: 1800,
+    });
+    let atRevocation;
+    const revoke = jest.spyOn(xeroService, 'revokeToken').mockImplementation(async () => {
+      atRevocation = await xeroSecrets(cafeId);
+    });
+    const res = await request.post('/api/integrations/xero/callback').set('Authorization', `Bearer ${token}`)
+      .send({ code: 'new-grant', state });
+    expect(res.status).toBe(200);
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('refresh-1');
+    expect(decryptSecret(atRevocation.refreshToken)).toBe('new-refresh');
+    expect(atRevocation.tenantId).toBe('tenant-2');
+    for (const field of ['lastSyncedThrough', 'lastSyncAt', 'lastSyncStatus', 'lastSyncError']) {
+      expect(atRevocation[field]).toBeUndefined();
+    }
+    const current = await xeroSecrets(cafeId);
+    expect(current.lastSyncedThrough).toBeUndefined();
+    expect(current.lastSyncAt).toBeUndefined();
+    expect(current.lastSyncStatus).toBeUndefined();
+    expect(current.lastSyncError).toBeUndefined();
+  });
+
+  it('keeps concurrent expired Xero refreshes isolated between cafes', async () => {
+    const owners = await Promise.all([0, 1].map(async (i) => ({ cafeId: (await Cafe.create({
+      name: `Xero isolation ${i}`, orgId: new mongoose.Types.ObjectId(),
+    }))._id })));
+    await Promise.all(owners.map(({ cafeId }, i) => connectXero(cafeId, {
+      'accountingIntegrations.xero.refreshToken': encryptSecret(`refresh-${i}`),
+    })));
+    const gate = deferred();
+    const refresh = jest.spyOn(xeroService, 'refreshAccessToken').mockImplementation(async (token) => {
+      await gate.promise;
+      return { accessToken: `access-for-${token}`, refreshToken: `rotated-${token}`, expiresIn: 1800 };
+    });
+    const docs = await Promise.all(owners.map(({ cafeId }) => xeroSecrets(cafeId)));
+    const pending = owners.map(({ cafeId }, i) => refreshIntegrationAccessToken({
+      cafeId, provider: 'xero', service: xeroService, storedRefreshToken: docs[i].refreshToken,
+    }));
+    await new Promise(setImmediate);
+    gate.resolve();
+    expect(await Promise.all(pending)).toEqual(['access-for-refresh-0', 'access-for-refresh-1']);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    for (const [i, { cafeId }] of owners.entries()) {
+      const stored = await xeroSecrets(cafeId);
+      expect(decryptSecret(stored.accessToken)).toBe(`access-for-refresh-${i}`);
+      expect(decryptSecret(stored.refreshToken)).toBe(`rotated-refresh-${i}`);
+    }
+  });
+
+  it('keeps concurrent expired Yoco refreshes isolated between cafes', async () => {
+    const cafes = await Promise.all([0, 1].map((i) => Cafe.create({
+      name: `Yoco isolation ${i}`, orgId: new mongoose.Types.ObjectId(), yocoConnected: true,
+      yocoTokens: { accessToken: encryptSecret('expired'), refreshToken: encryptSecret(`y-refresh-${i}`),
+        expiresAt: new Date(Date.now() - 1000) },
+    })));
+    const docs = await Promise.all(cafes.map((cafe) => Cafe.findById(cafe._id)
+      .select('+yocoTokens.accessToken +yocoTokens.refreshToken')));
+    const gate = deferred();
+    axios.post.mockImplementation(async (_url, body) => {
+      const refresh = new URLSearchParams(body).get('refresh_token');
+      await gate.promise;
+      return { data: { access_token: `access-for-${refresh}`, refresh_token: `rotated-${refresh}`, expires_in: 1800 } };
+    });
+    const pending = docs.map(getValidToken);
+    await new Promise(setImmediate);
+    gate.resolve();
+    expect(await Promise.all(pending)).toEqual(['access-for-y-refresh-0', 'access-for-y-refresh-1']);
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    for (const [i, cafe] of cafes.entries()) {
+      const stored = await Cafe.findById(cafe._id).select('+yocoTokens.accessToken +yocoTokens.refreshToken').lean();
+      expect(decryptSecret(stored.yocoTokens.accessToken)).toBe(`access-for-y-refresh-${i}`);
+      expect(decryptSecret(stored.yocoTokens.refreshToken)).toBe(`rotated-y-refresh-${i}`);
+    }
+  });
+
+  it('disconnect during a pending push leaves no watermark or sync history', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    await connectXero(cafeId, { 'accountingIntegrations.xero.expiresAt': new Date(Date.now() + 3600000) });
+    const started = deferred();
+    const gate = deferred();
+    jest.spyOn(xeroService, 'pushSalesSummary').mockImplementation(() => { started.resolve(); return gate.promise; });
+    jest.spyOn(xeroService, 'revokeToken').mockResolvedValue();
+    const pending = request.post('/api/integrations/xero/sync').set('Authorization', `Bearer ${token}`).then((res) => res);
+    await started.promise;
+    const disconnected = await request.post('/api/integrations/xero/disconnect').set('Authorization', `Bearer ${token}`);
+    gate.resolve({ ok: true });
+    expect(disconnected.status).toBe(200);
+    expect((await pending).status).toBe(200);
+    const stored = await xeroSecrets(cafeId);
+    for (const field of ['lastSyncedThrough', 'lastSyncAt', 'lastSyncStatus', 'lastSyncError']) {
+      expect(stored[field]).toBeUndefined();
+    }
+  });
+
+  it('disconnect waits for an active refresh and revokes the rotated grant before clearing', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    await connectXero(cafeId);
+    const stored = await xeroSecrets(cafeId);
+    const started = deferred();
+    const gate = deferred();
+    const service = { refreshAccessToken: jest.fn(() => { started.resolve(); return gate.promise; }) };
+    const refresh = refreshIntegrationAccessToken({ cafeId, provider: 'xero', service, storedRefreshToken: stored.refreshToken });
+    await started.promise;
+    const revokeStarted = deferred();
+    const revoke = jest.spyOn(xeroService, 'revokeToken').mockImplementation(async () => { revokeStarted.resolve(); });
+    const pending = request.post('/api/integrations/xero/disconnect').set('Authorization', `Bearer ${token}`).then((res) => res);
+    // Under the defect, disconnect reaches revocation before the refresh is released.
+    await Promise.race([revokeStarted.promise, new Promise((resolve) => setTimeout(resolve, 150))]);
+    gate.resolve({ accessToken: 'rotated-access', refreshToken: 'rotated-refresh', expiresIn: 1800 });
+    await refresh.catch(() => {});
+    expect((await pending).status).toBe(200);
+    expect(revoke.mock.calls).toEqual([['rotated-refresh']]);
+    const current = await xeroSecrets(cafeId);
+    expect(current.connected).toBe(false);
+    expect(current.accessToken).toBeFalsy();
+    expect(current.refreshToken).toBeFalsy();
   });
 });
 

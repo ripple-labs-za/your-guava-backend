@@ -5,13 +5,19 @@
  */
 const inFlight = new Map();
 
-const singleFlight = (key, run) => {
+// Exclusive lifecycle operations queue behind the current flight and cannot be
+// joined as though their result were a refreshed token. Later refreshes wait too.
+const singleFlight = (key, run, { exclusive = false } = {}) => {
   const existing = inFlight.get(key);
-  if (existing) return existing;
-  const promise = Promise.resolve()
+  if (existing && existing.shareable && !exclusive) return existing.promise;
+  const entry = { shareable: !exclusive };
+  const promise = (existing ? existing.promise.catch(() => {}) : Promise.resolve())
     .then(run)
-    .finally(() => inFlight.delete(key));
-  inFlight.set(key, promise);
+    .finally(() => {
+      if (inFlight.get(key) === entry) inFlight.delete(key);
+    });
+  entry.promise = promise;
+  inFlight.set(key, entry);
   return promise;
 };
 
