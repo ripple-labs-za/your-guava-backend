@@ -9,6 +9,15 @@ const { missingChatKeyResponse, TRUNCATED_ANSWER_MARKER } = require('./prompts')
 const { providerDiagnostics } = require('./json');
 const { buildBusinessChatRequest } = require('./chat');
 
+// Usage deltas are cumulative. Proxies may send numeric strings or repeat a
+// smaller counter; neither may erase cache usage already observed at start.
+const mergeUsage = (target, incoming) => {
+  for (const key of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
+    const value = Number(incoming?.[key]);
+    if (Number.isFinite(value) && value >= 0) target[key] = Math.max(Number(target[key]) || 0, value);
+  }
+};
+
 const throwIfAborted = (signal) => {
   if (!signal?.aborted) return;
   const error = signal.reason instanceof Error
@@ -97,12 +106,12 @@ const streamBusinessChatResponse = async ({
       if (event.type === 'message_start') {
         streamResponse.id = event.message?.id;
         streamResponse.model = event.message?.model;
-        Object.assign(streamResponse.usage, event.message?.usage || {});
+        mergeUsage(streamResponse.usage, event.message?.usage);
         recordUsage();
       }
       if (event.type === 'message_delta') {
         streamResponse.stop_reason = event.delta?.stop_reason;
-        Object.assign(streamResponse.usage, event.usage || {});
+        mergeUsage(streamResponse.usage, event.usage);
         recordUsage();
       }
       if (event.type === 'message_stop') sawMessageStop = true;

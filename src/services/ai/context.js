@@ -70,8 +70,8 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   }
 
   const [activeCafe, organization] = await Promise.all([
-    Cafe.findOne({ _id: cafeId, ...(orgId ? { orgId } : {}) }).lean(),
-    orgId ? Organization.findById(orgId).lean() : null,
+    Cafe.findOne({ _id: cafeId, ...(orgId ? { orgId } : {}) }).select('name location timezone dataUploaded lastSyncAt').lean(),
+    orgId ? Organization.findById(orgId).select('name plan').lean() : null,
   ]);
 
   if (!activeCafe) {
@@ -252,11 +252,12 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       .lean(),
     Forecast.find({ cafeId, date: { $gte: today, $lt: forecastRangeEnd } })
       .sort({ date: 1 })
-      .select('date items signals totalPredictedRevenue accuracy')
+      .select('date totalPredictedRevenue signals accuracy items.itemName items.predictedQty')
       .lean(),
     Event.find({ cafeId, date: { $gte: today, $lt: eventRangeEnd } })
       .sort({ date: 1 })
       .limit(20)
+      .select('name date impact notes')
       .lean(),
     Transaction.countDocuments({ ...activeCafeMatch, date: { $gte: ninetyDaysAgo }, hourKnown: false }),
   ]);
