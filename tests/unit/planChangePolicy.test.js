@@ -179,6 +179,20 @@ describe('D-019 plan change policy (planChangeForPayment)', () => {
     })).toEqual(at('2026-05-10T00:00:00.000Z'));
   });
 
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'ranks the unknown plan id %s as Starter instead of inheriting an object property', (unknown) => {
+      expect(planRank(unknown)).toBe(1);
+      const now = at('2026-03-20T00:00:00.000Z');
+      const change = planChangeForPayment(activeOrg({
+        plan: unknown, billingCycle: 'monthly', currentPeriodEnd: at('2026-04-10T00:00:00.000Z'),
+      }), { plan: 'growth', billingCycle: 'monthly' }, now);
+
+      expect(change.type).toBe('upgrade');
+      expect(Number.isFinite(change.creditDays)).toBe(true);
+      expect(change.currentPeriodEnd.getTime()).toBeGreaterThan(at('2026-04-20T00:00:00.000Z').getTime());
+    }
+  );
+
   describe('no paid term is ever discarded', () => {
     const plans = Object.keys(PLAN_CONFIG);
     const cycles = ['monthly', 'annual'];

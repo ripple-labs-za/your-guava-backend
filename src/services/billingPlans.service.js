@@ -76,7 +76,7 @@ const PLAN_CONFIG = {
   },
 };
 
-const normalisePlanId = (plan) => (PLAN_CONFIG[plan] ? plan : 'starter');
+const normalisePlanId = (plan) => (Object.prototype.hasOwnProperty.call(PLAN_CONFIG, plan) ? plan : 'starter');
 
 const getPlan = (plan) => PLAN_CONFIG[normalisePlanId(plan)];
 
