@@ -111,7 +111,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   const generation = contextGeneration;
 
   const [activeCafe, organization] = await Promise.all([
-    Cafe.findOne({ _id: cafeId, ...(orgId ? { orgId } : {}) }).select('name location timezone dataUploaded lastSyncAt').lean(),
+    Cafe.findOne({ _id: cafeId, archivedAt: null, ...(orgId ? { orgId } : {}) }).select('name location timezone dataUploaded lastSyncAt').lean(),
     orgId ? Organization.findById(orgId).select('name plan').lean() : null,
   ]);
 
@@ -122,6 +122,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
   const cafes = orgId
     ? await Cafe.find({
         orgId,
+        archivedAt: null,
         ...(scopedCafeIds ? { _id: { $in: scopedCafeIds } } : {}),
       }).select('name location timezone dataUploaded lastSyncAt yocoConnected createdAt').lean()
     : activeCafe ? [activeCafe] : [];

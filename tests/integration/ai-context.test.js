@@ -48,6 +48,64 @@ const seedTwoLocations = async () => {
 };
 
 describe('Ask Guava business context', () => {
+  it('refreshes the context after a cafe rename that does not change forecast inputs', async () => {
+    const owner = await createTestUser();
+    const args = { cafeId: owner.user.activeCafeId, orgId: owner.user.orgId };
+    const before = await buildBusinessContext(args);
+    const response = await request.put('/api/cafe/me').set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Renamed cafe' });
+    expect(response.status).toBe(200);
+    expect(before.activeLocation.name).not.toBe('Renamed cafe');
+    expect((await buildBusinessContext(args)).activeLocation.name).toBe('Renamed cafe');
+  });
+
+  it('refreshes the context after a menu item is created', async () => {
+    const owner = await createTestUser();
+    const args = { cafeId: owner.user.activeCafeId, orgId: owner.user.orgId };
+    expect((await buildBusinessContext(args)).menuItems).toHaveLength(0);
+    const response = await request.post('/api/items').set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Fresh coffee', category: 'coffee', expectedPrice: 25 });
+    expect(response.status).toBe(201);
+    expect((await buildBusinessContext(args)).menuItems.map((item) => item.name)).toContain('Fresh coffee');
+  });
+
+  it('refreshes the owner-wide context after a location is created', async () => {
+    const owner = await createTestUser();
+    const args = { cafeId: owner.user.activeCafeId, orgId: owner.user.orgId };
+    expect((await buildBusinessContext(args)).locations).toHaveLength(1);
+    const response = await request.post('/api/team/add-cafe').set('Authorization', `Bearer ${owner.token}`)
+      .send({ name: 'Second branch' });
+    expect(response.status).toBe(201);
+    expect((await buildBusinessContext(args)).locations.map((cafe) => cafe.name)).toContain('Second branch');
+  });
+
+  it('refreshes and excludes an archived location from the context', async () => {
+    const { owner, cafeId, london } = await seedTwoLocations();
+    const args = { cafeId, orgId: owner.user.orgId };
+    expect((await buildBusinessContext(args)).locations).toHaveLength(2);
+    const response = await request.post(`/api/team/cafes/${london._id}/archive`)
+      .set('Authorization', `Bearer ${owner.token}`).send({});
+    expect(response.status).toBe(200);
+    const after = await buildBusinessContext(args);
+    expect(after.locations).toHaveLength(1);
+    expect(after.dataset.totalRevenue).toBe(70);
+  });
+
+  it('refreshes the context when an archived location is restored', async () => {
+    const { owner, cafeId, london } = await seedTwoLocations();
+    await Cafe.updateOne({ _id: london._id }, { $set: { archivedAt: new Date() } });
+    const args = { cafeId, orgId: owner.user.orgId };
+    const aggregate = jest.spyOn(Transaction, 'aggregate');
+    const before = await buildBusinessContext(args);
+    const response = await request.post(`/api/team/cafes/${london._id}/restore`)
+      .set('Authorization', `Bearer ${owner.token}`).send({});
+    expect(response.status).toBe(200);
+    const after = await buildBusinessContext(args);
+    expect(aggregate).toHaveBeenCalledTimes(2);
+    expect(before.locations).toHaveLength(1);
+    expect(after.locations).toHaveLength(2);
+    expect(after.dataset.totalRevenue).toBe(110);
+  });
   it('notifies dependent caches even when the response cache has no entries and supports unsubscribe', () => {
     const listener = jest.fn();
     const unsubscribe = onApiCacheCleared(listener);

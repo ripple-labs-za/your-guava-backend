@@ -274,6 +274,7 @@ const create = async (req, res, next) => {
       category: 'other',
       ...payload,
     });
+    clearApiCache({ cafeId: activeCafeId(req) });
 
     return res.status(201).json({ success: true, item });
   } catch (error) {

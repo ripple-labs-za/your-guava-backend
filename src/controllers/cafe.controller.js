@@ -178,8 +178,8 @@ const updateMe = async (req, res, next) => {
       const timezone = safeTimezone(cafe.timezone);
       const today = zonedDayStart(new Date(), timezone);
       await Forecast.deleteMany({ cafeId: cafe._id, date: { $gte: today } });
-      clearApiCache({ cafeId: cafe._id });
     }
+    clearApiCache({ cafeId: cafe._id });
 
     return res.status(200).json({ success: true, cafe: cafeDto(cafe) });
   } catch (error) {

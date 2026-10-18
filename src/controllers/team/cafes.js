@@ -9,6 +9,7 @@ const { getPlan } = require('../../services/billingPlans.service');
 const { getPlanCapacity } = require('../../services/planCapacity.service');
 const { recordAccessAudit } = require('./audit');
 const { generateAccessToken } = require('../../utils/authPrimitives');
+const { clearApiCache } = require('../../middleware/cache.middleware');
 
 // POST /api/team/switch-cafe - Switch active cafe.
 const switchCafe = async (req, res, next) => {
@@ -123,6 +124,7 @@ const addCafe = async (req, res, next) => {
       });
     });
 
+    clearApiCache({ orgId: owner.orgId });
     return res.status(201).json({ success: true, cafe });
   } catch (error) {
     if (error?.statusCode === 402 && error?.locations) {
@@ -207,6 +209,7 @@ const archiveCafe = async (req, res, next) => {
       archived = cafe;
     });
 
+    clearApiCache({ orgId: req.user.orgId });
     const capacity = await getPlanCapacity(req.user.orgId, plan);
     return res.status(200).json({
       success: true,
@@ -266,6 +269,7 @@ const restoreCafe = async (req, res, next) => {
       });
       restored = cafe;
     });
+    clearApiCache({ orgId: req.user.orgId });
     return res.status(200).json({ success: true, cafe: { _id: restored._id, name: restored.name, archivedAt: null } });
   } catch (error) {
     if (error?.statusCode && error.statusCode < 500) {
