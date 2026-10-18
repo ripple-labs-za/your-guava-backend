@@ -1,6 +1,6 @@
-const { saleCount, netRevenue, grossSales } = require('../analytics/semantics');
 // Mongo reads that become model input: the business context and the thin-dataset check.
-// Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
+// Split by BE-11-T02; D-023 sales, refunds and gross basket definitions are shared with Performance.
+const { saleCount, netRevenue, grossSales } = require('../analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
 const Forecast = require('../../models/Forecast.model');
 const Cafe = require('../../models/Cafe.model');
@@ -38,7 +38,7 @@ const MIN_INSIGHT_TRANSACTIONS = 1;
  * True when the cafe has too little recent trade for an insight run to mean
  * anything. With no approved transactions buildSummaryStats returns a single
  * "no data" sentence, and the model is still asked to "be specific with
- * numbers" — so a brand-new cafe paid 10 Guava Credits for generic filler
+ * numbers" â€” so a brand-new cafe paid 10 Guava Credits for generic filler
  * presented as data-derived analysis. Forecasting already refuses in this
  * situation with an explicit insufficient-history state; insights did not.
  */
@@ -196,6 +196,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       {
         $group: {
           _id: '$dayOfWeek',
+          grossSales,
           revenue: netRevenue,
           transactions: saleCount,
         },
@@ -289,7 +290,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       avgBasket: roundMoney(total.transactions > 0 ? total.grossSales / total.transactions : 0),
       firstDate: total.firstDate ? zonedDateTimeLabel(total.firstDate, activeTimezone) : null,
       lastDate: total.lastDate ? zonedDateTimeLabel(total.lastDate, activeTimezone) : null,
-      contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters — if a question was longer than that, say so rather than answering as if you had seen all of it.'
+      contextWindow: 'Location, item, day, hour, and payment aggregates use the last 90 days. The daily series is capped to the newest 120 location-days. Recent transaction samples are capped at 25 rows and 40 items per row. Conversation history is capped to the last 10 messages, and each message is capped to its first 4000 characters â€” if a question was longer than that, say so rather than answering as if you had seen all of it.'
         + (hourUnknownCount > 0
           ? ` ${hourUnknownCount === 1 ? '1 sale in the last 90 days came from an export' : `${hourUnknownCount} sales in the last 90 days came from exports`} with dates but no times; the hour pattern leaves ${hourUnknownCount === 1 ? 'it' : 'them'} out, so do not describe ${hourUnknownCount === 1 ? 'its hour' : 'their hours'}.`
           : ''),
@@ -314,7 +315,7 @@ const buildBusinessContext = async ({ cafeId, orgId, authorizedCafeIds }) => {
       day: dayNames[row._id] || String(row._id),
       revenue: roundMoney(row.revenue),
       transactions: row.transactions,
-      avgRevenuePerTransaction: row.transactions ? roundMoney(row.revenue / row.transactions) : 0,
+      avgRevenuePerTransaction: row.transactions ? roundMoney(row.grossSales / row.transactions) : 0,
     })),
     activeLocationHourPattern90d: hourPattern.map((row) => ({
       hour: row._id,

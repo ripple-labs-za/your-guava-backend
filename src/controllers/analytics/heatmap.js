@@ -1,5 +1,5 @@
 // GET /analytics/heatmap.
-// Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
+// Split by BE-11-T04; the D-023 heatmap exception keeps averages per observed weekday occurrence.
 const mongoose = require('mongoose');
 const { saleCount } = require('../../services/analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
@@ -10,7 +10,7 @@ const { activeCafeId } = require('../../utils/tenancy');
 
 /**
  * GET /api/analytics/heatmap
- * Peak hour heatmap — 7 days × 17 hours (6-22)
+ * Peak hour heatmap â€” 7 days Ã— 17 hours (6-22)
  */
 const getHeatmap = async (req, res, next) => {
   try {
@@ -134,7 +134,8 @@ const getHeatmap = async (req, res, next) => {
       data: heatmap,
       meta: {
         ...analyticsRangeMeta(req.query, dateMatch, timezone),
-        metric: 'average_per_observed_weekday',
+        metric: 'average_per_observed_weekday', // D-023: heatmap alone uses observed weekday occurrences.
+        metricDecision: 'D-023 heatmap exception',
         timeOfDay: { transactionsWithTime, transactionsWithoutTime },
       },
     });

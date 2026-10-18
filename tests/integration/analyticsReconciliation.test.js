@@ -183,7 +183,7 @@ describe('analytics reconcile with the raw transactions', () => {
     await Transaction.insertMany([
       { cafeId, date: recent(2), hour: 9, dayOfWeek: recent(2).getUTCDay(), status: 'approved', items: [{ name: 'Flat White', quantity: 1, unitPrice: 50 }], total: 50 },
       { cafeId, date: recent(2), hour: 10, dayOfWeek: recent(2).getUTCDay(), status: 'approved', items: [{ name: 'Flat White', quantity: 1, unitPrice: 50 }], total: 50 },
-      { cafeId, date: recent(1), hour: 9, dayOfWeek: recent(1).getUTCDay(), status: 'approved', items: [{ name: 'Flat White', quantity: -1, unitPrice: 50 }], total: -50 },
+        { cafeId, date: recent(2), hour: 9, dayOfWeek: recent(2).getUTCDay(), status: 'approved', items: [{ name: 'Flat White', quantity: -1, unitPrice: 50 }], total: -50 },
     ]);
 
     const context = await buildBusinessContext({
@@ -195,6 +195,15 @@ describe('analytics reconcile with the raw transactions', () => {
     expect(context.dataset.transactionCount).toBe(2);
     expect(context.dataset.avgBasket).toBe(50);
     expect(context.dataset.totalRevenue).toBe(50);
+    expect(context.dayOfWeekPattern90d.find((entry) => entry.transactions > 0).avgRevenuePerTransaction)
+      .toBe(context.dataset.avgBasket);
+  });
+
+  it('reports zero items per open day when a closed Sunday has only a refund', async () => {
+    await Transaction.create(row(cafeId, '2026-03-08', '15:00', -50, 'Card', [['Flat White', -1, 50]]));
+    const { body } = await get('items', { startDate: '2026-03-08', endDate: '2026-03-08' });
+    expect(body.meta.observedSpan.openDays).toBe(0);
+    expect(body.items[0].avgPerDay).toBe(0);
   });
 
   it('reports refunds without inventing visits or dividing by zero in a refund-only range', async () => {

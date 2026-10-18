@@ -1,6 +1,8 @@
-const { isSaleRow } = require('../analytics/semantics');
 // What the model reads: prompt text, the fenced-JSON helper, summary stats and the label helpers. Pure, no I/O.
-// Moved from anthropic.service.js by BE-11-T02; behaviour unchanged.
+// Split by BE-11-T02; summaries use D-023 sales and observed open days.
+const { isSaleRow } = require('../analytics/semantics');
+const { openDaysBetween } = require('../analytics/windows');
+const { getCafeTradingHours } = require('../../utils/tradingHours');
 const { zonedDateKey, zonedDayOfWeek, zonedDayStart, getZonedDateParts } = require('../../utils/timezone');
 const { demandLines } = require('../../utils/demand');
 
@@ -21,7 +23,7 @@ const TRUNCATED_ANSWER_MARKER =
  * everything after it would read as operator-authored instruction. Item names,
  * event notes and cafe names all come from POS imports and operator input, so
  * that is reachable. Escaping the angle brackets as JSON `\uXXXX` keeps the
- * text the model reads identical while making the delimiter unforgeable —
+ * text the model reads identical while making the delimiter unforgeable â€”
  * business data can no longer emit a literal `<` at all.
  */
 const fencedJson = (value) =>
@@ -38,7 +40,7 @@ const missingInsightsKeyResponse = () => ({
 
 const insufficientInsightDataResponse = () => ({
   insights: [
-    'There are no approved sales in the last 14 days, so there is nothing to analyse yet. Upload or sync your sales and refresh again — no Guava Credits were used.',
+    'There are no approved sales in the last 14 days, so there is nothing to analyse yet. Upload or sync your sales and refresh again â€” no Guava Credits were used.',
   ],
   generatedAt: new Date(),
   requiresRefresh: true,
@@ -49,7 +51,7 @@ const insufficientInsightDataResponse = () => ({
 /**
  * Builds a summary statistics object from an array of transaction documents.
  */
-const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
+const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg', tradingHours = getCafeTradingHours(null)) => {
   if (transactions.length === 0) {
     return { message: 'No transaction data available for the last 14 days.' };
   }
@@ -81,11 +83,15 @@ const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
     .slice(0, 10)
     .map(([name, qty]) => ({ name, qty }));
 
-  // Day of week averages
-  const dailyRevenueByDow = Object.entries(dailyRevenue).reduce((acc, [date, revenue]) => {
+  const observed = Object.keys(dailyRevenue).sort();
+  const openDays = openDaysBetween({
+    fromDate: observed[0], toDate: observed[observed.length - 1], tradingHours,
+    saleDays: new Set(transactions.filter(isSaleRow).map((tx) => zonedDateKey(tx.date, timezone))),
+  });
+  const dailyRevenueByDow = openDays.reduce((acc, date) => {
     const dow = zonedDayOfWeek(zonedDayStart(date, timezone), timezone);
     if (!acc[dow]) acc[dow] = [];
-    acc[dow].push(revenue);
+    acc[dow].push(dailyRevenue[date] || 0);
     return acc;
   }, {});
   const dowAverages = Object.entries(dayOfWeekRevenue).map(([dow, revenue]) => ({
@@ -102,7 +108,7 @@ const buildSummaryStats = (transactions, timezone = 'Africa/Johannesburg') => {
 
   const revenues = Object.values(dailyRevenue);
   const totalRevenue = revenues.reduce((s, v) => s + v, 0);
-  const avgDailyRevenue = revenues.length > 0 ? totalRevenue / revenues.length : 0;
+  const avgDailyRevenue = openDays.length > 0 ? totalRevenue / openDays.length : 0;
 
   return {
     totalTransactions: transactions.filter(isSaleRow).length,

@@ -1,5 +1,5 @@
 // GET /analytics/items.
-// Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
+// Split by BE-11-T04; D-023 defines sales, refunds and observed open-day averages.
 const mongoose = require('mongoose');
 const Cafe = require('../../models/Cafe.model');
 const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
@@ -36,7 +36,6 @@ const getItems = async (req, res, next) => {
       { $sort: { _id: 1 } },
     ]);
     if (presence.length === 0) {
-      // Keep the existing empty response (lines 338-351 at b1d532c) exactly, with `timezone` passed to analyticsRangeMeta:
       return res.status(200).json({
         success: true, items: [], data: [], risingItems: [], decliningItems: [],
         meta: { ...analyticsRangeMeta(req.query, dateMatch, timezone), risingItems: [], decliningItems: [], newItems: [], moverFloor: rankMovers(new Map()).moverFloor },
@@ -50,7 +49,6 @@ const getItems = async (req, res, next) => {
       tradingHours: getCafeTradingHours(cafe),
       saleDays: new Set(presence.filter((day) => day.transactions > 0).map((day) => day._id)),
     }).length;
-    const perDayDivisor = Math.max(openDays, 1);
 
     // Top 20 items overall
     const itemsPipeline = [
@@ -74,7 +72,7 @@ const getItems = async (req, res, next) => {
           name: '$_id',
           totalQty: 1,
           totalRevenue: { $round: ['$totalRevenue', 2] },
-          avgPerDay: { $round: [{ $divide: ['$totalQty', perDayDivisor] }, 1] },
+          avgPerDay: openDays > 0 ? { $round: [{ $divide: ['$totalQty', openDays] }, 1] } : { $literal: 0 },
         },
       },
     ];

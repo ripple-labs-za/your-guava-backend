@@ -1,5 +1,5 @@
 // GET /analytics/customers.
-// Moved from analytics.controller.js by BE-11-T04; behaviour unchanged.
+// Split by BE-11-T04; D-023 defines sales, refunds and observed open-day averages.
 const mongoose = require('mongoose');
 const { saleCount, refundCount, grossSales, refundValue, IS_SALE, tenderExpression } = require('../../services/analytics/semantics');
 const Transaction = require('../../models/Transaction.model');
