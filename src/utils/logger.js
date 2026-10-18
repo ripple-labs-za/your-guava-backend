@@ -11,9 +11,11 @@
  * a secret or flood the log.
  */
 const LEVELS = Object.freeze({ debug: 10, info: 20, warn: 30, error: 40, fatal: 50 });
-const SENSITIVE_KEY = /password|passphrase|^pass$|secret|token|authori[sz]ation|cookie|api[-_]?key|signature|^salt$|credential/i;
-const PERSONAL_KEY = /^(e-?mail|to|recipient|phone)$/i;
-const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi;
+const SENSITIVE_KEY = /password|passphrase|^pass$|secret|token|authori[sz]ation|cookie|api[-_]?key|signature|^salt$|credential|verification[-_]?code|^(pan|cvv|otp|bin|last4)$/i;
+const PERSONAL_KEY = /e-?mail|phone|mobile|^(to|recipient)$/i;
+const URL_CREDENTIALS = /(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/?#]*@/gi;
+const EMAIL_ADDRESS = /[a-z0-9._%+-]{1,254}@[a-z0-9.-]{1,253}\.[a-z]{2,63}/gi;
+const QUERY_SECRET = /([?&](?:[a-z0-9_-]*token|api[-_]?key|key|secret|password|passphrase|verification[-_]?code|code|otp|signature)=)[^&#\s]*/gi;
 const MAX_STRING_CHARS = 2000;
 const MAX_ARRAY_ITEMS = 50;
 const MAX_DEPTH = 6;
@@ -25,10 +27,13 @@ const thresholdFor = (name) => {
 };
 
 const cleanString = (value) => {
-  const scrubbed = value.replace(URL_CREDENTIALS, '$1[redacted]@');
-  return scrubbed.length > MAX_STRING_CHARS
-    ? `${scrubbed.slice(0, MAX_STRING_CHARS)}...[${scrubbed.length - MAX_STRING_CHARS} more chars]`
-    : scrubbed;
+  // Remove URL userinfo before clipping, including an embedded @ in a password.
+  // Bound the remaining scans so hostile long strings cannot make logging costly.
+  const safeUrl = value.replace(URL_CREDENTIALS, '$1[redacted]@');
+  const clipped = safeUrl.slice(0, MAX_STRING_CHARS);
+  const scrubbed = clipped.replace(EMAIL_ADDRESS, '[redacted]').replace(QUERY_SECRET, '$1[redacted]');
+  const omitted = Math.max(0, safeUrl.length - MAX_STRING_CHARS) + Math.max(0, scrubbed.length - MAX_STRING_CHARS);
+  return omitted > 0 ? `${scrubbed.slice(0, MAX_STRING_CHARS)}...[${omitted} more chars]` : scrubbed;
 };
 
 const errorFields = (error, { stack = false } = {}) => {
@@ -63,21 +68,36 @@ const sanitize = (value, depth, seen) => {
   if (depth >= MAX_DEPTH) return '[depth limit]';
   if (seen.has(value)) return '[circular]';
   seen.add(value);
-  if (Array.isArray(value)) {
-    const items = value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitize(item, depth + 1, seen));
-    if (value.length > MAX_ARRAY_ITEMS) items.push(`[${value.length - MAX_ARRAY_ITEMS} more items]`);
-    return items;
-  }
-  const out = {};
-  for (const [key, inner] of Object.entries(value)) {
-    if (SENSITIVE_KEY.test(key) || PERSONAL_KEY.test(key)) {
-      out[key] = '[redacted]';
-      continue;
+  try {
+    if (Array.isArray(value)) {
+      const items = [];
+      for (let index = 0; index < Math.min(value.length, MAX_ARRAY_ITEMS); index += 1) {
+        try {
+          items.push(sanitize(value[index], depth + 1, seen));
+        } catch (_error) {
+          items.push('[unavailable]');
+        }
+      }
+      if (value.length > MAX_ARRAY_ITEMS) items.push(`[${value.length - MAX_ARRAY_ITEMS} more items]`);
+      return items;
     }
-    const clean = sanitize(inner, depth + 1, seen);
-    if (clean !== undefined) out[key] = clean;
+    const out = Object.create(null);
+    for (const key of Object.keys(value)) {
+      if (SENSITIVE_KEY.test(key) || PERSONAL_KEY.test(key)) {
+        out[key] = '[redacted]';
+        continue;
+      }
+      try {
+        const clean = sanitize(value[key], depth + 1, seen);
+        if (clean !== undefined) out[key] = clean;
+      } catch (_error) {
+        out[key] = '[unavailable]';
+      }
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  return out;
 };
 
 const toFields = (fields) => {
@@ -95,7 +115,9 @@ const createLogger = ({ write = defaultWrite, level } = {}) => {
       if (LEVELS[levelName] < thresholdFor(level ?? process.env.LOG_LEVEL)) return;
       const entry = { time: new Date().toISOString(), level: levelName, event: cleanString(String(event || 'log')) };
       for (const [key, value] of Object.entries(toFields(fields))) {
-        if (!(key in entry)) entry[key] = value;
+        let outputKey = key;
+        while (outputKey in entry) outputKey = `caller_${outputKey}`;
+        entry[outputKey] = value;
       }
       write(JSON.stringify(entry));
     } catch (_error) {

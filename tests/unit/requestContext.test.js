@@ -20,6 +20,15 @@ const fakeRequest = (headers = {}, extra = {}) => ({
 });
 
 describe('requestContext', () => {
+  it.each(['a'.repeat(129), 'a'.repeat(10000), 'short', 'valid-id-123\nforged', 'valid-id-123?junk', 'valid-id-123\n'])(
+    'drops an overlong, short, injected or trailing-junk client id', (value) => {
+      const req = fakeRequest({ 'x-request-id': value });
+      const res = fakeResponse();
+      requestContext(req, res, () => {});
+      expect(req.clientRequestId).toBeUndefined();
+      expect(res.headers['x-client-request-id']).toBeUndefined();
+    }
+  );
   it('issues its own id and keeps a well-formed client id beside it', () => {
     const req = fakeRequest({ 'x-request-id': 'client-supplied-id-001' });
     const res = fakeResponse();
@@ -77,6 +86,7 @@ describe('requestLogger', () => {
       path: '/api/forecasts/insights/chat/stream',
       aborted: true,
     }));
+    expect(warn.mock.calls[0][1]).not.toHaveProperty('statusCode');
   });
 
   it('logs a completed request once, not again when the socket closes', () => {

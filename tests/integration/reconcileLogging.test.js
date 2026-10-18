@@ -88,7 +88,9 @@ describe('reconciliation failures are logged with what failed', () => {
       });
       jest.spyOn(paystack, 'lookupGatewayTransaction')
         .mockRejectedValue(Object.assign(new Error('paystack unreachable'), { code: 'ECONNRESET' }));
-      const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+      const written = [];
+      const sink = logger.createLogger({ write: (line) => written.push(JSON.parse(line)), level: 'error' });
+      const error = jest.spyOn(logger, 'error').mockImplementation((event, fields) => sink.error(event, fields));
       const body = JSON.stringify({ event: 'charge.success', data: { reference: 'paystack-log-probe' } });
       const signature = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY).update(body).digest('hex');
 
@@ -102,9 +104,12 @@ describe('reconciliation failures are logged with what failed', () => {
       expect(error).toHaveBeenCalledWith('payment_webhook_reconcile_failed', expect.objectContaining({
         provider: 'paystack',
         reference: 'paystack-log-probe',
-        event: 'charge.success',
+        providerEvent: 'charge.success',
         requestId: res.headers['x-request-id'],
         errorCode: 'ECONNRESET',
+      }));
+      expect(written).toContainEqual(expect.objectContaining({
+        event: 'payment_webhook_reconcile_failed', providerEvent: 'charge.success', reference: 'paystack-log-probe',
       }));
     } finally {
       if (previousKey === undefined) delete process.env.PAYSTACK_SECRET_KEY;

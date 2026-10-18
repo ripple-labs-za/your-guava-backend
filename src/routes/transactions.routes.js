@@ -83,6 +83,12 @@ const handleMulterUpload = (req, res, next) => {
       fs.rm(req.file.path, { force: true }, () => {});
     }
 
+    // A lost client is already recorded by requestLogger's close handler. It
+    // cannot receive a storage-error response and is not a disk failure.
+    if (req.aborted || res.destroyed || (req.destroyed && !req.complete) || /^Request (aborted|closed)$/i.test(err.message || '')) {
+      return;
+    }
+
     const isMulterError = err instanceof multer.MulterError;
     // multer drains the rest of the request before calling back, so the client
     // gets the 413 rather than a reset connection, and nothing past the first

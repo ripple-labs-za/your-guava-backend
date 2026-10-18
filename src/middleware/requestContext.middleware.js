@@ -23,7 +23,7 @@ const requestPath = (req) => String(req.originalUrl || req.url || '').split('?')
 // requests share one. A well-formed client id is kept beside it for correlation.
 const requestContext = (req, res, next) => {
   const requestId = generateRequestId();
-  const incomingId = String(req.get(REQUEST_ID_HEADER) || '').trim();
+  const incomingId = String(req.get(REQUEST_ID_HEADER) || '');
   const clientRequestId = REQUEST_ID_PATTERN.test(incomingId) ? incomingId : undefined;
 
   req.id = requestId;
@@ -47,7 +47,7 @@ const requestLogger = (req, res, next) => {
       ...(req.clientRequestId ? { clientRequestId: req.clientRequestId } : {}),
       method: req.method,
       path: requestPath(req),
-      statusCode: res.statusCode,
+      ...(!extra.aborted || res.headersSent ? { statusCode: res.statusCode } : {}),
       durationMs: Number(durationMs.toFixed(1)),
       contentLength: Number(res.getHeader('content-length') || 0),
       ...extra,

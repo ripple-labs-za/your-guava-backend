@@ -644,7 +644,7 @@ const handlePaystackWebhook = async (req, res, next) => {
       });
     } catch (error) {
       if (![202, 400, 404].includes(error?.statusCode)) {
-        logger.error('payment_webhook_reconcile_failed', { provider: 'paystack', reference, event, requestId: req.id, ...logger.errorFields(error) });
+        logger.error('payment_webhook_reconcile_failed', { provider: 'paystack', reference, providerEvent: event, requestId: req.id, ...logger.errorFields(error) });
         return res.status(500).json({ success: false, message: 'Reconciliation failed; retry later' });
       }
     }
