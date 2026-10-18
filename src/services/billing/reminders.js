@@ -5,6 +5,7 @@ const emailService = require('../email.service');
 const { getPlan } = require('../billingPlans.service');
 const { effectivePaidThrough } = require('../billingPayments.service');
 const { billingGraceDays } = require('../usage.service');
+const { isValidEmail } = require('../../utils/email');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_ORGS_PER_RUN = 200;
@@ -80,7 +81,8 @@ const runBillingReminders = async ({ now = new Date() } = {}) => {
     }
     try {
       const owner = await User.findById(org.ownerId).select('email name').lean();
-      const to = [...new Set([owner?.email, org.billingEmail].filter(Boolean))];
+      const billingEmail = typeof org.billingEmail === 'string' ? org.billingEmail.trim().toLowerCase() : '';
+      const to = [...new Set([owner?.email, billingEmail].filter(isValidEmail))];
       if (to.length === 0) throw new Error('the organisation has no owner email or billing email');
       const result = await emailService.sendBillingReminderEmail({
         to,

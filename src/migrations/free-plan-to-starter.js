@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 /** Rewrite the legacy stored plan; retain the schema enum until GATE-03.
+ * Rollback: free is read as Starter everywhere; there is no behavior to roll back.
  * This module's import is hermetic. Only its explicit CLI loads environment.
  * node src/migrations/free-plan-to-starter.js          reports only
  * node src/migrations/free-plan-to-starter.js --apply  applies the rewrite
@@ -19,6 +20,9 @@ async function main() {
   if (!process.argv.includes('--apply')) {
     const count = await db.collection('organizations').countDocuments({ plan: 'free' });
     console.log(`DRY RUN: ${count} organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.`);
+    for await (const org of db.collection('organizations').find({ plan: 'free' }, { projection: { _id: 1 } })) {
+      console.log(String(org._id));
+    }
   } else {
     console.log('APPLIED:', await up(db));
   }

@@ -5,6 +5,7 @@ const PaymentSession = require('../../models/PaymentSession.model');
 const User = require('../../models/User.model');
 const { getPlan } = require('../billingPlans.service');
 const paymentProvider = require('../paymentProvider.service');
+const { isValidEmail } = require('../../utils/email');
 
 const INITIALIZATION_LEASE_MS = 60 * 1000;
 
@@ -91,7 +92,7 @@ const initializeHostedPaymentSession = async (paymentSession, org) => {
     // documents written through the schema's lowercase/trim setters.
     const billingEmail = typeof org.billingEmail === 'string' ? org.billingEmail.trim().toLowerCase() : '';
     const email = provider.requiresCustomerEmail
-      ? billingEmail || (await User.findById(paymentSession.userId).select('email').lean())?.email
+      ? (isValidEmail(billingEmail) ? billingEmail : (await User.findById(paymentSession.userId).select('email').lean())?.email)
       : undefined;
 
     const paymentKey = await provider.createPaymentKey({

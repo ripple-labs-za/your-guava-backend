@@ -41,6 +41,15 @@ const checkout = (token, key) => request
   .send({ plan: 'growth', billingCycle: 'monthly' });
 
 describe('billing email (gap-9)', () => {
+  it.each(['accounts@cafe', 'accounts cafe@x.co', 'a@b.co, other@victim.example'])('falls back from an invalid legacy billing address %s', async (billingEmail) => {
+    const createPaymentKey = usePaystack();
+    const owner = await createTestUser();
+    const written = await Organization.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(owner.user.orgId) }, { $set: { billingEmail } });
+    expect(written.matchedCount).toBe(1);
+    expect((await checkout(owner.token, 'invalid-legacy-email')).status).toBe(200);
+    expect(createPaymentKey).toHaveBeenCalledWith(expect.objectContaining({ email: 'test@yourguava.com' }));
+  });
   it('falls back to the login email for a whitespace-only legacy billing address', async () => {
     const createPaymentKey = usePaystack();
     const owner = await createTestUser();

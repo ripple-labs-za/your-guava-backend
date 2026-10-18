@@ -19,6 +19,17 @@ const paidUntil = (orgId, ms, extra = {}) => setOrg(orgId, {
 });
 
 describe('period-end reminders (gap-3)', () => {
+  it.each(['accounts@cafe', 'a@b.co, other@victim.example'])('excludes invalid legacy billing recipients %s', async (billingEmail) => {
+    const owner = await createTestUser();
+    await paidUntil(owner.user.orgId, 6.5 * DAY);
+    const mongoose = require('mongoose');
+    const written = await Organization.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(owner.user.orgId) }, { $set: { billingEmail } });
+    expect(written.matchedCount).toBe(1);
+    const send = jest.spyOn(emailService, 'sendBillingReminderEmail').mockResolvedValue({ sent: true });
+    await runBillingReminders();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ['test@yourguava.com'] }));
+  });
   it('two overlapping runs claim and deliver a reminder once', async () => {
     const owner = await createTestUser();
     await paidUntil(owner.user.orgId, 6.5 * DAY);
