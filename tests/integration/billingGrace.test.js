@@ -49,6 +49,14 @@ const endedPaidPeriod = (orgId, msAgo) => Organization.updateOne({ _id: orgId },
 const get = (path, token) => request.get(path).set('Authorization', `Bearer ${token}`);
 
 describe('read-only grace period after a lapse (gap-3)', () => {
+  it.each(['/api/integrations/yoco/auth', '/api/Integrations/Yoco/Auth/', '/api/YOCO/AUTH'])('blocks OAuth connection GET %s during grace', async (path) => {
+    const owner = await createTestUser();
+    await endedPaidPeriod(owner.user.orgId, DAY);
+    const result = await get(path, owner.token);
+    expect(result.status).toBe(402);
+    expect(result.body.billing).toEqual(expect.objectContaining({ status: 'grace', readOnly: true }));
+  });
+
   it('a lapsed paid org can read, but not write, for the grace period', async () => {
     const owner = await createTestUser();
     await endedPaidPeriod(owner.user.orgId, 1 * DAY);

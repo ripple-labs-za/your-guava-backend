@@ -7,7 +7,7 @@ const { billingAccessForOrganization } = require('../services/usage.service');
 const BILLING_EXEMPT_PREFIXES = ['/api/account', '/api/auth'];
 const OBJECT_ID = '[a-f0-9]{24}';
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-const GRACE_BLOCKED_READS = [/^\/api\/integrations\/[^/]+\/auth\/?$/, /^\/api\/yoco\/auth\/?$/];
+const GRACE_BLOCKED_READS = [/^\/api\/integrations\/[^/]+\/auth\/?$/i, /^\/api\/yoco\/auth\/?$/i];
 const allowedDuringGrace = (req) => {
   const path = String(req.originalUrl || '').split('?')[0];
   if (READ_METHODS.has(req.method)) return !GRACE_BLOCKED_READS.some((pattern) => pattern.test(path));
