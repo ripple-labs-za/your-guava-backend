@@ -397,18 +397,14 @@ describe('Forecasts API', () => {
         });
       }
 
-      const res = await request
-        .post('/api/forecasts/generate')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ date: target.toISOString() });
-
-      expect(res.status).toBe(200);
-      expect(res.body.forecast.calibration.sampleSize).toBe(12);
-      expect(res.body.forecast.calibration.overallMultiplier).toBe(1.15);
-      expect(res.body.forecast.factors.find((f) => f.key === 'learning')).toEqual(
+      const { generateForecast } = require('../../src/services/forecast.service');
+      const generated = (await generateForecast(cafe._id, target, { origin: 'live' })).toObject();
+      expect(generated.calibration.sampleSize).toBe(12);
+      expect(generated.calibration.overallMultiplier).toBe(1.15);
+      expect(generated.factors.find((f) => f.key === 'learning')).toEqual(
         expect.objectContaining({ active: true, multiplier: 1.15 })
       );
-      expect(res.body.forecast.items[0]).toEqual(
+      expect(generated.items[0]).toEqual(
         expect.objectContaining({ itemName: 'Flat White', baseQty: 10, predictedQty: 12 })
       );
     });

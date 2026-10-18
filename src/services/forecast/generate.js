@@ -5,6 +5,7 @@ const Item = require('../../models/Item.model');
 const Forecast = require('../../models/Forecast.model');
 const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
+const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getSignalsForDate } = require('../../utils/signals');
 const { getWeatherForecast, unavailableWeatherSignal } = require('../weather.service');
 const {
@@ -27,6 +28,24 @@ const { computeSuggestedStockMap } = require('./stock');
 
 const FORECAST_MODEL_VERSION = '2026-09-29.2';
 const MAX_STORED_FORECAST_ITEMS = 25;
+const SIGNAL_RETRY_AFTER_MS = 15 * 60 * 1000;
+
+// Bump before deleting so a forecast built from older inputs can never replace a newer version.
+const invalidatePlanningForecasts = async (cafeId, { from, timezone, session } = {}) => {
+  const cafe = await Cafe.findOneAndUpdate(
+    { _id: cafeId }, { $inc: { forecastInputsVersion: 1 } },
+    { new: true, projection: { timezone: 1, forecastInputsVersion: 1 }, ...(session ? { session } : {}) }
+  ).lean();
+  if (!cafe) return { deletedCount: 0, inputsVersion: null };
+  const zone = safeTimezone(timezone || cafe.timezone);
+  const today = zonedDayStart(new Date(), zone);
+  const start = from && new Date(from) > today ? new Date(from) : today;
+  let deletion = Forecast.deleteMany({ cafeId, date: { $gte: start } });
+  if (session) deletion = deletion.session(session);
+  const { deletedCount } = await deletion;
+  if (!session) clearApiCache({ cafeId });
+  return { deletedCount, inputsVersion: cafe.forecastInputsVersion };
+};
 
 /**
  * Resolves whether the cafe trades on the target day and by how much.
@@ -173,6 +192,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     throw error;
   }
   const timezone = safeTimezone(cafe.timezone);
+  const inputsVersion = Number(cafe.forecastInputsVersion) || 0;
   const target = zonedDayStart(targetDate, timezone);
   if (!target) {
     const error = new Error('Invalid forecast date');
@@ -232,6 +252,8 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
   ]);
   const events = eventsByKey.get(targetKey) || [];
   const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
+  const transientSignal = weatherSignal.transient === true || signals.loadSheddingTransient === true;
+  const retryAfter = transientSignal ? new Date(Date.now() + SIGNAL_RETRY_AFTER_MS) : null;
 
 
   // Group transactions by week and item
@@ -354,6 +376,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
 
     if (itemIndex < MAX_STORED_FORECAST_ITEMS) {
       forecastItems.push({
+        salesItemId: itemDocMap.get(name)?._id,
         itemName: name,
         baseQty: parseFloat(baseQty.toFixed(2)),
         expectedQty: storedExpectedQty,
@@ -406,9 +429,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
     : availabilityStatus === 'insufficient_data'
       ? `At least ${weeksRequired} observed matching trading days are required; ${observedWeeks} available`
       : '';
-  const forecast = await Forecast.findOneAndUpdate(
-    existingForecast ? { _id: existingForecast._id } : { cafeId, date: target },
-    {
+  const update = {
       $set: {
         cafeId,
         date: target,
@@ -416,6 +437,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         generatedAt: new Date(),
         origin,
         modelVersion: FORECAST_MODEL_VERSION,
+        inputsVersion,
         trainingCutoff: target,
         availability: {
           status: availabilityStatus,
@@ -425,6 +447,7 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         },
         items: forecastItems,
         signals: {
+          retryAfter,
           weather: {
             available: weatherSignal.available,
             temp: weatherSignal.temp,
@@ -481,10 +504,16 @@ const generateForecast = async (cafeId, targetDate, options = {}) => {
         actualTransactionCount: '',
         actualsUpdatedAt: '',
       },
-    },
-    { upsert: true, new: true }
-  );
-
+    };
+  const versionGuard = { inputsVersion: { $not: { $gt: inputsVersion } } };
+  const filter = existingForecast ? { _id: existingForecast._id, ...versionGuard } : { cafeId, date: target, ...versionGuard };
+  let forecast;
+  try {
+    forecast = await Forecast.findOneAndUpdate(filter, update, { upsert: true, new: true });
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+    forecast = await Forecast.findOne({ cafeId, date: { $gte: target, $lt: nextTarget } }).sort({ inputsVersion: -1 });
+  }
   return forecast;
 };
 
@@ -518,5 +547,6 @@ const generateWeekForecast = async (cafeId) => {
 };
 
 module.exports = {
+  invalidatePlanningForecasts, SIGNAL_RETRY_AFTER_MS,
   FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
 };

@@ -4,12 +4,11 @@ const mongoose = require('mongoose');
 const Upload = require('../../models/Upload.model');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
-const Forecast = require('../../models/Forecast.model');
+const { invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
 const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const r2 = require('../../services/r2.service');
 const ingestion = require('../../services/ingestion.service');
 const { lockCafeMenu } = require('../../services/menuItems.service');
-const { zonedDayStart } = require('../../utils/timezone');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getCafeTimezone, STORAGE_CLEANUP_PENDING } = require('./shared');
 const { recoverStaleParsingUpload } = require('./lease');
@@ -28,7 +27,6 @@ const remove = async (req, res, next) => {
 
     const dateRange = upload.dateRange;
     const timezone = await getCafeTimezone(cafeId);
-    const today = zonedDayStart(new Date(), timezone);
     // Rows another upload holds only through this one come back from that upload's own file (BE-03-T02). The
     // overlapping files are parsed here, outside the transaction; they are persisted inside it, after this upload's
     // rows are gone, so the delete never leaves a hole another upload should fill.
@@ -60,7 +58,7 @@ const remove = async (req, res, next) => {
           // Reassigned on every attempt: withTransaction may re-run this callback on a transient error.
           outcome = await readmission.applyReadmission({ prepared: plan.prepared, cafeId, session, timezone });
           await ingestion.rebuildItemsForCafe(cafeId, { session, pruneOrphans: true });
-          await Forecast.deleteMany({ cafeId, date: { $gte: today } }).session(session);
+          await invalidateForecastInputs(cafeId, { timezone, session });
           await GeneratedInsight.updateOne(
             { cafeId },
             { $set: { invalidatedAt: new Date() } },

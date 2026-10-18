@@ -199,6 +199,7 @@ describe('weather service', () => {
       available: false,
       condition: 'Unavailable',
       unavailableReason: 'Weather data is temporarily unavailable',
+      transient: true,
     });
     expect(result).not.toHaveProperty('temp');
     expect(result).not.toHaveProperty('humidity');

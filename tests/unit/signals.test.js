@@ -267,6 +267,7 @@ describe('signals utility', () => {
         available: false,
         stage: null,
         unavailableReason: 'Load-shedding data is temporarily unavailable',
+        transient: true,
       });
       errorSpy.mockRestore();
     });

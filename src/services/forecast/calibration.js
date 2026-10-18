@@ -93,6 +93,7 @@ const computeForecastCalibration = async (cafeId, targetDate, timezone) => {
   const lookbackStart = addZonedDays(targetDate, -CALIBRATION_LOOKBACK_DAYS, timezone);
 
   const pastForecasts = await Forecast.find({
+    calibrationExcluded: { $ne: true },
     cafeId,
     date: { $gte: lookbackStart, $lt: targetDate },
     actualsUpdatedAt: { $exists: true, $ne: null },

@@ -2,6 +2,10 @@ const mockEventCreate = jest.fn();
 const mockForecastDeleteMany = jest.fn();
 const mockCafeFindById = jest.fn();
 const mockClearApiCache = jest.fn();
+const mockInvalidate = jest.fn().mockResolvedValue({ deletedCount: 2, inputsVersion: 1 });
+jest.mock('../../src/services/forecast.service', () => ({
+  invalidatePlanningForecasts: (...args) => mockInvalidate(...args),
+}));
 
 jest.mock('../../src/models/Event.model', () => ({
   create: (...args) => mockEventCreate(...args),
@@ -57,9 +61,10 @@ describe('event forecast invalidation', () => {
       body: { name: 'Market day', date: '2030-01-10' },
     }, res, next);
 
-    expect(mockForecastDeleteMany).toHaveBeenCalledTimes(1);
-    expect(mockClearApiCache).toHaveBeenCalledTimes(1);
-    expect(mockClearApiCache).toHaveBeenCalledWith({ cafeId: '507f1f77bcf86cd799439011' });
+    expect(mockInvalidate).toHaveBeenCalledTimes(1);
+    expect(mockInvalidate).toHaveBeenCalledWith('507f1f77bcf86cd799439011', {
+      from: new Date('2030-01-09T22:00:00.000Z'), timezone: 'Africa/Johannesburg',
+    });
     expect(res.status).toHaveBeenCalledWith(201);
     expect(next).not.toHaveBeenCalled();
   });

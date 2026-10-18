@@ -1,10 +1,10 @@
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const User = require('../models/User.model');
-const Forecast = require('../models/Forecast.model');
+const { invalidatePlanningForecasts } = require('../services/forecast.service');
 const { normalizeTradingHours, defaultTradingHours, tradingHoursInputError, hasSavedTradingHours } = require('../utils/tradingHours');
 const { clearApiCache } = require('../middleware/cache.middleware');
-const { safeTimezone, zonedDayStart, isSupportedTimezone } = require('../utils/timezone');
+const { safeTimezone, isSupportedTimezone } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const { pickColumnMapping } = require('../services/parser.service');
 
@@ -205,9 +205,7 @@ const updateMe = async (req, res, next) => {
     // Stored forecasts are computed from them, so leaving them in place would
     // keep serving predictions built from the old settings indefinitely.
     if (affectsForecastInputs(setUpdates, unsetUpdates)) {
-      const timezone = safeTimezone(cafe.timezone);
-      const today = zonedDayStart(new Date(), timezone);
-      await Forecast.deleteMany({ cafeId: cafe._id, date: { $gte: today } });
+      await invalidatePlanningForecasts(cafe._id, { timezone: cafe.timezone });
     }
     clearApiCache({ cafeId: cafe._id });
 

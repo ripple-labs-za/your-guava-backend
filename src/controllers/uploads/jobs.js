@@ -5,7 +5,7 @@ const readmission = require('../../services/readmission.service');
 const Upload = require('../../models/Upload.model');
 const Forecast = require('../../models/Forecast.model');
 const { zonedDayEnd, zonedDayStart } = require('../../utils/timezone');
-const { updateForecastActuals, generateWeekForecast } = require('../../services/forecast.service');
+const { updateForecastActuals, generateWeekForecast, invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { boundedInteger, getCafeTimezone } = require('./shared');
 const { parsingLeaseMs, MAX_PARSING_LEASE_MS } = require('./lease');
@@ -37,8 +37,7 @@ const maintenanceRetryDelayMs = (attempts) => {
 };
 
 const invalidatePlanningForecasts = async (cafeId, timezone) => {
-  const today = zonedDayStart(new Date(), timezone || await getCafeTimezone(cafeId));
-  await Forecast.deleteMany({ cafeId, date: { $gte: today } });
+  return invalidateForecastInputs(cafeId, { timezone: timezone || await getCafeTimezone(cafeId) });
 };
 
 const fillActualsForRange = async (cafeId, dateRange, timezone) => {

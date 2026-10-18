@@ -243,6 +243,20 @@ const createAnalyticsRefreshLimiter = ({ limit = ANALYTICS_REFRESH_LIMIT, skip =
 const analyticsLimiter = createAnalyticsLimiter();
 const analyticsRefreshLimiter = createAnalyticsRefreshLimiter();
 
+const FORECAST_COMPUTE_LIMIT = 30;
+const FORECAST_COMPUTE_WINDOW_MS = 5 * 60 * 1000;
+const createForecastComputeLimiter = ({ limit = FORECAST_COMPUTE_LIMIT, windowMs = FORECAST_COMPUTE_WINDOW_MS, skip = limitsOff } = {}) =>
+  rateLimit({
+    windowMs, limit, standardHeaders: 'draft-7', legacyHeaders: false, skip,
+    keyGenerator: (req) => `${req.user?.orgId || 'unknown'}:${req.user?.id || req.ip}`,
+    validate: { keyGeneratorIpFallback: false },
+    message: {
+      success: false, code: 'FORECAST_RATE_LIMITED',
+      message: 'Forecasts are being rebuilt too often. Wait a few minutes and try again.',
+    },
+  });
+const forecastComputeLimiter = createForecastComputeLimiter();
+
 // Confirm and remap parse a whole stored file every time, and a failed upload
 // can be confirmed again, so a member could repeat the heaviest work the API
 // does behind nothing but the loose global limiter (security-3).
@@ -265,6 +279,7 @@ const parseLimiter = rateLimit({
 // Exposed so tests can assert the budgets stay in the right relationship to each
 // other without reaching into express-rate-limit internals.
 const getLimiterOptions = (name) => {
+  if (name === 'forecastCompute') return { limit: FORECAST_COMPUTE_LIMIT, windowMs: FORECAST_COMPUTE_WINDOW_MS };
   if (name === 'analytics') return { limit: ANALYTICS_LIMIT, windowMs: ANALYTICS_WINDOW_MS };
   if (name === 'analyticsRefresh') return { limit: ANALYTICS_REFRESH_LIMIT, windowMs: ANALYTICS_WINDOW_MS };
   if (name === 'login') return { limit: AUTH_LIMITS.login.limit, windowMs: AUTH_LIMITS.login.windowMs };
@@ -276,6 +291,7 @@ const getLimiterOptions = (name) => {
 };
 
 module.exports = {
+  createForecastComputeLimiter, forecastComputeLimiter,
   analyticsLimiter, analyticsRefreshLimiter, createAnalyticsLimiter, createAnalyticsRefreshLimiter,
   createAiLimiter, admitThroughLimiter, admitAiRequest, createChatWriteLimiter, chatWriteLimiter,
   aiLimiter,

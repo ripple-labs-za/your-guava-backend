@@ -5,11 +5,11 @@ const readmissionService = require('../../services/readmission.service');
 const Upload = require('../../models/Upload.model');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
-const Forecast = require('../../models/Forecast.model');
+const { invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
 const GeneratedInsight = require('../../models/GeneratedInsight.model');
 const ingestion = require('../../services/ingestion.service');
 const parser = require('../../services/parser.service');
-const { zonedDateKey, zonedDayStart } = require('../../utils/timezone');
+const { zonedDateKey } = require('../../utils/timezone');
 const {
   boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash, describeOverlap,
 } = require('./shared');
@@ -279,8 +279,7 @@ const commitParsedUpload = async ({
       // Readers must never observe forecasts or generated insights based on
       // the pre-import dataset, even if the asynchronous regeneration worker
       // starts later or this process exits immediately after commit.
-      const today = zonedDayStart(new Date(), timezone);
-      await Forecast.deleteMany({ cafeId, date: { $gte: today } }).session(session);
+      await invalidateForecastInputs(cafeId, { timezone, session });
       await GeneratedInsight.updateOne(
         { cafeId },
         { $set: { invalidatedAt: new Date() } },

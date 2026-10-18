@@ -87,6 +87,7 @@ const cafeSchema = new mongoose.Schema(
       ),
       default: undefined,
     },
+    forecastInputsVersion: { type: Number, default: 0 },
     forecastSettings: {
       type: mongoose.Schema.Types.Mixed,
       default: undefined,

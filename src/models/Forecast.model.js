@@ -77,6 +77,8 @@ const forecastSchema = new mongoose.Schema(
       default: 'live',
       index: true,
     },
+    inputsVersion: { type: Number, default: 0 },
+    calibrationExcluded: { type: Boolean },
     modelVersion: {
       type: String,
       default: 'legacy',
@@ -98,6 +100,7 @@ const forecastSchema = new mongoose.Schema(
     items: [
       {
         itemName: { type: String },
+        salesItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' },
         baseQty: { type: Number },
         expectedQty: { type: Number },
         predictedQty: { type: Number },
@@ -110,6 +113,7 @@ const forecastSchema = new mongoose.Schema(
       },
     ],
     signals: {
+      retryAfter: { type: Date },
       weather: {
         available: { type: Boolean },
         temp: { type: Number },

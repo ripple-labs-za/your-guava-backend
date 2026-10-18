@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth.middleware');
 const { ownerOnly, requireCreditSpend } = require('../middleware/rbac.middleware');
-const { aiLimiter } = require('../middleware/rateLimit.middleware');
+const { aiLimiter, forecastComputeLimiter } = require('../middleware/rateLimit.middleware');
 const { apiCache } = require('../middleware/cache.middleware');
 const {
   getToday,
@@ -38,7 +38,7 @@ router.get('/history', cacheHistoryReads, getHistory);
 router.get('/factors', getFactors);
 // Owner-only: configuration and destructive re-processing (tests/fixtures/rbacTable.js states the whole policy).
 router.put('/factors', ownerOnly, updateFactors);
-router.post('/generate', ownerOnly, generate);
+router.post('/generate', ownerOnly, forecastComputeLimiter, generate);
 router.get('/accuracy', getAccuracy);
 router.get('/insights', getInsights);
 router.post('/insights/refresh', requireCreditSpend, aiLimiter, refreshGeneratedInsights);

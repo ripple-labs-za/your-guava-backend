@@ -174,7 +174,7 @@ const getWeatherForecast = async (lat, lng, date) => {
     return result;
   } catch (error) {
     console.error('[weather] API error:', error.message);
-    return unavailableWeatherSignal('Weather data is temporarily unavailable');
+    return { ...unavailableWeatherSignal('Weather data is temporarily unavailable'), transient: true };
   }
 };
 

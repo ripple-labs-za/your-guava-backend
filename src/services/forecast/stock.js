@@ -24,6 +24,7 @@ const computeSuggestedStock = async (
   const thirtyDaysAgo = addZonedDays(target, -30, timezone);
 
   const pastForecasts = await Forecast.find({
+    calibrationExcluded: { $ne: true },
     cafeId,
     date: { $gte: thirtyDaysAgo, $lt: target },
     'items.itemName': itemName,
@@ -83,6 +84,7 @@ const computeSuggestedStockMap = async (
   // stores actualQty 0; a day with no trading at all leaves it unset, so those
   // are still excluded.
   const pastForecasts = await Forecast.find({
+    calibrationExcluded: { $ne: true },
     cafeId,
     date: { $gte: thirtyDaysAgo, $lt: target },
     'items.itemName': { $in: itemNames },

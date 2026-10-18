@@ -1,9 +1,8 @@
 const Event = require('../models/Event.model');
-const Forecast = require('../models/Forecast.model');
+const { invalidatePlanningForecasts } = require('../services/forecast.service');
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const { getForecastSettings, eventImpactPct } = require('../services/forecastFactors.service');
-const { clearApiCache } = require('../middleware/cache.middleware');
 const {
   DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, getCafeTimezone, zonedDayStart, cafeLocalToday, parseDateOnly,
   formatDateOnly,
@@ -31,8 +30,7 @@ const invalidatePlanningForecastsFrom = async (cafeId, date) => {
   const today = zonedDayStart(new Date(), timezone);
   const start = zonedDayStart(formatDateOnly(dateOnly(date)), timezone);
   if (start < today) start.setTime(today.getTime());
-  await Forecast.deleteMany({ cafeId, date: { $gte: start } });
-  clearApiCache({ cafeId });
+  await invalidatePlanningForecasts(cafeId, { from: start, timezone });
 };
 
 const parseImpactPct = (impactPct) => {

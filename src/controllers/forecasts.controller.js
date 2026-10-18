@@ -6,6 +6,7 @@ const Transaction = require('../models/Transaction.model');
 const {
   FORECAST_MODEL_VERSION,
   generateForecast,
+  invalidatePlanningForecasts,
   updateForecastActuals,
   BACKTEST_BASIS_NOTE,
 } = require('../services/forecast.service');
@@ -32,6 +33,11 @@ const HISTORY_BACKFILL_BATCH_SIZE = 14;
 // backtests. Five is a working week: enough that one bad Saturday cannot move
 // the figure twenty points. See DECISIONS D-004.
 const LIVE_ACCURACY_MIN_DAYS = 5;
+const GENERATE_HORIZON_DAYS = 13;
+const getCafeForecastState = async (cafeId) => {
+  const cafe = await Cafe.findById(cafeId).select('timezone forecastInputsVersion').lean();
+  return { timezone: safeTimezone(cafe?.timezone), inputsVersion: Number(cafe?.forecastInputsVersion) || 0 };
+};
 
 const clampHistoryDays = (value) => {
   const parsed = Number.parseInt(value, 10);
@@ -67,14 +73,16 @@ const hasPlanningFactorPayload = (forecast) => {
   return (forecast.items || []).every((item) => Array.isArray(item.factors) && item.factors.length > 0);
 };
 
-const needsPlanningRefresh = (forecast, timezone) => {
+const needsPlanningRefresh = (forecast, timezone, { inputsVersion = 0, now = new Date() } = {}) => {
   if (!forecast) return true;
   if (hasMatchedActuals(forecast)) return true;
   if (forecast.modelVersion !== FORECAST_MODEL_VERSION) return true;
+  if ((Number(forecast.inputsVersion) || 0) < inputsVersion) return true;
+  if (forecast.signals?.retryAfter && new Date(forecast.signals.retryAfter) <= now) return true;
   const generatedDateKey = forecast.generatedAt
     ? zonedDateKey(forecast.generatedAt, timezone)
     : null;
-  if (generatedDateKey !== zonedDateKey(new Date(), timezone)) return true;
+  if (generatedDateKey !== zonedDateKey(now, timezone)) return true;
   return !hasPlanningFactorPayload(forecast);
 };
 
@@ -195,12 +203,12 @@ const ensureHistoryForecast = async (cafeId, date) => {
 const getToday = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const timezone = await getCafeTimezone(cafeId);
+    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
     const today = zonedDayStart(new Date(), timezone);
 
     let forecast = await Forecast.findOne({ cafeId, date: today });
 
-    if (needsPlanningRefresh(forecast, timezone)) {
+    if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
       forecast = await generateForecast(cafeId, today, { origin: 'live' });
     }
 
@@ -213,7 +221,7 @@ const getToday = async (req, res, next) => {
 const getWeek = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const timezone = await getCafeTimezone(cafeId);
+    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
     const today = zonedDayStart(new Date(), timezone);
     const nextWeek = addZonedDays(today, 7, timezone);
 
@@ -233,7 +241,7 @@ const getWeek = async (req, res, next) => {
     const settled = await Promise.allSettled(
       targetDates.map(async (targetDate) => {
         const existingForecast = existingByDate.get(zonedDateKey(targetDate, timezone));
-        if (existingForecast && !needsPlanningRefresh(existingForecast, timezone)) {
+        if (existingForecast && !needsPlanningRefresh(existingForecast, timezone, { inputsVersion })) {
           return existingForecast;
         }
         return generateForecast(cafeId, targetDate, { origin: 'live' });
@@ -286,6 +294,17 @@ const generate = async (req, res, next) => {
 
     const timezone = await getCafeTimezone(cafeId);
     const targetDate = parseRequestedDay(date, timezone);
+    const today = zonedDayStart(new Date(), timezone);
+    const lastDay = addZonedDays(today, GENERATE_HORIZON_DAYS, timezone);
+    if (targetDate < today || targetDate > lastDay) {
+      const allowedFrom = zonedDateKey(today, timezone);
+      const allowedTo = zonedDateKey(lastDay, timezone);
+      return res.status(400).json({
+        success: false, code: 'FORECAST_DATE_OUT_OF_RANGE',
+        message: `date must be between ${allowedFrom} and ${allowedTo} in the cafe's calendar`,
+        allowedFrom, allowedTo,
+      });
+    }
     const forecast = await generateForecast(cafeId, targetDate, { origin: 'manual' });
     clearApiCache({ cafeId });
     return res.status(200).json({
@@ -345,9 +364,7 @@ const updateFactors = async (req, res, next) => {
     cafe.forecastSettings = savedSettings;
     await cafe.save();
 
-    const today = zonedDayStart(new Date(), safeTimezone(cafe.timezone));
-    await Forecast.deleteMany({ cafeId: cafe._id, date: { $gte: today } });
-    clearApiCache({ cafeId: cafe._id });
+    await invalidatePlanningForecasts(cafe._id, { timezone: cafe.timezone });
 
     const effective = getForecastSettings(cafe, plan);
     return res.status(200).json({
@@ -607,12 +624,12 @@ const getHistory = async (req, res, next) => {
 const getTomorrow = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const timezone = await getCafeTimezone(cafeId);
+    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
     const tomorrow = addZonedDays(new Date(), 1, timezone);
 
     let forecast = await Forecast.findOne({ cafeId, date: tomorrow });
 
-    if (needsPlanningRefresh(forecast, timezone)) {
+    if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
       forecast = await generateForecast(cafeId, tomorrow, { origin: 'live' });
     }
 
@@ -651,6 +668,7 @@ const getRecent = async (req, res, next) => {
 };
 
 module.exports = {
+  _test: { needsPlanningRefresh, GENERATE_HORIZON_DAYS },
   getToday,
   getTomorrow,
   getWeek,

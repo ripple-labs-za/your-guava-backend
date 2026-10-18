@@ -368,7 +368,7 @@ const getLoadSheddingStage = async (city) => {
       : unknownStage('Load-shedding provider returned no stage for this area');
   } catch (error) {
     console.error('[signals] Load shedding API error:', error.message);
-    return unknownStage('Load-shedding data is temporarily unavailable');
+    return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
 };
 
@@ -395,7 +395,7 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
     area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
   } catch (error) {
     console.error('[signals] Load shedding API error:', error.message);
-    return unknownStage('Load-shedding data is temporarily unavailable');
+    return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
   }
   if (!Number.isFinite(area?.stage)) return unknownStage('Load-shedding provider returned no stage for this area');
   const [year, month, day] = dateKey.split('-').map(Number);
@@ -432,6 +432,7 @@ const getSignalsForDate = async (date, location = {}) => {
     loadSheddingStage: loadShedding.stage,
     loadSheddingSource: loadShedding.source || null,
     loadSheddingAvailable: loadShedding.available,
+    loadSheddingTransient: loadShedding.transient === true,
     ...(loadShedding.unavailableReason
       ? { loadSheddingUnavailableReason: loadShedding.unavailableReason }
       : {}),

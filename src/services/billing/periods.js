@@ -1,22 +1,14 @@
 // Plan-period maths for a payment, and the forecast invalidation a plan change triggers.
 // Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
 const Cafe = require('../../models/Cafe.model');
-const Forecast = require('../../models/Forecast.model');
+const { invalidatePlanningForecasts } = require('../forecast/generate');
 const { getPlan, getPlans, addBillingCycle, planRank } = require('../billingPlans.service');
-const { zonedDayStart, safeTimezone, DEFAULT_TIMEZONE } = require('../../utils/timezone');
 
 const invalidateFutureForecastsForOrg = async (orgId) => {
   const cafes = await Cafe.find({ orgId }).select('_id timezone').lean();
   if (cafes.length === 0) return;
 
-  const now = new Date();
-
-  await Forecast.deleteMany({
-    $or: cafes.map((cafe) => ({
-      cafeId: cafe._id,
-      date: { $gte: zonedDayStart(now, safeTimezone(cafe.timezone)) },
-    })),
-  });
+  for (const cafe of cafes) await invalidatePlanningForecasts(cafe._id, { timezone: cafe.timezone });
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -3,6 +3,8 @@
 const Transaction = require('../../models/Transaction.model');
 const Forecast = require('../../models/Forecast.model');
 const Cafe = require('../../models/Cafe.model');
+const Item = require('../../models/Item.model');
+const { invalidatePlanningForecasts } = require('./generate');
 const { backgroundJobsInline } = require('../../config/flags');
 const { safeTimezone, zonedDayStart, addZonedDays } = require('../../utils/timezone');
 const { isDemandLine } = require('../../utils/demand');
@@ -11,6 +13,48 @@ const BACKTEST_BASIS_NOTE =
   "Backtests are scored with the weather that actually happened and today's menu prices, so they read better than live forecasts will.";
 
 const storedPrediction = (item) => (Number.isFinite(item.expectedQty) ? item.expectedQty : Number(item.predictedQty) || 0);
+const MAX_MERGE_HOPS = 5;
+const loadItemIndex = async (cafeId, ids) => {
+  const index = new Map();
+  let pending = [...new Set(ids.filter(Boolean).map(String))];
+  for (let hop = 0; hop <= MAX_MERGE_HOPS && pending.length > 0; hop += 1) {
+    const docs = await Item.find({ cafeId, _id: { $in: pending } }).select('_id name mergedInto').lean();
+    for (const doc of docs) index.set(String(doc._id), { name: doc.name, mergedInto: doc.mergedInto ? String(doc.mergedInto) : null });
+    pending = docs.map((doc) => doc.mergedInto && String(doc.mergedInto)).filter((id) => id && !index.has(id));
+  }
+  return index;
+};
+const canonicalItemId = (index, id) => {
+  let current = id ? String(id) : null;
+  for (let hop = 0; current && hop < MAX_MERGE_HOPS; hop += 1) {
+    const next = index.get(current)?.mergedInto;
+    if (!next) break;
+    current = next;
+  }
+  return current;
+};
+
+const menuRefreshes = new Map();
+const runCoalescedMenuRefresh = (cafeId, run) => {
+  const key = String(cafeId);
+  const running = menuRefreshes.get(key);
+  if (running) {
+    running.rerun = true;
+    return running.promise;
+  }
+  const entry = { rerun: false, promise: null };
+  menuRefreshes.set(key, entry);
+  entry.promise = (async () => {
+    try {
+      do {
+        entry.rerun = false;
+        await run();
+      } while (entry.rerun);
+    } finally { menuRefreshes.delete(key); }
+  })();
+  return entry.promise;
+};
+const waitForMenuRefresh = (cafeId) => menuRefreshes.get(String(cafeId))?.promise || Promise.resolve();
 
 // Item-level WAPE, with the unstored long tail counted as one aggregate term.
 const itemWape = (items, { totalPredicted, totalActual }) => {
@@ -99,13 +143,19 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
     ...(forecast.forecastCoverage?.predictedItemNames || []),
     ...(forecast.items || []).map((item) => item.itemName),
   ]);
+  const lineIds = transactions.flatMap((tx) => (tx.items || []).map((line) => line.salesItemId)).filter(Boolean);
+  const itemIndex = options.itemIndex || await loadItemIndex(cafeId, [...forecast.items.map((fi) => fi.salesItemId), ...lineIds]);
+  const predictedIds = new Set(forecast.items.map((fi) => canonicalItemId(itemIndex, fi.salesItemId)).filter(Boolean));
   const actualMap = new Map();
+  const actualById = new Map();
   let actualRevenue = 0;
   for (const tx of transactions) {
     actualRevenue += tx.total || 0;
     for (const item of tx.items || []) {
-      if (!isDemandLine(item) && !predictedNames.has(item.name)) continue;
+      const key = canonicalItemId(itemIndex, item.salesItemId);
+      if (!isDemandLine(item) && !predictedNames.has(item.name) && !predictedIds.has(key)) continue;
       actualMap.set(item.name, (actualMap.get(item.name) || 0) + item.quantity);
+      if (key) actualById.set(key, (actualById.get(key) || 0) + item.quantity);
     }
   }
 
@@ -114,9 +164,29 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
   // long tail that is intentionally omitted from the bounded detail payload.
   let totalActual = 0;
 
+  const owners = new Map();
   for (const fi of forecast.items) {
-    fi.actualQty = actualMap.get(fi.itemName) || 0;
+    const key = canonicalItemId(itemIndex, fi.salesItemId);
+    if (key && (!owners.has(key) || String(fi.salesItemId) === key)) owners.set(key, fi);
   }
+  let mergedLine = false;
+  for (const fi of forecast.items) {
+    const key = canonicalItemId(itemIndex, fi.salesItemId);
+    if (!key) {
+      fi.actualQty = actualMap.get(fi.itemName) || 0;
+      continue;
+    }
+    if (owners.get(key) !== fi) {
+      fi.actualQty = null;
+      mergedLine = true;
+      continue;
+    }
+    fi.actualQty = actualById.has(key) ? actualById.get(key) : (actualMap.get(fi.itemName) || 0);
+    const name = itemIndex.get(key)?.name;
+    if (name) fi.itemName = name;
+  }
+  forecast.calibrationExcluded = mergedLine ? true : undefined;
+  forecast.markModified('items');
 
   for (const actualQty of actualMap.values()) totalActual += actualQty;
   const hasCompleteCoverage = forecast.forecastCoverage?.includesAllRevenue === true &&
@@ -144,6 +214,7 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
 };
 
 const refreshHistoricalActualsAfterMenuChange = async (cafeId, timezone) => {
+  const itemIndex = await loadItemIndex(cafeId, (await Item.find({ cafeId }).select('_id').lean()).map((doc) => doc._id));
   const today = zonedDayStart(new Date(), timezone);
   const historical = await Forecast.find({
     cafeId,
@@ -155,7 +226,7 @@ const refreshHistoricalActualsAfterMenuChange = async (cafeId, timezone) => {
     .limit(366)
     .lean();
   for (const forecast of historical) {
-    await updateForecastActuals(cafeId, forecast.date, { timezone });
+    await updateForecastActuals(cafeId, forecast.date, { timezone, itemIndex });
   }
 };
 
@@ -163,8 +234,7 @@ const invalidateFutureForecastsAfterMenuChange = async (cafeId) => {
   const cafe = await Cafe.findById(cafeId).select('timezone').lean();
   if (!cafe) return null;
   const timezone = safeTimezone(cafe.timezone);
-  const today = zonedDayStart(new Date(), timezone);
-  await Forecast.deleteMany({ cafeId, date: { $gte: today } });
+  await invalidatePlanningForecasts(cafeId, { timezone });
   return timezone;
 };
 
@@ -179,18 +249,15 @@ const scheduleForecastRefreshAfterMenuChange = async (cafeId) => {
   // Historical actual recomputation is bounded and may finish asynchronously.
   const timezone = await invalidateFutureForecastsAfterMenuChange(cafeId);
   if (!timezone) return;
-  if (backgroundJobsInline()) {
-    await refreshHistoricalActualsAfterMenuChange(cafeId, timezone);
-    return;
-  }
-  setImmediate(() => {
-    refreshHistoricalActualsAfterMenuChange(cafeId, timezone).catch((error) => {
+  const refresh = runCoalescedMenuRefresh(cafeId, () => refreshHistoricalActualsAfterMenuChange(cafeId, timezone));
+  if (backgroundJobsInline()) await refresh;
+  else refresh.catch((error) => {
       console.error('[forecasts] menu-change refresh failed:', error.message);
-    });
   });
 };
 
 module.exports = {
+  runCoalescedMenuRefresh, waitForMenuRefresh,
   BACKTEST_BASIS_NOTE, itemWape,
   updateForecastActuals, refreshForecastsAfterMenuChange, scheduleForecastRefreshAfterMenuChange,
 };
