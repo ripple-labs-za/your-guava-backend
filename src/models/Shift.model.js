@@ -25,6 +25,8 @@ const shiftSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // An end time before the start time: the shift finishes the next day (BE-08-T04).
+    endsNextDay: { type: Boolean, default: false },
     hoursWorked: {
       type: Number,
     },
@@ -58,5 +60,6 @@ const shiftSchema = new mongoose.Schema(
 );
 
 shiftSchema.index({ cafeId: 1, date: 1 });
+shiftSchema.index({ cafeId: 1, staffId: 1, date: 1 });
 
 module.exports = mongoose.model('Shift', shiftSchema);

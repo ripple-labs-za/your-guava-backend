@@ -10,6 +10,7 @@ const {
 } = require('../services/workforce/input');
 const { sendWorkforceError } = require('../services/workforce/errors');
 const { assertStartDateMovable } = require('../services/workforce/startDateLock');
+const { deactivateStaff } = require('../services/workforce/deactivation');
 
 // Pay is owner-only information. Managers get the roster without hourlyRate.
 const staffDto = (staff, user) => {
@@ -116,6 +117,8 @@ const update = async (req, res, next) => {
     const body = assertPlainBody(req.body);
     const parsedStartDate = body.startDate === undefined ? undefined : dateOnlyInput(body.startDate, 'startDate');
     const isActive = parseBoolean(body.isActive, 'isActive');
+    // Deactivation goes through the cascade below, never through a bare $set.
+    const deactivating = isActive === false;
     const workDays = parseWorkDays(body.workDays);
     const changes = {
       ...(body.name !== undefined && { name: requiredText(body.name, 'name', WORKFORCE_TEXT_LIMITS.name) }),
@@ -124,24 +127,31 @@ const update = async (req, res, next) => {
       ...(body.role !== undefined && { role: parseRole(body.role) }),
       ...(body.hourlyRate !== undefined && { hourlyRate: parseHourlyRate(body.hourlyRate, { required: true }) }),
       ...(parsedStartDate !== undefined && { startDate: parsedStartDate }),
-      ...(isActive !== undefined && { isActive }),
+      ...(isActive !== undefined && !deactivating && { isActive }),
       ...(workDays !== undefined && { workDays }),
     };
 
     let staff;
     await session.withTransaction(async () => {
       if (parsedStartDate !== undefined) await assertStartDateMovable({ cafeId, staffId: id, startDate: parsedStartDate, session });
-      staff = await Staff.findOneAndUpdate(
-        { _id: id, cafeId },
-        {
-          $set: changes,
-        },
-        { new: true, runValidators: true, session }
-      );
+      // The portal deactivates with { isActive: false } alone, which leaves nothing to $set.
+      staff = Object.keys(changes).length === 0
+        ? await Staff.findOne({ _id: id, cafeId }).session(session)
+        : await Staff.findOneAndUpdate({ _id: id, cafeId }, { $set: changes }, { new: true, runValidators: true, session });
     });
 
     if (!staff) {
       return res.status(404).json({ success: false, message: 'Staff member not found' });
+    }
+
+    if (deactivating) {
+      const result = await deactivateStaff({ cafeId, staffId: id, actorUserId: req.user.id });
+      return res.status(200).json({
+        success: true,
+        staff: result.staff,
+        cancelledShifts: result.cancelledShifts,
+        cancelledLeaveRequests: result.cancelledLeaveRequests,
+      });
     }
 
     return res.status(200).json({ success: true, staff });
@@ -153,23 +163,24 @@ const update = async (req, res, next) => {
   }
 };
 
-// DELETE /api/staff/:id — Soft delete (set isActive: false)
+// DELETE /api/staff/:id — Deactivate: future scheduled shifts are cancelled and
+// pending leave is withdrawn in the same transaction (BE-08-T04).
 const remove = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
     const id = objectIdString(req.params.id, 'id');
 
-    const staff = await Staff.findOneAndUpdate(
-      { _id: id, cafeId },
-      { $set: { isActive: false } },
-      { new: true }
-    );
-
-    if (!staff) {
-      return res.status(404).json({ success: false, message: 'Staff member not found' });
+    const result = await deactivateStaff({ cafeId, staffId: id, actorUserId: req.user.id });
+    if (!result) {
+      return res.status(404).json({ success: false, code: 'STAFF_NOT_FOUND', message: 'Staff member not found' });
     }
 
-    return res.status(200).json({ success: true, message: 'Staff member deactivated' });
+    return res.status(200).json({
+      success: true,
+      message: 'Staff member deactivated',
+      cancelledShifts: result.cancelledShifts,
+      cancelledLeaveRequests: result.cancelledLeaveRequests,
+    });
   } catch (error) {
     if (sendWorkforceError(res, error)) return undefined;
     return next(error);

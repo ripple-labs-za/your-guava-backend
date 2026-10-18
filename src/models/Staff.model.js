@@ -52,6 +52,9 @@ const staffSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // The per-person roster lock: every shift write increments it inside its
+    // transaction, so two writes for one person serialise (BE-08-T04).
+    rosterRevision: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

@@ -1,14 +1,20 @@
+const mongoose = require('mongoose');
 const Shift = require('../models/Shift.model');
-const Staff = require('../models/Staff.model');
 const { formatDateOnly, inclusiveDateOnlyDays, TIME_OF_DAY_RE } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 const {
   WORKFORCE_TEXT_LIMITS, invalid, objectIdString, requiredText, optionalText,
   dateOnlyInput, assertPlainBody, parseEnum, SHIFT_STATUSES,
 } = require('../services/workforce/input');
-const { sendWorkforceError } = require('../services/workforce/errors');
+const { WorkforceError, sendWorkforceError } = require('../services/workforce/errors');
+const { DAY_MS, cafeToday } = require('../services/workforce/cafeCalendar');
+const {
+  requireShiftSpan, weekStartFor, round2, splitWeekHours, recomputeStaffWeek,
+} = require('../services/workforce/shiftHours');
+const {
+  lockActiveStaff, touchStaff, findOverlappingShift, shiftOverlapError, approvedLeaveOn, shiftOnLeaveError,
+} = require('../services/workforce/shiftGuards');
 
-const WEEKLY_HOUR_THRESHOLD = 45; // South African BCEA law
 const MAX_SHIFT_RANGE_DAYS = 93;
 
 const timeInput = (value, field) => {
@@ -17,105 +23,29 @@ const timeInput = (value, field) => {
   return time;
 };
 
-/**
- * Calculate hours between two HH:MM time strings.
- */
-function calcHours(startTime, endTime) {
-  if (!TIME_OF_DAY_RE.test(String(startTime || '')) || !TIME_OF_DAY_RE.test(String(endTime || ''))) {
-    return NaN;
+// The requested YYYY-MM-DD range, or the cafe's own current week when neither
+// date is sent. One date alone, or a repeated one, is refused (BE-08-T05).
+const requestedRange = async ({ query, cafeId, label }) => {
+  if (query.startDate === undefined && query.endDate === undefined) {
+    const monday = weekStartFor(await cafeToday(cafeId));
+    return { start: monday, end: new Date(monday.getTime() + 6 * DAY_MS) };
   }
-  const [sh, sm] = startTime.split(':').map(Number);
-  const [eh, em] = endTime.split(':').map(Number);
-  return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
-}
-
-/**
- * Get Monday 00:00 and Sunday 23:59 for the week containing the given date.
- */
-function getWeekBounds(date) {
-  const d = new Date(date);
-  const day = d.getUTCDay(); // 0 = Sunday
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() + diffToMonday);
-  monday.setUTCHours(0, 0, 0, 0);
-
-  const sunday = new Date(monday);
-  sunday.setUTCDate(monday.getUTCDate() + 6);
-  sunday.setUTCHours(23, 59, 59, 999);
-
-  return { monday, sunday };
-}
-
-/**
- * Get total hours for a staff member in the week containing the given date,
- * excluding a specific shift id (for updates).
- */
-/**
- * Returns true if the staff member exists and belongs to the given cafe.
- * Prevents attaching shifts/leave to another tenant's staff.
- */
-async function staffBelongsToCafe(staffId, cafeId) {
-  const staff = await Staff.findOne({ _id: staffId, cafeId }).select('_id').lean();
-  return Boolean(staff);
-}
-
-const toMinutes = (time) => {
-  const [hours, minutes] = String(time).split(':').map(Number);
-  return hours * 60 + minutes;
+  const start = dateOnlyInput(query.startDate, 'startDate');
+  const end = dateOnlyInput(query.endDate, 'endDate');
+  if (end < start) throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
+  if (inclusiveDateOnlyDays(start, end) > MAX_SHIFT_RANGE_DAYS) {
+    throw invalid('endDate', `${label} ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`);
+  }
+  return { start, end };
 };
 
-/**
- * Finds a non-cancelled shift for the same staff member on the same day whose
- * time range overlaps [startTime, endTime). Touching ranges (one ends exactly
- * when the other starts) are not an overlap. excludeShiftId skips the shift
- * being updated so a shift never conflicts with itself.
- */
-async function findOverlappingShift(cafeId, staffId, date, startTime, endTime, excludeShiftId = null) {
-  const dayStart = new Date(date);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart);
-  dayEnd.setUTCDate(dayStart.getUTCDate() + 1);
+const fail = (res, next, error) => (sendWorkforceError(res, error) ? undefined : next(error));
 
-  const filter = {
-    cafeId,
-    staffId,
-    date: { $gte: dayStart, $lt: dayEnd },
-    status: { $ne: 'cancelled' },
-  };
-  if (excludeShiftId) {
-    filter._id = { $ne: excludeShiftId };
-  }
-  const sameDay = await Shift.find(filter).select('startTime endTime').lean();
-  const start = toMinutes(startTime);
-  const end = toMinutes(endTime);
-  return sameDay.find((s) => toMinutes(s.startTime) < end && start < toMinutes(s.endTime)) || null;
-}
-
-const shiftOverlapResponse = (res, overlap, date) =>
-  res.status(409).json({
-    success: false,
-    code: 'SHIFT_OVERLAP',
-    message: `This staff member already has a shift from ${overlap.startTime} to ${overlap.endTime} on ${formatDateOnly(date)}`,
-  });
-
-async function getWeeklyHours(cafeId, staffId, date, excludeShiftId = null) {
-  const { monday, sunday } = getWeekBounds(date);
-  const filter = {
-    cafeId,
-    staffId,
-    date: { $gte: monday, $lte: sunday },
-    status: { $ne: 'cancelled' },
-  };
-  if (excludeShiftId) {
-    filter._id = { $ne: excludeShiftId };
-  }
-  const shifts = await Shift.find(filter).lean();
-  return shifts.reduce((sum, s) => sum + (s.hoursWorked || 0), 0);
-}
-
-// POST /api/shifts — Create a shift
+// POST /api/shifts — Create a shift. The person's roster lock serialises
+// concurrent writes, so the overlap check and the insert act as one; overtime
+// is then recomputed for the whole calendar week (BE-08-T04).
 const create = async (req, res, next) => {
+  const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
     const body = assertPlainBody(req.body);
@@ -125,74 +55,44 @@ const create = async (req, res, next) => {
     const endTime = timeInput(body.endTime, 'endTime');
     const status = body.status === undefined ? undefined : parseEnum(body.status, SHIFT_STATUSES, 'status');
     const notes = optionalText(body.notes, 'notes', WORKFORCE_TEXT_LIMITS.notes);
+    const span = requireShiftSpan(startTime, endTime);
 
-    const hoursWorked = calcHours(startTime, endTime);
-    if (!Number.isFinite(hoursWorked) || hoursWorked <= 0 || hoursWorked > 24) {
-      throw invalid('endTime', 'endTime must be after startTime and both times must use HH:MM');
-    }
-
-    if (!(await staffBelongsToCafe(staffId, cafeId))) {
-      return res.status(404).json({ success: false, message: 'Staff member not found' });
-    }
-
-    const overlap = await findOverlappingShift(cafeId, staffId, shiftDate, startTime, endTime);
-    if (overlap) {
-      return shiftOverlapResponse(res, overlap, shiftDate);
-    }
-
-    // Check if weekly total exceeds 45hrs — auto-flag overtime
-    const existingWeeklyHours = await getWeeklyHours(cafeId, staffId, shiftDate);
-    const regularHours = Math.min(hoursWorked, Math.max(0, WEEKLY_HOUR_THRESHOLD - existingWeeklyHours));
-    const overtimeHours = Math.max(0, hoursWorked - regularHours);
-    const type = overtimeHours > 0 ? 'overtime' : 'regular';
-
-    const shift = await Shift.create({
-      cafeId,
-      staffId,
-      date: shiftDate,
-      startTime,
-      endTime,
-      hoursWorked,
-      regularHours,
-      overtimeHours,
-      type,
-      status,
-      notes,
+    let shiftId;
+    await session.withTransaction(async () => {
+      await lockActiveStaff({ cafeId, staffId, session });
+      if (status !== 'cancelled') {
+        const leave = await approvedLeaveOn({ cafeId, staffId, date: shiftDate, session });
+        if (leave) throw shiftOnLeaveError(leave);
+        const overlap = await findOverlappingShift({ cafeId, staffId, date: shiftDate, startTime, endTime, session });
+        if (overlap) throw shiftOverlapError(overlap);
+      }
+      const [shift] = await Shift.create(
+        [{ cafeId, staffId, date: shiftDate, startTime, endTime, hoursWorked: span.hours, endsNextDay: span.endsNextDay, status, notes }],
+        { session }
+      );
+      shiftId = shift._id;
+      await recomputeStaffWeek({ cafeId, staffId, weekStart: weekStartFor(shiftDate), session });
     });
 
+    const shift = await Shift.findOne({ _id: shiftId, cafeId }).lean();
     return res.status(201).json({ success: true, shift });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
+  } finally {
+    await session.endSession();
   }
 };
 
-// GET /api/shifts — Get shifts for a date range
+// GET /api/shifts — Shifts in a date range; cancelled ones only with
+// ?includeCancelled=true, so the roster never renders them as real.
 const list = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    let { startDate, endDate } = req.query;
-
-    // Default to current week Mon-Sun
-    if (startDate === undefined && endDate === undefined) {
-      const { monday, sunday } = getWeekBounds(new Date());
-      startDate = monday;
-      endDate = sunday;
-    } else {
-      startDate = dateOnlyInput(startDate, 'startDate');
-      endDate = dateOnlyInput(endDate, 'endDate');
-      if (!startDate || !endDate || endDate < startDate) {
-        throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
-      }
-      if (inclusiveDateOnlyDays(startDate, endDate) > MAX_SHIFT_RANGE_DAYS) {
-        throw invalid('endDate', `Shift ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`);
-      }
-      endDate.setUTCHours(23, 59, 59, 999);
-    }
-
+    const range = await requestedRange({ query: req.query, cafeId, label: 'Shift' });
     const shifts = await Shift.find({
       cafeId,
-      date: { $gte: startDate, $lte: endDate },
+      date: { $gte: range.start, $lte: range.end },
+      ...(req.query.includeCancelled === 'true' ? {} : { status: { $ne: 'cancelled' } }),
     })
       .populate('staffId', 'name role')
       .sort({ date: 1, startTime: 1 })
@@ -200,16 +100,16 @@ const list = async (req, res, next) => {
 
     return res.status(200).json({ success: true, shifts });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
   }
 };
 
-// GET /api/shifts/week — Current week's roster grouped by day
+// GET /api/shifts/week — The cafe's current week, grouped by day
 const getWeek = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { monday, sunday } = getWeekBounds(new Date());
+    const monday = weekStartFor(await cafeToday(cafeId));
+    const sunday = new Date(monday.getTime() + 6 * DAY_MS);
 
     const shifts = await Shift.find({
       cafeId,
@@ -226,9 +126,7 @@ const getWeek = async (req, res, next) => {
     const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     const roster = {};
     for (let i = 0; i < 7; i++) {
-      const dayDate = new Date(monday);
-      dayDate.setUTCDate(monday.getUTCDate() + i);
-      const key = formatDateOnly(dayDate);
+      const key = formatDateOnly(new Date(monday.getTime() + i * DAY_MS));
       roster[key] = { day: days[i], date: key, shifts: [] };
     }
 
@@ -241,98 +139,72 @@ const getWeek = async (req, res, next) => {
 
     return res.status(200).json({ success: true, roster: Object.values(roster) });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
   }
 };
 
-// GET /api/shifts/summary — Weekly hours summary per staff member
+// GET /api/shifts/summary — hours per person. Each shift's overtime is counted
+// against its own Monday-to-Sunday week, so the query widens to whole weeks and
+// then reports only the shifts inside the requested range.
 const getSummary = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    let { startDate, endDate } = req.query;
-
-    if (startDate === undefined && endDate === undefined) {
-      const { monday, sunday } = getWeekBounds(new Date());
-      startDate = monday;
-      endDate = sunday;
-    } else {
-      startDate = dateOnlyInput(startDate, 'startDate');
-      endDate = dateOnlyInput(endDate, 'endDate');
-      if (!startDate || !endDate || endDate < startDate) {
-        throw invalid('endDate', 'startDate and endDate must be a valid YYYY-MM-DD range');
-      }
-      if (inclusiveDateOnlyDays(startDate, endDate) > MAX_SHIFT_RANGE_DAYS) {
-        throw invalid('endDate', `Summary ranges cannot exceed ${MAX_SHIFT_RANGE_DAYS} days`);
-      }
-      endDate.setUTCHours(23, 59, 59, 999);
-    }
-
-    const shifts = await Shift.find({
-      cafeId,
-      date: { $gte: startDate, $lte: endDate },
-      status: { $ne: 'cancelled' },
-    })
+    const range = await requestedRange({ query: req.query, cafeId, label: 'Summary' });
+    const from = weekStartFor(range.start);
+    const to = new Date(weekStartFor(range.end).getTime() + 7 * DAY_MS);
+    const shifts = await Shift.find({ cafeId, date: { $gte: from, $lt: to }, status: { $ne: 'cancelled' } })
       .populate('staffId', 'name hourlyRate')
-      .sort({ staffId: 1, date: 1, startTime: 1 })
       .lean();
 
-    // Aggregate by staff
-    const staffMap = {};
-    const weeklyHours = {};
-    for (const shift of shifts) {
-      if (!shift.staffId) continue;
-      const sid = shift.staffId._id.toString();
-      if (!staffMap[sid]) {
-        staffMap[sid] = {
-          staffId: sid,
-          staffName: shift.staffId.name,
-          hourlyRate: shift.staffId.hourlyRate,
-          totalHours: 0,
-          regularHours: 0,
-          overtimeHours: 0,
-        };
-      }
-      const hours = Number(shift.hoursWorked || 0);
-      const weekKey = `${sid}:${formatDateOnly(getWeekBounds(shift.date).monday)}`;
-      const hoursBeforeShift = weeklyHours[weekKey] || 0;
-      const regularHours = Math.min(hours, Math.max(0, WEEKLY_HOUR_THRESHOLD - hoursBeforeShift));
-      const overtimeHours = Math.max(0, hours - regularHours);
-      weeklyHours[weekKey] = hoursBeforeShift + hours;
-      staffMap[sid].totalHours += hours;
-      staffMap[sid].regularHours += regularHours;
-      staffMap[sid].overtimeHours += overtimeHours;
-    }
+    const weeks = shifts
+      .filter((shift) => shift.staffId)
+      .reduce((groups, shift) => {
+        const key = `${shift.staffId._id}:${weekStartFor(shift.date).getTime()}`;
+        return groups.set(key, [...(groups.get(key) || []), shift]);
+      }, new Map());
 
-    // estimatedPay is the rate multiplied out, so it is as sensitive as the
-    // rate itself: both leave the payload for anyone who is not the owner.
+    const inRange = (shift) => shift.date >= range.start && shift.date <= range.end;
+    const totals = [...weeks.values()]
+      .flatMap((weekShifts) => splitWeekHours(weekShifts))
+      .filter(({ shift }) => inRange(shift))
+      .reduce((byStaff, { shift, regularHours, overtimeHours }) => {
+        const sid = String(shift.staffId._id);
+        const prev = byStaff.get(sid) || {
+          staffId: sid, staffName: shift.staffId.name, hourlyRate: shift.staffId.hourlyRate,
+          totalHours: 0, regularHours: 0, overtimeHours: 0,
+        };
+        return byStaff.set(sid, {
+          ...prev,
+          totalHours: prev.totalHours + Number(shift.hoursWorked || 0),
+          regularHours: prev.regularHours + regularHours,
+          overtimeHours: prev.overtimeHours + overtimeHours,
+        });
+      }, new Map());
+
+    // estimatedPay is the rate multiplied out, so both stay owner-only.
     const canSeePay = req.user.role === 'owner';
-    const summary = Object.values(staffMap).map(({ hourlyRate, ...s }) => ({
-      ...s,
-      ...(canSeePay ? { hourlyRate } : {}),
-      totalHours: Math.round(s.totalHours * 100) / 100,
-      regularHours: Math.round(s.regularHours * 100) / 100,
-      overtimeHours: Math.round(s.overtimeHours * 100) / 100,
-      ...(canSeePay
-        ? {
-          estimatedPay:
-            Math.round(
-              (s.regularHours * hourlyRate + s.overtimeHours * hourlyRate * 1.5) * 100
-            ) / 100,
-        }
-        : {}),
-      overThreshold: s.totalHours > WEEKLY_HOUR_THRESHOLD,
-    }));
+    const summary = [...totals.values()]
+      .sort((a, b) => a.staffName.localeCompare(b.staffName))
+      .map(({ hourlyRate, ...s }) => ({
+        ...s,
+        ...(canSeePay ? { hourlyRate } : {}),
+        totalHours: round2(s.totalHours),
+        regularHours: round2(s.regularHours),
+        overtimeHours: round2(s.overtimeHours),
+        ...(canSeePay ? { estimatedPay: round2(s.regularHours * hourlyRate + s.overtimeHours * hourlyRate * 1.5) } : {}),
+        // BCEA's 45 hours are per calendar week: true when any week in the range went over.
+        overThreshold: s.overtimeHours > 0,
+      }));
 
     return res.status(200).json({ success: true, summary, summaries: summary });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
   }
 };
 
-// PUT /api/shifts/:id — Update shift
+// PUT /api/shifts/:id — Update a shift; both the old and the new week are recomputed.
 const update = async (req, res, next) => {
+  const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
     const id = objectIdString(req.params.id, 'id');
@@ -344,84 +216,75 @@ const update = async (req, res, next) => {
     const status = body.status === undefined ? undefined : parseEnum(body.status, SHIFT_STATUSES, 'status');
     const notes = optionalText(body.notes, 'notes', WORKFORCE_TEXT_LIMITS.notes);
 
-    const existing = await Shift.findOne({ _id: id, cafeId });
-    if (!existing) {
-      return res.status(404).json({ success: false, message: 'Shift not found' });
-    }
+    await session.withTransaction(async () => {
+      const existing = await Shift.findOne({ _id: id, cafeId }).session(session).lean();
+      if (!existing) throw new WorkforceError(404, 'SHIFT_NOT_FOUND', 'Shift not found');
+      const target = {
+        staffId: staffId ?? existing.staffId,
+        date: date ?? existing.date,
+        startTime: startTime ?? existing.startTime,
+        endTime: endTime ?? existing.endTime,
+        status: status ?? existing.status,
+      };
+      const span = requireShiftSpan(target.startTime, target.endTime);
+      const movesPerson = String(target.staffId) !== String(existing.staffId);
 
-    const newStartTime = startTime ?? existing.startTime;
-    const newEndTime = endTime ?? existing.endTime;
-    const newDate = date ?? existing.date;
-    const newStaffId = staffId ?? existing.staffId;
-    const hoursWorked = calcHours(newStartTime, newEndTime);
-    if (!Number.isFinite(hoursWorked) || hoursWorked <= 0 || hoursWorked > 24) {
-      throw invalid('endTime', 'endTime must be after startTime and both times must use HH:MM');
-    }
-
-    if (staffId && !(await staffBelongsToCafe(staffId, cafeId))) {
-      return res.status(404).json({ success: false, message: 'Staff member not found' });
-    }
-
-    const overlap = await findOverlappingShift(
-      cafeId,
-      newStaffId,
-      newDate,
-      newStartTime,
-      newEndTime,
-      existing._id
-    );
-    if (overlap) {
-      return shiftOverlapResponse(res, overlap, newDate);
-    }
-
-    // Re-check overtime threshold
-    const existingWeeklyHours = await getWeeklyHours(cafeId, newStaffId, newDate, existing._id);
-    const regularHours = Math.min(hoursWorked, Math.max(0, WEEKLY_HOUR_THRESHOLD - existingWeeklyHours));
-    const overtimeHours = Math.max(0, hoursWorked - regularHours);
-    const type = overtimeHours > 0 ? 'overtime' : 'regular';
-
-    const shift = await Shift.findOneAndUpdate(
-      { _id: id, cafeId },
-      {
-        $set: {
-          ...(staffId !== undefined && { staffId }),
-          ...(date !== undefined && { date: newDate }),
-          ...(startTime !== undefined && { startTime }),
-          ...(endTime !== undefined && { endTime }),
-          ...(status !== undefined && { status }),
-          ...(notes !== undefined && { notes }),
-          hoursWorked,
-          regularHours,
-          overtimeHours,
-          type,
+      if (movesPerson) await lockActiveStaff({ cafeId, staffId: target.staffId, session });
+      await touchStaff({ cafeId, staffId: existing.staffId, session });
+      if (target.status !== 'cancelled') {
+        const leave = await approvedLeaveOn({ cafeId, staffId: target.staffId, date: target.date, session });
+        if (leave) throw shiftOnLeaveError(leave);
+        const overlap = await findOverlappingShift({ cafeId, ...target, excludeId: existing._id, session });
+        if (overlap) throw shiftOverlapError(overlap);
+      }
+      await Shift.updateOne(
+        { _id: existing._id, cafeId },
+        {
+          $set: {
+            ...target,
+            ...(notes !== undefined && { notes }),
+            hoursWorked: span.hours,
+            endsNextDay: span.endsNextDay,
+          },
         },
-      },
-      { new: true, runValidators: true }
-    );
+        { session, runValidators: true }
+      );
+      await recomputeStaffWeek({ cafeId, staffId: existing.staffId, weekStart: weekStartFor(existing.date), session });
+      if (movesPerson || weekStartFor(target.date).getTime() !== weekStartFor(existing.date).getTime()) {
+        await recomputeStaffWeek({ cafeId, staffId: target.staffId, weekStart: weekStartFor(target.date), session });
+      }
+    });
 
+    const shift = await Shift.findOne({ _id: id, cafeId }).lean();
     return res.status(200).json({ success: true, shift });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
+  } finally {
+    await session.endSession();
   }
 };
 
-// DELETE /api/shifts/:id — Delete shift
+// DELETE /api/shifts/:id — Delete a shift and recompute the rest of its week.
 const remove = async (req, res, next) => {
+  const session = await mongoose.startSession();
   try {
     const cafeId = activeCafeId(req);
     const id = objectIdString(req.params.id, 'id');
-
-    const shift = await Shift.findOneAndDelete({ _id: id, cafeId });
-
-    if (!shift) {
-      return res.status(404).json({ success: false, message: 'Shift not found' });
-    }
-
+    let found = false;
+    await session.withTransaction(async () => {
+      const shift = await Shift.findOne({ _id: id, cafeId }).session(session).lean();
+      found = Boolean(shift);
+      if (!shift) return;
+      await touchStaff({ cafeId, staffId: shift.staffId, session });
+      await Shift.deleteOne({ _id: shift._id, cafeId }, { session });
+      await recomputeStaffWeek({ cafeId, staffId: shift.staffId, weekStart: weekStartFor(shift.date), session });
+    });
+    if (!found) return res.status(404).json({ success: false, code: 'SHIFT_NOT_FOUND', message: 'Shift not found' });
     return res.status(200).json({ success: true, message: 'Shift deleted' });
   } catch (error) {
-    if (sendWorkforceError(res, error)) return undefined;
-    return next(error);
+    return fail(res, next, error);
+  } finally {
+    await session.endSession();
   }
 };
 

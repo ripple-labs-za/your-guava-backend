@@ -94,19 +94,14 @@ describe('Shifts API', () => {
       expect(res.body.success).toBe(false);
     });
 
-    it('returns 400 when endTime is before startTime', async () => {
+    it('returns 400 when the start and end times are the same', async () => {
       const res = await request
         .post('/api/shifts')
         .set('Authorization', `Bearer ${token}`)
-        .send({
-          staffId,
-          date: '2026-04-06',
-          startTime: '15:00',
-          endTime: '07:00',
-        });
+        .send({ staffId, date: '2026-04-06', startTime: '07:00', endTime: '07:00' });
 
       expect(res.status).toBe(400);
-      expect(res.body.message).toMatch(/endTime must be after startTime/i);
+      expect(res.body.code).toBe('INVALID_SHIFT_TIMES');
     });
 
     it('flags overtime when exceeding 45 weekly hours', async () => {

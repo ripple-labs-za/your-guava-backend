@@ -35,7 +35,7 @@ const create = async (req, res, next) => {
       throw invalid('endDate', `Leave periods cannot exceed ${MAX_LEAVE_SPAN_DAYS} days`);
     }
 
-    const staffMember = await Staff.findOne({ _id: staffId, cafeId }).select('name startDate workDays').lean();
+    const staffMember = await Staff.findOne({ _id: staffId, cafeId, isActive: true }).select('name startDate workDays').lean();
     if (!staffMember) {
       return res.status(404).json({ success: false, code: 'STAFF_NOT_FOUND', message: 'Staff member not found' });
     }
@@ -130,10 +130,14 @@ const approve = async (req, res, next) => {
         session,
       });
       if (clash) throw leaveOverlapError(clash, 'This staff member');
+      // Active staff only, for every type: no request of someone who has left is approved (BE-08-T04).
+      const staff = await Staff.findOne({ _id: leaveRequest.staffId, cafeId, isActive: true })
+        .select('name startDate')
+        .session(session)
+        .lean();
+      if (!staff) throw new WorkforceError(404, 'STAFF_NOT_FOUND', 'Staff member not found');
 
       if (leaveRequest.type !== 'unpaid') {
-        const staff = await Staff.findOne({ _id: leaveRequest.staffId, cafeId }).select('name startDate').session(session).lean();
-        if (!staff) throw new WorkforceError(404, 'STAFF_NOT_FOUND', 'Staff member not found');
         const window = cycleWindow(leaveRequest.type, staff.startDate, leaveRequest.startDate);
         assertWithinCycle({ window, end: leaveRequest.endDate, staffName: staff.name });
         const used = await usedDaysInCycle({ cafeId, staffId: leaveRequest.staffId, type: leaveRequest.type, window, session });
