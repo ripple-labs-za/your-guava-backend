@@ -8,3 +8,6 @@ backups/
 
 # BE-11-T03: the uploads controller modules are source, not uploaded files
 !src/controllers/uploads/
+
+# Generated local demo history
+demo-sales.csv

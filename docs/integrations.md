@@ -1,93 +1,70 @@
 # Accounting integrations
 
-Development scaffolding exists for Xero, QuickBooks, and Sage Accounting. None
-of these provider flows is production-supported yet.
+Verified against: `0896312` on 19 October 2026.
 
-## Setup
+Xero, QuickBooks and Sage OAuth connections exist for development. Sales posting is not implemented for any provider.
+Keep `ACCOUNTING_INTEGRATIONS_ENABLED=false` for MVP: production startup refuses true.
 
-For MVP, keep `ACCOUNTING_INTEGRATIONS_ENABLED=false`. Production startup
-refuses this flag until provider posting is implemented end-to-end.
+## OAuth and account selection
 
-For local development only, register a provider developer app and add the OAuth
-callback URL `http://localhost:5173/integrations/<provider>/callback` (or your
-production equivalent). Then populate the corresponding env vars in `.env` (see
-`.env.example`).
+Register a developer app with a callback at `http://localhost:5175/integrations/<provider>/callback` and set the matching
+client ID, client secret and redirect URI in `.env.example`. Use sandbox provider accounts only for development.
+Xero uses `/integrations/xero/callback`, QuickBooks `/integrations/quickbooks/callback`, and Sage `/integrations/sage/callback`.
+For QuickBooks set `QUICKBOOKS_ENV=sandbox`.
 
-## Status of each integration
+`src/services/integrationOAuthState.service.js` creates opaque random state, stores only its SHA-256 digest, and atomically
+consumes it once within ten minutes. It binds state to the current user, cafe and provider. State is not a signed JWT;
+server-side digest lookup provides integrity, expiry and replay protection. All mutations and authorization URLs are owner-only
+(`src/routes/integrations.routes.js`). Auth, callback and sync are feature-gated; disconnect remains available with the flag off.
 
-- **OAuth flow**: development scaffolding only. It is not approved for production until signed, expiring, single-use state, owner-only authorization, provider-account verification, remote grant revocation, and bounded provider requests are implemented and tested.
-- **Sales push**: not implemented. Sync returns `501` until the provider posting code is wired. The next step is to
-  wire the `pushSalesSummary` function in each `src/services/integrations/<provider>.service.js`
-  to call the provider's actual invoice/journal endpoint:
-  - Xero: POST `/BankTransactions` or `/Invoices`
-    (https://developer.xero.com/documentation/api/accounting/banktransactions)
-  - QuickBooks: POST `/v3/company/<realmId>/salesreceipt` (preferred for POS data) or `/invoice`
-    (https://developer.intuit.com/app/developer/qbo/docs/api/accounting/all-entities/salesreceipt)
-  - Sage: POST `/sales_invoices` or `/sales_quick_entries`
-    (https://developer.sage.com/accounting/reference/sales-invoices/)
-
-## Provider-specific notes
-
-### Xero
-
-1. Go to https://developer.xero.com/myapps and create a new app.
-2. Set the redirect URI to `http://localhost:5173/integrations/xero/callback`.
-3. Copy Client ID and Client Secret into `.env`.
-4. After the OAuth redirect, the frontend must fetch the tenant list from
-   `GET https://api.xero.com/connections` (using the new access token) and
-   forward the chosen `tenantId` in the callback POST body. This is required
-   because Xero supports multi-org — a future enhancement could auto-select if
-   only one org is connected.
-
-### QuickBooks (Intuit)
-
-1. Go to https://developer.intuit.com/app/developer/myapps and create an app.
-2. Set the redirect URI to `http://localhost:5173/integrations/quickbooks/callback`.
-3. Copy Client ID and Client Secret into `.env`.
-4. Set `QUICKBOOKS_ENV=sandbox` for testing (use `production` when live).
-5. Intuit appends `realmId` (company ID) to the OAuth redirect URL as a query
-   parameter — the frontend must extract it and include it in the callback POST
-   body.
-
-### Sage Accounting
-
-1. Go to https://developer.sage.com/accounting/ and register an app.
-2. Set the redirect URI to `http://localhost:5173/integrations/sage/callback`.
-3. Copy Client ID and Client Secret into `.env`.
-4. After token exchange, the `businessId` can be fetched from
-   `GET https://api.accounting.sage.com/v3.1/business`. Pass it in the
-   callback POST body if available, otherwise implement auto-fetch in
-   `sage.service.js → exchangeCodeForTokens`.
-
-## Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/integrations` | Connection status for all 3 providers (no tokens) |
-| GET | `/api/integrations/:provider/auth` | Returns OAuth authorize URL |
-| POST | `/api/integrations/:provider/callback` | Exchanges auth code for tokens |
-| POST | `/api/integrations/:provider/sync` | Pushes last-7-days sales summary |
-| POST | `/api/integrations/:provider/disconnect` | Clears stored tokens |
-
-Valid `:provider` values: `xero`, `quickbooks`, `sage`.
-
-## Callback body shape
+Provider modules in `src/services/integrations/` verify the account before storing a grant:
+Xero checks the server-side connections list, Sage checks the businesses list, and QuickBooks verifies access to the requested realm.
+Xero/Sage auto-select a sole account; an ambiguous list needs a requested `tenantId` / `businessId` from that list.
+The frontend never fetches provider account lists with an exposed access token. Intuit's redirect provides `realmId`,
+which the frontend includes in the callback body. Requested IDs are validated before state is consumed.
 
 ```json
 {
-  "code": "<authorization_code from provider>",
-  "state": "<state value echoed back by provider>",
-  "tenantId": "<xero org guid — xero only>",
-  "realmId": "<intuit company id — quickbooks only>",
-  "businessId": "<sage business id — sage only>"
+  "code": "authorization-code",
+  "state": "opaque-state-echoed-by-provider",
+  "tenantId": "Xero-only-requested-tenant",
+  "realmId": "QuickBooks-only-requested-realm",
+  "businessId": "Sage-only-requested-business"
 }
 ```
 
-## Token storage
+Include only the account field for the selected provider. Codes are non-empty strings up to 4096 characters.
+`src/utils/http.js` bounds provider calls using total and connection deadlines. Disconnect attempts remote revocation then clears
+local tokens even if revocation fails, reporting `revoked`, `skipped`, `failed` or `not_needed`.
+Reconnect replaces the grant and attempts revocation of the old refresh token unless it is unchanged; a missing old encryption key
+does not discard the newly stored grant. Callback, disconnect and refresh serialize by cafe/provider.
 
-Tokens are stored encrypted on the `Cafe` document under `accountingIntegrations.<provider>`.
-They are **never returned** in API responses — only connection status, sync timestamps, and
-error messages are surfaced.
+## Endpoints
 
-Token refresh is handled automatically in the sync endpoint when a token is within
-60 seconds of its `expiresAt` timestamp.
+Every route requires authentication. Unknown providers answer 400 before feature gating; non-owners get 403 on owner-only routes.
+Valid providers: `xero`, `quickbooks`, `sage`.
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/api/integrations` | 200 connection status for all providers, no tokens; also available with flag off |
+| GET | `/api/integrations/:provider/auth` | 200 authorize URL; 503 disabled or unconfigured |
+| POST | `/api/integrations/:provider/callback` | 200 stored grant; 400 invalid state/input, 409 ambiguous account, 502/504 upstream failure, 503 disabled/unconfigured |
+| POST | `/api/integrations/:provider/sync` | 501 when posting is attempted; 200 if already up to date; 400 disconnected; 502/504 refresh failure, 409 concurrent disconnect; 503 disabled |
+| POST | `/api/integrations/:provider/disconnect` | 200 local disconnection and revocation outcome, including when flag is off |
+
+## Sync and tokens
+
+`src/controllers/integrations.controller.js` builds summaries for closed cafe-local days since the successful high-water mark;
+the first window covers the previous seven closed days. Concurrent syncs share one cafe/provider flight. Only successful posting
+advances `lastSyncedThrough`; failure preserves the retry window. If there is no new closed day, sync returns 200 without posting.
+
+The access token is refreshed automatically by sync when it is within 60 seconds of expiry and there is a new closed-day period.
+`src/services/integrations/tokens.js` single-flights refresh and persists rotated tokens with a compare-and-set guard; a competing replacement is reread.
+Invalid-grant refresh failure answers 502 INTEGRATION_REAUTH_REQUIRED and clears the matching stale grant; other upstream failures answer
+502/504, and a concurrent disconnect can answer 409.
+Refresh does not make posting functional: each provider's `pushSalesSummary` still returns 501, so an attempted sync records a failed
+status and returns 501. No other endpoint initiates token refresh. No sales have been sent by these stubs.
+
+`Cafe.accountingIntegrations.<provider>` stores encrypted tokens, hidden from normal queries (`src/models/Cafe.model.js`).
+Status responses expose connection status, timestamps and safe error messages, never tokens. Encryption and key rotation are handled
+by `src/services/secrets.service.js`; follow the launch checklist and `.env.example` rotation instructions before changing keys.

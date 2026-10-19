@@ -72,9 +72,6 @@ describe('Anthropic upstream error wrapping', () => {
     expect(wrapped.upstreamStatus).toBe(401);
     expect(wrapped.upstreamMessage).toBe('authentication_error: invalid x-api-key');
     expect(wrapped.upstreamMessage).not.toContain('{');
-    // Marks the message as written for the client. error.middleware.js does not
-    // read this yet, so in production the owner still sees "Internal Server
-    // Error"; the flag is the contract that fix needs to honour.
     expect(wrapped.exposeMessage).toBe(true);
   });
 
