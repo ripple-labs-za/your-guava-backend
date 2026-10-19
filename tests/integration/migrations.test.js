@@ -324,3 +324,41 @@ describe('recategorise-items through the runner', () => {
   });
 });
 
+
+describe('BE-11-T06 contract migrations', () => {
+  const Forecast = require('../../src/models/Forecast.model');
+  const users = () => mongoose.connection.db.collection('users');
+  const forecasts = () => mongoose.connection.db.collection('forecasts');
+  const keysOf = async (collection) => (await collection.indexes()).map((index) => JSON.stringify(index.key));
+
+  it('drops the legacy refresh-token indexes and unsets the field, once', async () => {
+    await users().createIndex({ 'refreshTokens.tokenHash': 1 }, { sparse: true });
+    await users().createIndex({ 'refreshTokens.token': 1 }, { sparse: true });
+    await users().insertOne({ email: 'legacy-refresh@yourguava.com', refreshTokens: [] });
+
+    const first = await runMigrations({ names: ['user-legacy-refresh-tokens'], by: 'test' });
+
+    expect(first.applied).toEqual(['user-legacy-refresh-tokens']);
+    expect((await keysOf(users())).filter((key) => key.includes('refreshTokens'))).toEqual([]);
+    expect(await users().countDocuments({ refreshTokens: { $exists: true } })).toBe(0);
+    const second = await runMigrations({ names: ['user-legacy-refresh-tokens'], by: 'test' });
+    expect(second.skipped).toEqual(['user-legacy-refresh-tokens']);
+  });
+
+  it('drops the Forecast indexes no query uses and keeps the ones reads rely on, once', async () => {
+    await Forecast.init(); // builds the declared { cafeId: 1, date: 1 } and { cafeId: 1, dateKey: 1 }
+    await forecasts().createIndex({ dateKey: 1 });
+    await forecasts().createIndex({ origin: 1 });
+
+    const first = await runMigrations({ names: ['forecast-unused-indexes'], by: 'test' });
+
+    expect(first.applied).toEqual(['forecast-unused-indexes']);
+    const keys = await keysOf(forecasts());
+    expect(keys).not.toContain('{"dateKey":1}');
+    expect(keys).not.toContain('{"origin":1}');
+    expect(keys).toContain('{"cafeId":1,"date":1}');
+    expect(keys).toContain('{"cafeId":1,"dateKey":1}'); // row 20a; flip only if step 0 found no cafeId+dateKey query
+    const second = await runMigrations({ names: ['forecast-unused-indexes'], by: 'test' });
+    expect(second.skipped).toEqual(['forecast-unused-indexes']);
+  });
+});
