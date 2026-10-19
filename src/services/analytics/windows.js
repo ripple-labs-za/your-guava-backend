@@ -89,4 +89,26 @@ const dailySummary = ({ daily, tradingHours }) => {
   return { openDays: open.length, bestDay, worstDay };
 };
 
-module.exports = { shiftDay, daysInclusive, weekdayOf, lastCompleteDay, trendWindows, openDaysBetween, dailySummary };
+// MongoDB's $round for a double with a place: the double's value to 34 significant digits (Decimal128), then half to even.
+// Used where a value can only be computed after the aggregation (getItems' avgPerDay needs the open-day count), so it rounds
+// exactly as the old in-pipeline $round did. tests/unit/mongoRound.test.js compares it with the server on 4,400 quotients.
+const mongoRound = (value, place = 0) => {
+  if (!Number.isFinite(value) || value === 0) return value;
+  const negative = value < 0;
+  const [digits, exponent] = Math.abs(value).toExponential(33).split('e'); // 34 significant digits
+  const mantissa = BigInt(digits.replace('.', ''));
+  const shift = Number(exponent) - 33 + place; // |value| x 10^place = mantissa x 10^shift
+  let quotient;
+  if (shift >= 0) {
+    quotient = mantissa * 10n ** BigInt(shift);
+  } else {
+    const divisor = 10n ** BigInt(-shift);
+    quotient = mantissa / divisor;
+    const twice = (mantissa % divisor) * 2n;
+    if (twice > divisor || (twice === divisor && quotient % 2n === 1n)) quotient += 1n;
+  }
+  const rounded = Number(quotient) / 10 ** place;
+  return negative ? -rounded : rounded;
+};
+
+module.exports = { shiftDay, daysInclusive, weekdayOf, lastCompleteDay, trendWindows, openDaysBetween, dailySummary, mongoRound };
