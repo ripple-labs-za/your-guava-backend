@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const { sha256Hex } = require('../utils/authPrimitives');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
@@ -277,11 +276,10 @@ const ingestParsedRows = async (
     itemsMode,
     fileExt = 'csv',
     timezone,
-    sourceFingerprint,
   }
 ) => {
   const parsed = await parseBuffer(buffer, { columnMapping, itemsMode, fileExt, timezone });
-  return persistParsedRows(parsed, { cafeId, uploadId, sourceFingerprint, timezone });
+  return persistParsedRows(parsed, { cafeId, uploadId, timezone });
 };
 
 /**
@@ -291,7 +289,7 @@ const ingestFile = async (filePath, cafeId, { timezone } = {}) => {
   const buffer = fs.readFileSync(filePath);
   const ext = path.extname(filePath).toLowerCase().slice(1);
   const { mapping, itemsMode } = yocoMapping();
-  return ingestParsedRows(buffer, { cafeId, uploadId: null, columnMapping: mapping, itemsMode, fileExt: ext, timezone, sourceFingerprint: sha256Hex(buffer) });
+  return ingestParsedRows(buffer, { cafeId, uploadId: null, columnMapping: mapping, itemsMode, fileExt: ext, timezone });
 };
 
 module.exports = {

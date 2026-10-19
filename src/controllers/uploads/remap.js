@@ -20,7 +20,7 @@ const readmission = require('../../services/readmission.service');
 const { zonedDateKey } = require('../../utils/timezone');
 const { activeCafeId } = require('../../utils/tenancy');
 
-const assertRemapHasImportableRows = async (parsed, cafeId, uploadId, sourceFingerprint, timezone) => {
+const assertRemapHasImportableRows = async (parsed, cafeId, uploadId, timezone) => {
   const approvedRows = parsed.rows.filter((row) => normaliseTransactionStatus(row.status).status === 'approved');
   if (approvedRows.length === 0) {
     const err = new Error('No approved transaction rows could be imported with this mapping');
@@ -93,7 +93,6 @@ const remap = async (req, res, next) => {
         parsed,
         cafeId,
         upload._id,
-        upload.fileFingerprint || sha256Hex(upload.r2Key),
         timezone
       );
       // Whatever the new mapping no longer imports, overlapping uploads may re-admit (BE-03-T02).

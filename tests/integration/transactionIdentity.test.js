@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
 const { setup, teardown, clearDB } = require('../setup');
 const Transaction = require('../../src/models/Transaction.model');
-const { computeDedupKey } = require('../../src/utils/dedupKey');
 const {
-  transactionIdentity, identityComparisonKey, findExistingIdentities, chunksOf,
+  resolveIdentities, contentSignature, contentKey, chunksOf,
 } = require('../../src/services/transactionIdentity');
+const { persistParsedRows } = require('../../src/services/ingestion.service');
 
 beforeAll(setup);
 afterAll(teardown);
@@ -20,20 +20,27 @@ const lateSale = {
 };
 
 describe('services/transactionIdentity, the one identity rule (BE-11-T05)', () => {
-  it('scopes a receipt to the cafe-local trading day when the row has no dateKey', () => {
-    const identity = transactionIdentity(lateSale, 'fp', ZONE);
-    expect(identity).toEqual({ type: 'receiptId', value: '#0001', dayKey: '2026-09-27' });
-    expect(identityComparisonKey(identity)).toBe('receiptId:#0001|2026-09-27');
+  it('scopes a receipt to the cafe-local trading day when the row has no dateKey', async () => {
+    const result = await resolveIdentities([lateSale], { cafeId: new mongoose.Types.ObjectId(), timezone: ZONE });
+    expect(result.importable).toEqual([
+      { row: lateSale, identity: { type: 'receiptId', value: '#0001', dayKey: '2026-09-27' } },
+    ]);
   });
 
-  it('keeps the stored dedup key of a receipt-less row exactly as before the move', () => {
-    const row = { ...lateSale, receiptId: undefined, __sourceRowNumbers: [2] };
-    expect(transactionIdentity(row, 'fp', ZONE)).toEqual({
-      type: 'dedupKey',
-      value: computeDedupKey({
-        date: '2026-09-26', time: '23:30', total: 38, items: row.items, sourceFingerprint: 'fp', sourceRowNumbers: [2],
-      }),
+  it('re-imports a pre-content-v1 receipt-less row without duplicating or rewriting it', async () => {
+    const cafeId = new mongoose.Types.ObjectId();
+    // Frozen SHA-256 of source-v1|fp|2, as persisted before content identity.
+    const legacyKey = require('crypto').createHash('sha256').update('source-v1|fp|2').digest('hex');
+    const row = { ...lateSale, receiptId: undefined, status: 'approved', hour: 1, dayOfWeek: 0 };
+    await Transaction.create({ ...row, cafeId, dedupKey: legacyKey, source: 'csv' });
+    const before = await Transaction.findOne({ cafeId }).lean();
+    expect(legacyKey).not.toBe(contentKey(contentSignature(row, ZONE), 1));
+
+    const result = await persistParsedRows({ rows: [row], errors: 0, totalRows: 1 }, {
+      cafeId, timezone: ZONE,
     });
+    expect(result).toMatchObject({ imported: 0, skipped: 1, errors: 0, skippedByReason: { duplicate: 1 } });
+    expect(await Transaction.find({ cafeId }).lean()).toEqual([before]);
   });
 
   it('finds stored identities by trading day and can leave out the upload being remapped', async () => {
@@ -45,11 +52,15 @@ describe('services/transactionIdentity, the one identity rule (BE-11-T05)', () =
       { ...base, uploadId: uploadA, receiptId: '#0001' },
       { ...base, uploadId: uploadB, dedupKey: 'abc' },
     ]);
-    const wanted = [transactionIdentity(lateSale, 'fp', ZONE), { type: 'dedupKey', value: 'abc' }];
-    const all = await findExistingIdentities(cafeId, wanted, { timezone: ZONE });
-    expect([...all].sort()).toEqual(['dedupKey:abc', 'receiptId:#0001|2026-09-27']);
-    const withoutA = await findExistingIdentities(cafeId, wanted, { timezone: ZONE, excludeUploadId: uploadA });
-    expect([...withoutA]).toEqual(['dedupKey:abc']);
+    const wanted = [lateSale, { ...lateSale, receiptId: undefined }];
+    const all = await resolveIdentities(wanted, { cafeId, timezone: ZONE });
+    expect(all.importable).toEqual([]);
+    expect(all.duplicates.map(({ uploadId }) => String(uploadId)).sort()).toEqual([String(uploadA), String(uploadB)].sort());
+    const withoutA = await resolveIdentities(wanted, { cafeId, timezone: ZONE, excludeUploadId: uploadA });
+    expect(withoutA.importable).toEqual([
+      { row: lateSale, identity: { type: 'receiptId', value: '#0001', dayKey: '2026-09-27' } },
+    ]);
+    expect(withoutA.duplicates.map(({ uploadId }) => String(uploadId))).toEqual([String(uploadB)]);
   });
 
   it('queries in chunks of 500', () => {

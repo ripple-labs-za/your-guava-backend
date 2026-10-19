@@ -1,5 +1,4 @@
 const Transaction = require('../models/Transaction.model');
-const { computeDedupKey } = require('../utils/dedupKey');
 const {
   safeTimezone, zonedDateKey, getZonedDateParts, zonedDayStart, zonedDayEnd, addZonedDays,
 } = require('../utils/timezone');
@@ -12,9 +11,9 @@ const { sha256Hex } = require('../utils/authPrimitives');
  *
  * A receipt number is only unique within a cafe-local trading day on tills that
  * restart their numbering, so a receipt identity carries the day. A receipt-less
- * row was identified by computeDedupKey over its UTC date, time and source file (transactionIdentity, kept only for the
- * legacy non-bulk path and for rows stored before BE-03-T03); resolveIdentities now identifies it by its content
- * (contentSignature, counted per occurrence) and still matches rows stored under those old keys.
+ * row is identified by its content (contentSignature, counted per occurrence).
+ * Stored rows with old file-scoped keys are matched by that same content, so
+ * overlapping exports still recognise sales imported before BE-03-T03.
  */
 const IDENTITY_QUERY_CHUNK_SIZE = 500;
 
@@ -22,55 +21,6 @@ const chunksOf = (values, size = IDENTITY_QUERY_CHUNK_SIZE) => {
   const chunks = [];
   for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
   return chunks;
-};
-
-const transactionIdentity = (row, sourceFingerprint, timezone) => {
-  if (row.receiptId) {
-    return { type: 'receiptId', value: row.receiptId, dayKey: row.dateKey || zonedDateKey(row.date, safeTimezone(timezone)) };
-  }
-  return {
-    type: 'dedupKey',
-    value: computeDedupKey({
-      date: row.date.toISOString().slice(0, 10),
-      time: row.date.toISOString().slice(11, 16),
-      total: row.total,
-      items: row.items,
-      sourceFingerprint,
-      sourceRowNumbers: row.__sourceRowNumbers,
-    }),
-  };
-};
-
-const identityComparisonKey = (identity) => (identity.type === 'receiptId'
-  ? `receiptId:${identity.value}|${identity.dayKey}`
-  : `${identity.type}:${identity.value}`);
-
-// The keys a stored row answers to. It keeps only the instant, so its trading day is
-// recomputed in the cafe's zone, exactly as the write path computed it.
-const storedIdentityKeys = (stored, timezone) => [
-  ...(stored.receiptId
-    ? [identityComparisonKey({ type: 'receiptId', value: stored.receiptId, dayKey: zonedDateKey(stored.date, timezone) })]
-    : []),
-  ...(stored.dedupKey ? [identityComparisonKey({ type: 'dedupKey', value: stored.dedupKey })] : []),
-];
-
-const findExistingIdentities = async (cafeId, identities, { session, timezone, excludeUploadId } = {}) => {
-  const zone = safeTimezone(timezone);
-  const valuesOf = (type) => [...new Set(identities.filter((identity) => identity.type === type).map((identity) => identity.value))];
-  const queries = [
-    ...chunksOf(valuesOf('receiptId')).map((chunk) => ({ receiptId: { $in: chunk } })),
-    ...chunksOf(valuesOf('dedupKey')).map((chunk) => ({ dedupKey: { $in: chunk } })),
-  ];
-  const existing = new Set();
-  for (const identityQuery of queries) {
-    const filter = { cafeId, ...identityQuery, ...(excludeUploadId ? { uploadId: { $ne: excludeUploadId } } : {}) };
-    let query = Transaction.find(filter).select('receiptId dedupKey date');
-    if (session) query = query.session(session);
-    for (const stored of await query.lean()) {
-      for (const key of storedIdentityKeys(stored, zone)) existing.add(key);
-    }
-  }
-  return existing;
 };
 
 const CONTENT_KEY_VERSION = 'content-v1';
@@ -266,10 +216,6 @@ const tallyDuplicatesByUpload = (duplicates) => {
 module.exports = {
   IDENTITY_QUERY_CHUNK_SIZE,
   chunksOf,
-  transactionIdentity,
-  identityComparisonKey,
-  storedIdentityKeys,
-  findExistingIdentities,
   contentSignature,
   contentKey,
   receiptSignature,

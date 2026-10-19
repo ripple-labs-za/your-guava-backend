@@ -5,7 +5,6 @@ const r2 = require('./r2.service');
 const parser = require('./parser.service');
 const ingestion = require('./ingestion.service');
 const { zonedDateKey, zonedDayStart, zonedDayEnd } = require('../utils/timezone');
-const { sha256Hex } = require('../utils/authPrimitives');
 
 /**
  * Re-admission (BE-03-T02). When upload B is confirmed, rows it shares with an earlier upload A are skipped as
@@ -126,7 +125,6 @@ const applyReadmission = async ({ prepared, cafeId, session, timezone }) => {
       itemsAlreadyReconciled: true,
       rebuildItems: false,
       failOnPersistenceError: true,
-      sourceFingerprint: upload.fileFingerprint || sha256Hex(upload.r2Key),
       timezone,
     });
     if (result.imported === 0) continue;

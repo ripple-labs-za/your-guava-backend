@@ -13,7 +13,6 @@ const { zonedDateKey } = require('../../utils/timezone');
 const {
   boundedInteger, ABANDONED_CLEANUP_CLAIM, sanitizeRowErrors, assertImportableResult, confirmationMappingHash, describeOverlap,
 } = require('./shared');
-const { sha256Hex } = require('../../utils/authPrimitives');
 const { lockCafeMenu } = require('../../services/menuItems.service');
 
 const DEFAULT_PARSING_LEASE_MS = 15 * 60 * 1000;
@@ -185,7 +184,6 @@ const commitParsedUpload = async ({
         itemsAlreadyReconciled: true,
         rebuildItems: false,
         failOnPersistenceError: true,
-        sourceFingerprint: upload.fileFingerprint || sha256Hex(upload.r2Key),
         timezone,
       });
       assertImportableResult(result);

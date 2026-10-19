@@ -32,6 +32,20 @@ describe('retired code stays retired (BE-11-T06)', () => {
     ['joinTextBlocks', 'firstBlockText', 'stripJsonFences'].forEach((name) => expect(modelText[name]).toBeUndefined());
   });
 
+  it('keeps only content and receipt identity, without file fingerprint plumbing', () => {
+    const identities = require('../../src/services/transactionIdentity');
+    ['transactionIdentity', 'identityComparisonKey', 'storedIdentityKeys', 'findExistingIdentities']
+      .forEach((name) => expect(identities[name]).toBeUndefined());
+    // computeDedupKey's module had only test callers after the bulk-only cutover.
+    expect(exists('utils/dedupKey.js')).toBe(false);
+    [
+      'services/ingestion.service.js', 'services/readmission.service.js',
+      'controllers/uploads/lease.js', 'controllers/uploads/remap.js',
+    ].forEach((file) => expect(fs.readFileSync(path.join(SRC, file), 'utf8')).not.toMatch(/sourceFingerprint/));
+    // File bytes still have an audit hash; removing identity plumbing must keep it.
+    expect(require('../../src/models/Upload.model').schema.path('fileFingerprint')).toBeDefined();
+  });
+
   it('keeps no refresh tokens on the user document', () => {
     const User = require('../../src/models/User.model');
     expect(User.schema.path('refreshTokens')).toBeUndefined();

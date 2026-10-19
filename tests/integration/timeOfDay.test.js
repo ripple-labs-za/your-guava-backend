@@ -71,7 +71,7 @@ describe('sales with no time of day', () => {
     const parsed = await parseBuffer(Buffer.from('Date,Items,Total\n2026-09-14,1 x Latte,38.00'), {
       columnMapping: { date: 'Date', items: 'Items', total: 'Total' }, itemsMode: 'packed', timezone: 'Africa/Johannesburg',
     });
-    await persistParsedRows(parsed, { cafeId: user.activeCafeId, uploadId: new mongoose.Types.ObjectId(), bulk: true,
+    await persistParsedRows(parsed, { cafeId: user.activeCafeId, uploadId: new mongoose.Types.ObjectId(),
       timezone: 'Africa/Johannesburg' });
     const stored = await Transaction.findOne({ cafeId: user.activeCafeId }).lean();
     expect(stored).toMatchObject({ hourKnown: false, hour: null });
