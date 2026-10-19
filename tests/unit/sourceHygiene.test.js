@@ -98,3 +98,97 @@ describe('source hygiene', () => {
     expect(sites.filter((site) => !/maxRowBytes\s*:/.test(site.options)).map((site) => site.where)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Source structure (BE-11-T07). BE-11 split the files over 800 lines and gave every
+// copied helper one home; these cases keep it that way. The contract itself is data
+// in tests/fixtures/sourceHomes.js, so adding a shared helper is a one-line change.
+// ---------------------------------------------------------------------------
+const {
+  MAX_SOURCE_LINES, HELPER_HOMES, RETIRED_NAMES, SOURCE_PATTERNS, BARREL_FOLDERS, BARREL_EXCEPTIONS,
+} = require('../fixtures/sourceHomes');
+
+const relativeToSrc = (full) => path.relative(SRC_ROOT, full).split(path.sep).join('/');
+const TOP_LEVEL_DECLARATION = /^(?:const|let|var|async function|function|class)\s+([A-Za-z_$][\w$]*)/;
+const RELATIVE_REQUIRE = /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g;
+
+// Each scanner is pure (file path relative to src, file text) so the self-test below can feed it a probe.
+const declarationViolations = (file, source) => source.split('\n').flatMap((line, index) => {
+  const declared = line.match(TOP_LEVEL_DECLARATION);
+  if (!declared) return [];
+  const name = declared[1];
+  const where = `${file}:${index + 1}  ${line.trim()}`;
+  if (RETIRED_NAMES.includes(name)) return [`retired name redefined  ${where}`];
+  const home = Object.prototype.hasOwnProperty.call(HELPER_HOMES, name) ? HELPER_HOMES[name] : null;
+  return home && home !== file ? [`defined outside ${home}  ${where}`] : [];
+});
+
+const patternViolations = (file, source) => source.split('\n').flatMap((line, index) => SOURCE_PATTERNS
+  .filter(({ re, allow, deny }) => re.test(line)
+    && ((allow && !allow.includes(file)) || (deny && deny.some((prefix) => file.startsWith(prefix)))))
+  .map(({ rule }) => `${rule}  ${file}:${index + 1}  ${line.trim()}`));
+
+const barrelViolations = (file, source) => [...source.matchAll(RELATIVE_REQUIRE)].flatMap((match) => {
+  const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[2])).replace(/\.js$/, '');
+  return Object.entries(BARREL_FOLDERS)
+    .filter(([folder, barrel]) => target.startsWith(folder) && !file.startsWith(folder) && file !== barrel)
+    .filter(() => !BARREL_EXCEPTIONS.some(([from, to]) => from === file && to === target))
+    .map(([, barrel]) => `reached past its barrel ${barrel}  ${file}:${lineOf(source, match.index)}  ${match[0]}`);
+});
+
+describe('source structure (BE-11-T07)', () => {
+  const sources = walk(SRC_ROOT).map((full) => ({ file: relativeToSrc(full), source: fs.readFileSync(full, 'utf8') }));
+  const all = (scan) => sources.flatMap(({ file, source }) => scan(file, source));
+
+  it('keeps every src file at or under 800 lines', () => {
+    const over = sources
+      .map(({ file, source }) => [file, (source.match(/\n/g) || []).length])
+      .filter(([, lines]) => lines > MAX_SOURCE_LINES)
+      .map(([file, lines]) => `${file} (${lines})`);
+    expect(over).toEqual([]);
+  });
+
+  it('declares each consolidated helper only in its home, and no retired helper at all', () => {
+    expect(all(declarationViolations)).toEqual([]);
+  });
+
+  it('keeps each shared rule in its one module (active cafe, day keys, tokens, cookies, chunking)', () => {
+    expect(all(patternViolations)).toEqual([]);
+  });
+
+  it('reaches a split module only through its barrel, which the tests mock', () => {
+    expect(all(barrelViolations)).toEqual([]);
+  });
+
+  it('has every home module the table names', () => {
+    const missing = [...new Set(Object.values(HELPER_HOMES))].filter((file) => !fs.existsSync(path.join(SRC_ROOT, file)));
+    expect(missing).toEqual([]);
+  });
+
+  it('would catch a planted copy of each kind, and stays quiet in the homes', () => {
+    const probe = [
+      'const safeTimezone = (timezone) => timezone;',
+      'const hashActionToken = (token) => token;',
+      'const cafeOf = (req) => req.user.cafeId;',
+      "const insights = require('../services/ai/insights');",
+    ].join('\n');
+    expect(declarationViolations('utils/probe.js', probe)).toEqual([
+      expect.stringContaining('defined outside utils/timezone.js'),
+      expect.stringContaining('retired name redefined'),
+    ]);
+    expect(patternViolations('utils/probe.js', probe)).toEqual([expect.stringContaining('utils/probe.js:3')]);
+    expect(barrelViolations('utils/probe.js', probe)).toEqual([expect.stringContaining('services/anthropic.service.js')]);
+    expect(declarationViolations('utils/timezone.js', 'const safeTimezone = (timezone) => timezone;')).toEqual([]);
+    expect(patternViolations('utils/tenancy.js', 'const activeCafeId = (req) => req?.user?.cafeId ?? null;')).toEqual([]);
+    expect(patternViolations('utils/tenancy.js.copy.js', 'module.exports = (req) => req.user.cafeId;'))
+      .toEqual([expect.stringContaining('utils/tenancy.js.copy.js:1')]);
+    expect(patternViolations('controllers/probe.js', 'const chunks = (values, size) => values;'))
+      .toEqual([expect.stringContaining('chunk helper copy')]);
+    expect(declarationViolations('utils/probe.js', 'const passwordTooLong = () => false;'))
+      .toEqual([expect.stringContaining(`defined outside ${HELPER_HOMES.passwordTooLong}`)]);
+    expect(barrelViolations('controllers/probe.js', "module.exports = require('../services/ai/../ai/insights.js');"))
+      .toEqual([expect.stringContaining('services/anthropic.service.js')]);
+    expect(barrelViolations('services/ai/chat.js', "const { buildBusinessContext } = require('./context');")).toEqual([]);
+  });
+});
+

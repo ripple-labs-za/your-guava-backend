@@ -1,27 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 
-// BE-11-T04: no src file over 800 lines, and the remaining large files became barrels.
+// BE-11-T04: the remaining large files became barrels. Size is guarded by sourceHygiene.test.js (BE-11-T07).
 const SRC = path.resolve(__dirname, '../../src');
 const read = (relative) => fs.readFileSync(path.join(SRC, relative), 'utf8');
 const lineCount = (relative) => (read(relative).match(/\n/g) || []).length;
-const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-  const full = path.join(dir, entry.name);
-  if (entry.isDirectory()) return walk(full);
-  return entry.name.endsWith('.js') ? [full] : [];
-});
-const MAX_LINES = 800;
 
 describe('remaining splits (BE-11-T04)', () => {
-  it('keeps every src file at or under 800 lines', () => {
-    const over = walk(SRC)
-      .map((file) => path.relative(SRC, file).split(path.sep).join('/'))
-      .map((file) => [file, lineCount(file)])
-      .filter(([, lines]) => lines > MAX_LINES)
-      .map(([file, lines]) => `${file} (${lines})`);
-    expect(over).toEqual([]);
-  });
-
   it.each([
     'services/usage.service.js', 'services/billingPayments.service.js', 'services/forecast.service.js',
     'controllers/auth.controller.js', 'controllers/analytics.controller.js',
