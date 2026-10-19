@@ -8,6 +8,7 @@ jest.mock('../../src/middleware/rbac.middleware', () => ({
 jest.mock('../../src/middleware/rateLimit.middleware', () => ({
   forecastComputeLimiter: (_req, _res, next) => next(),
   aiLimiter: (_req, _res, next) => next(),
+  analyticsLimiter: (_req, _res, next) => next(),
 }));
 jest.mock('../../src/middleware/cache.middleware', () => ({
   ...jest.requireActual('../../src/middleware/cache.middleware'),

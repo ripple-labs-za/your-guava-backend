@@ -4,7 +4,7 @@ const logger = require('../utils/logger');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const InsightChat = require('../models/InsightChat.model');
-const { prepareChatConversation, getCachedInsights, refreshInsights, generateBusinessChatResponse, streamBusinessChatResponse } = require('../services/anthropic.service');
+const { prepareChatConversation, buildBusinessContext, buildContextStats, getCachedInsights, refreshInsights, generateBusinessChatResponse, streamBusinessChatResponse } = require('../services/anthropic.service');
 const { meterGuavaCredits } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
 const { abortWhenResponseCloses } = require('../utils/requestAbort');
@@ -18,6 +18,20 @@ const getInsights = async (req, res, next) => {
     return res.status(200).json({ success: true, ...result });
   } catch (error) {
     next(error);
+  }
+};
+
+// The exact scope/window used by the next answer, without metering or a provider call.
+const getInsightContext = async (req, res, next) => {
+  try {
+    const context = await buildBusinessContext({
+      cafeId: activeCafeId(req),
+      orgId: req.user.orgId,
+      authorizedCafeIds: req.user.role === 'manager' ? req.user.cafeIds : undefined,
+    });
+    return res.status(200).json({ success: true, contextStats: buildContextStats(context) });
+  } catch (error) {
+    return next(error);
   }
 };
 
@@ -403,5 +417,5 @@ const streamChatInsights = async (req, res, next) => {
 };
 
 module.exports = {
-  getInsights, refreshGeneratedInsights, chatInsights, streamChatInsights,
+  getInsightContext, getInsights, refreshGeneratedInsights, chatInsights, streamChatInsights,
 };

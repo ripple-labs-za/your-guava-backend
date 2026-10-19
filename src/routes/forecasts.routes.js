@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth.middleware');
 const { ownerOnly, requireCreditSpend } = require('../middleware/rbac.middleware');
-const { aiLimiter, forecastComputeLimiter } = require('../middleware/rateLimit.middleware');
+const { aiLimiter, analyticsLimiter, forecastComputeLimiter } = require('../middleware/rateLimit.middleware');
 const { apiCache } = require('../middleware/cache.middleware');
 const {
   getToday,
@@ -16,6 +16,7 @@ const {
   getRecent,
 } = require('../controllers/forecasts.controller');
 const {
+  getInsightContext,
   getInsights,
   refreshGeneratedInsights,
   chatInsights,
@@ -45,6 +46,7 @@ router.put('/factors', ownerOnly, updateFactors);
 router.post('/generate', ownerOnly, forecastComputeLimiter, generate);
 router.get('/accuracy', getAccuracy);
 router.get('/insights', getInsights);
+router.get('/insights/context', analyticsLimiter, getInsightContext);
 router.post('/insights/refresh', requireCreditSpend, aiLimiter, refreshGeneratedInsights);
 const chatJson = express.json({ limit: '2mb' });
 router.post('/insights/chat', requireCreditSpend, aiLimiter, chatJson, chatInsights);

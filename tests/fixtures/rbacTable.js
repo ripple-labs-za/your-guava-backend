@@ -33,6 +33,7 @@ const RBAC_TABLE = [
   ['POST', '/api/forecasts/generate', 'owner', 'forced regeneration (WS-07-T01)'],
   ['GET', '/api/forecasts/accuracy', 'member', 'read'],
   ['GET', '/api/forecasts/insights', 'member', 'read'],
+  ['GET', '/api/forecasts/insights/context', 'member', 'free read of the next answer context counts'],
   ['POST', '/api/forecasts/insights/refresh', 'credit', 'spends Guava Credits'],
   ['POST', '/api/forecasts/insights/chat', 'credit', 'spends Guava Credits'],
   ['POST', '/api/forecasts/insights/chat/stream', 'credit', 'spends Guava Credits'],

@@ -211,5 +211,5 @@ const generateBusinessChatResponse = async ({
 };
 
 module.exports = {
-  prepareChatConversation, assertCafeInScope, sanitizeMessages, buildBusinessChatRequest, generateBusinessChatResponse,
+  prepareChatConversation, assertCafeInScope, sanitizeMessages, buildBusinessChatRequest, buildContextStats, generateBusinessChatResponse,
 };
