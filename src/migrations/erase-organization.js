@@ -21,6 +21,7 @@ const readline = require('readline');
 const { isSafeSeedMongoUri } = require('../utils/seedMongoSafety');
 const { sha256Hex } = require('../utils/authPrimitives');
 const storage = require('../services/r2.service');
+const logger = require('../utils/logger');
 
 // Explicit policies make newly added tenant models fail closed. Indirect scopes
 // are named too: user sessions/resets, email registrations/throttles, counters.
@@ -91,11 +92,14 @@ function parseArgs(argv) {
   return options;
 }
 
-function assertSafeTarget({ mongoUri, nodeEnv, orgId, allowProduction = false, confirmation }) {
+function assertSafeTarget({ mongoUri, nodeEnv, orgId, allowProduction = false, confirmation, apply = false }) {
   if (!mongoUri) throw new Error('MONGODB_URI is required');
   if (isSafeSeedMongoUri(mongoUri, nodeEnv)) return;
   if (!allowProduction) throw new Error('Refusing remote/production Mongo target without --allow-production');
   if (confirmation !== `ERASE ${orgId}`) throw new Error('Exact typed confirmation required');
+  if (apply && storage.getConfigurationStatus().mode !== 'r2') {
+    throw new Error('Refusing remote/production erasure without R2 storage');
+  }
 }
 
 function filterFor(scope, { orgId, cafeIds, userIds, emails }) {
@@ -134,10 +138,12 @@ async function eraseOrganization({ orgId: input, apply = false, requesterNote } 
   validateOptions({ orgId: input, apply, requesterNote });
   loadModels();
   assertModelCoverage();
+  const storageMode = storage.getConfigurationStatus().mode;
+  const storageReport = { mode: storageMode, bucket: storageMode === 'r2' ? process.env.R2_BUCKET_NAME : null };
   const orgId = new mongoose.Types.ObjectId(input);
   const register = mongoose.connection.collection('erasureRegisters');
   const previous = await register.findOne({ _id: orgId });
-  if (previous) return { apply, alreadyErased: true, counts: previous.counts };
+  if (previous) return { apply, alreadyErased: true, counts: previous.counts, storage: storageReport };
   if (!await mongoose.model('Organization').exists({ _id: orgId })) throw new Error('Organisation not found');
   const cafes = await mongoose.model('Cafe').find({ orgId }).select('_id').lean();
   const users = await mongoose.model('User').find({ orgId }).select('_id email').lean();
@@ -154,14 +160,19 @@ async function eraseOrganization({ orgId: input, apply = false, requesterNote } 
   }
   const fileKeys = await mongoose.model('Upload').distinct('r2Key', filters.Upload);
   const keys = [...new Set(fileKeys.filter((key) => typeof key === 'string' && key))];
+  const deletedKeys = new Set(keys);
   counts.Upload.files = keys.length;
-  if (!apply) return { apply, counts };
+  if (!apply) return { apply, counts, storage: storageReport };
 
   // No metadata is lost if storage refuses: deleting an absent file is safe on retry.
   for (const key of keys) await storage.deleteFile(key);
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      const currentKeys = await mongoose.model('Upload').distinct('r2Key', filters.Upload).session(session);
+      if (currentKeys.some((key) => typeof key === 'string' && key && !deletedKeys.has(key))) {
+        throw new Error('Refusing erasure: upload files changed; stop all writers and rerun');
+      }
       for (const [name, policy] of Object.entries(POLICIES)) {
         if (policy.action === 'delete') {
           const result = await mongoose.model(name).deleteMany(filters[name], { session });
@@ -182,7 +193,7 @@ async function eraseOrganization({ orgId: input, apply = false, requesterNote } 
   } finally {
     await session.endSession();
   }
-  return { apply, counts };
+  return { apply, counts, storage: storageReport };
 }
 
 async function main(argv = process.argv.slice(2), env = process.env) {
@@ -199,8 +210,8 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   try {
     await mongoose.connect(target.mongoUri);
     const report = await eraseOrganization(options);
-    console.log(JSON.stringify(report, null, 2));
-    if (!options.apply) console.log('Dry run. No changes made. Stop all writers before --apply.');
+    logger.printLine(JSON.stringify(report, null, 2));
+    if (!options.apply) logger.printLine('Dry run. No changes made. Stop all writers before --apply.');
   } finally { await mongoose.disconnect(); }
 }
 
@@ -211,7 +222,7 @@ if (require.main === module) {
     // Connection/storage errors can embed credentials or file keys. Print only
     // our fixed validation sentences; all other failures get a fixed refusal.
     const safe = /^(--org|--requester-note|Unknown erasure|Duplicate erasure|Missing value|MONGODB_URI|Refusing |Exact typed|Interactive typed|Organisation not found|Missing erasure policy)/;
-    console.error(safe.test(error.message) ? error.message : 'Erasure failed; no completed receipt. Investigate and rerun with writers stopped.');
+    logger.printLine(safe.test(error.message) ? error.message : 'Erasure failed; no completed receipt. Investigate and rerun with writers stopped.');
     process.exitCode = 1;
   });
 }

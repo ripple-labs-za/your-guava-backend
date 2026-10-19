@@ -56,6 +56,21 @@ test('dry run counts archived cafes, every cascade collection and files without 
   expect(deleteFile).not.toHaveBeenCalled();
 });
 
+test.each(['local', 'misconfigured', 'r2'])('dry run reports only storage mode and bucket for %s storage', async (mode) => {
+  await fixture();
+  jest.spyOn(storage, 'getConfigurationStatus').mockReturnValue({ mode, credential: 'do-not-print' });
+  const original = process.env.R2_BUCKET_NAME;
+  process.env.R2_BUCKET_NAME = 'erasure-test-bucket';
+  try {
+    const report = await erasure().eraseOrganization({ orgId: String(orgId) });
+    expect(report.storage).toEqual({ mode, bucket: mode === 'r2' ? 'erasure-test-bucket' : null });
+    expect(JSON.stringify(report)).not.toContain('do-not-print');
+  } finally {
+    if (original === undefined) delete process.env.R2_BUCKET_NAME;
+    else process.env.R2_BUCKET_NAME = original;
+  }
+});
+
 test('apply erases every scoped model, deletes stored files, anonymizes invoices and is idempotent', async () => {
   await fixture();
   const { POLICIES, eraseOrganization } = erasure();
@@ -113,6 +128,21 @@ test('apply erases every scoped model, deletes stored files, anonymizes invoices
   expect(await mongoose.connection.collection('erasureRegisters').countDocuments()).toBe(1);
 });
 
+test.each(['UsageLedger', 'Improvement', 'InsightChat', 'GeneratedInsight'])(
+  '%s erases organisation-only rows without cafeId and preserves the other organisation', async (name) => {
+    await fixture();
+    const model = mongoose.model(name);
+    await model.collection.insertMany([
+      { orgId, title: 'org-only' },
+      { orgId: foreignOrg, cafeId: foreignCafe, title: 'foreign' },
+    ]);
+    const foreignBefore = await model.collection.findOne({ orgId: foreignOrg });
+    await erasure().eraseOrganization({ orgId: String(orgId), apply: true, requesterNote: 'case-105' });
+    expect(await model.countDocuments({ orgId })).toBe(0);
+    expect(await model.collection.find({}).toArray()).toEqual([foreignBefore]);
+  },
+);
+
 test('local upload bytes are actually removed and a failed database transaction can retry them', async () => {
   await fixture();
   const key = `erasure/${orgId}/test.csv`;
@@ -141,6 +171,19 @@ test('a failed stored-file deletion retains metadata for retry and writes no com
     .rejects.toThrow('storage unavailable');
   expect(await mongoose.model('Organization').countDocuments({ _id: orgId })).toBe(1);
   expect(await mongoose.model('Upload').countDocuments({ cafeId })).toBe(1);
+  expect(await mongoose.connection.collection('erasureRegisters').countDocuments()).toBe(0);
+});
+
+test('a new stored-file key appearing before the transaction refuses erasure and preserves metadata', async () => {
+  await fixture();
+  await mongoose.model('Upload').collection.insertOne({ cafeId, r2Key: 'erasure/original.csv' });
+  jest.spyOn(storage, 'deleteFile').mockImplementationOnce(async () => {
+    await mongoose.model('Upload').collection.insertOne({ cafeId, r2Key: 'erasure/new.csv' });
+  });
+  await expect(erasure().eraseOrganization({ orgId: String(orgId), apply: true, requesterNote: 'case-105' }))
+    .rejects.toThrow('Refusing erasure: upload files changed; stop all writers and rerun');
+  expect(await mongoose.model('Organization').countDocuments({ _id: orgId })).toBe(1);
+  expect(await mongoose.model('Upload').countDocuments({ cafeId })).toBe(2);
   expect(await mongoose.connection.collection('erasureRegisters').countDocuments()).toBe(0);
 });
 
