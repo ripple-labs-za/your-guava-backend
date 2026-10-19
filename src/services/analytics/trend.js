@@ -1,7 +1,7 @@
 const { aggregateOptions } = require('./limits');
 const Transaction = require('../../models/Transaction.model');
 const Cafe = require('../../models/Cafe.model');
-const { getCafeTradingHours } = require('../../utils/tradingHours');
+const { hasSavedTradingHours } = require('../../utils/tradingHours');
 const { zonedDateKey, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
 const { trendWindows, lastCompleteDay } = require('./windows');
 
@@ -60,7 +60,7 @@ const revenueTrend = async ({ cafeObjectId, startDate, endDate, timezone, now = 
     today,
     firstDataDate: firstRow ? zonedDateKey(firstRow.date, timezone) : null,
     lastDataDate: lastRow ? zonedDateKey(lastRow.date, timezone) : null,
-    tradingHours: getCafeTradingHours(cafe),
+    tradingHours: hasSavedTradingHours(cafe) ? cafe.tradingHours : [],
   });
 
   let trend = null;

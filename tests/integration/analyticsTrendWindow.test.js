@@ -54,6 +54,31 @@ describe('GET /api/analytics/revenue trend window', () => {
     return Transaction.insertMany(docs);
   };
 
+  it('does not invent a Sunday closure when a Sunday-trading cafe has no saved hours', async () => {
+    const Cafe = require('../../src/models/Cafe.model');
+    const { revenueTrend } = require('../../src/services/analytics/trend');
+    const cafe = await Cafe.findByIdAndUpdate(cafeId, { tradingHours: [] }, { new: true });
+    const docs = [];
+    for (let day = '2026-10-01'; day <= '2026-10-17'; day = shift(day, 1)) {
+      docs.push(flatDay(cafeId, day));
+    }
+    await Transaction.insertMany(docs);
+
+    const result = await revenueTrend({
+      cafeObjectId: cafe._id, startDate: at('2026-10-13', '00:00'),
+      endDate: at('2026-10-19', '23:59'), timezone: TZ, now: at('2026-10-19'),
+    });
+
+    expect(result.trend).toBe(0);
+    expect(result.reason).toBeNull();
+    expect(result.effectiveWindow).toEqual(expect.objectContaining({
+      startDate: '2026-10-13', endDate: '2026-10-17', days: 5, endReason: 'data_ends', revenue: 25000,
+    }));
+    expect(result.comparisonWindow).toEqual(expect.objectContaining({
+      startDate: '2026-10-08', endDate: '2026-10-12', days: 5, revenue: 25000,
+    }));
+  });
+
   it.each([7, 30, 90])('shows a 0%% trend for flat sales on the %id view when today has no data yet', async (days) => {
     await seedFlatHistory(200, 1);
 
