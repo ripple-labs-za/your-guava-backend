@@ -6,6 +6,7 @@ const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
 const TeamInvitation = require('../../models/TeamInvitation.model');
 const AuthSession = require('../../models/AuthSession.model');
+const InsightChat = require('../../models/InsightChat.model');
 const { getPlan } = require('../../services/billingPlans.service');
 const { recordAccessAudit } = require('./audit');
 
@@ -120,6 +121,16 @@ const removeMember = async (req, res, next) => {
       }
       await User.deleteOne({ _id: target._id, orgId: req.user.orgId }, { session });
       await AuthSession.deleteMany({ userId: target._id }, { session });
+      // Legacy chats may lack orgId. Cafe ownership supplies the organisation
+      // boundary in that case, including archived locations.
+      const cafes = await Cafe.find({ orgId: req.user.orgId }).select('_id').session(session).lean();
+      await InsightChat.deleteMany({
+        userId: target._id,
+        $or: [
+          { orgId: req.user.orgId },
+          { orgId: null, cafeId: { $in: cafes.map((cafe) => cafe._id) } },
+        ],
+      }, { session });
       await recordAccessAudit({
         orgId: req.user.orgId,
         actorUserId: req.user.id,
