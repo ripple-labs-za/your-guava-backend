@@ -272,7 +272,7 @@ describe('forecast generation integrity', () => {
     let ownerName = 'Flat White';
     if (action === 'rename') { // static-checks: allow conditional-expect it.each row: rename and merge take different requests
       expect((await request.put(`/api/items/${flatId}`).set(auth).send({ name: ownerName })).status).toBe(200);
-    } else {
+    } else { // static-checks: allow conditional-expect the merge half of the it.each row above
       const target = await request.post('/api/items').set(auth).send({ name: 'White coffee', category: 'coffee' });
       expect(target.status).toBe(201);
       ownerId = target.body.item._id;

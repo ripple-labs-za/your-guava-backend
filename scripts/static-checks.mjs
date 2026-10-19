@@ -36,6 +36,7 @@ const ONE_LINE_GUARDS = [
   /\bif\s*\(.*\)\s*expect\(/,
   /\bif\s*\(.*\)\s*\{.*expect\(/, // a same-line block: if (x) { expect(...) }
   /\belse\s+expect\(/,
+  /\belse\s*\{.*expect\(/, // a same-line else block: } else { expect(...) }
   /(&&|\|\|)\s*expect\(/,
   /\?\s*expect\(/,
   /\?[^?]*:\s*expect\(/,
@@ -202,7 +203,8 @@ const checks = {
           found.push(`${rel(file)}:${index + 1}: conditional assertion: ${line.trim()}`);
           return;
         }
-        if (!/^\s*(\}\s*else\s+)?if\s*\(.*\)\s*\{\s*(\/\/.*)?$/.test(line)) return;
+        // A block that opens on an if, an else if, or a bare else.
+        if (!/^\s*((\}\s*else\s+)?if\s*\(.*\)|\}\s*else)\s*\{\s*(\/\/.*)?$/.test(line)) return;
         const indent = indentOf(line);
         for (let next = index + 1; next < lines.length; next += 1) {
           if (indentOf(lines[next]) <= indent && /^\s*\}/.test(lines[next])) break;

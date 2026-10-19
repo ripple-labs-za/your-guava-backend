@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
-const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+// LF throughout, so a CRLF checkout (core.autocrlf on Windows) reads the same: `$` and `\n` in the patterns below mean end of line.
+const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').replace(/\r\n/g, '\n');
 const lines = workflow.split(/\r?\n/);
 const indexOf = (pattern) => lines.findIndex((line) => pattern.test(line));
 
@@ -32,7 +33,8 @@ describe('backend CI workflow', () => {
 
   it('never lets a gating step pass by skipping or swallowing its failure', () => {
     // The dev-dependency audit reports without failing through `|| echo "::warning::`; nothing else may.
-    expect(lines.filter((line) => /^\s*(continue-on-error|if):/.test(line))).toEqual([]);
+    // Also as a step's first key (`- if: …`).
+    expect(lines.filter((line) => /^\s*(-\s+)?(continue-on-error|if):/.test(line))).toEqual([]);
   });
 
   it('checks whitespace over the pushed commit or the pull request, not an empty working tree', () => {

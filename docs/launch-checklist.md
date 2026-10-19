@@ -1,6 +1,6 @@
 # Your Guava launch checklist
 
-Verified against: `0896312` on 19 October 2026. Use this before each production release.
+Verified against: `3895b88` on 19 October 2026. Use this before each production release.
 
 ## Required verification
 

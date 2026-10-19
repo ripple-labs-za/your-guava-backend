@@ -216,7 +216,7 @@ describe('D-019 plan change policy (planChangeForPayment)', () => {
         const credited = change.creditDays * perDay(to, toCycle);
         expect(credited).toBeLessThanOrEqual(unusedValue + 1e-6);
         expect(unusedValue - credited).toBeLessThan(perDay(to, toCycle));
-      } else {
+      } else { // static-checks: allow conditional-expect same table, the downgrade and cycle-switch rule
         expect(['downgrade', 'cycle_switch']).toContain(change.type);
         expect(change.effectiveAt).toEqual(end);
         expect(change.currentPeriodEnd).toEqual(addBillingCycle(end, toCycle));

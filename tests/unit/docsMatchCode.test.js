@@ -101,7 +101,7 @@ describe('docs/launch-checklist.md matches the code', () => {
 
   it('names every one-line command the CI workflow runs, and no gate as still pending (BE-12-T04)', () => {
     // A `run: |` block is a shell script (the image job's replica set and container), described by job instead.
-    const commands = [...read('.github/workflows/ci.yml').matchAll(/^\s*run: (?!\|)(.+)$/gm)].map((m) => m[1].split(' || ')[0].trim());
+    const commands = [...read('.github/workflows/ci.yml').replace(/\r\n/g, '\n').matchAll(/^\s*run: (?!\|)(.+)$/gm)].map((m) => m[1].split(' || ')[0].trim());
     expect(commands.length).toBeGreaterThanOrEqual(6);
     expect(commands.filter((command) => !checklist.includes(`\`${command}\``))).toEqual([]);
     expect(checklist).toMatch(/CI job `image`/);
@@ -161,6 +161,7 @@ describe('README.md', () => {
       'node node_modules/jest/bin/jest.js --runInBand --coverage',
       'node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json',
       'npm audit --omit=dev --audit-level=high',
+      'git diff --check HEAD^ HEAD',
     ]) expect(readme).toContain(`\`${command}\``);
     expect(readme).toMatch(/`image` job/);
     expect(readme).not.toMatch(/pending BE-12-T04|CI runs `npm test/);

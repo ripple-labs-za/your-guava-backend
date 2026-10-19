@@ -60,6 +60,8 @@ describe('scripts/static-checks.mjs', () => {
     ['testGuards', 'tests/oneline-else.test.js', "it('x', () => {\n  const v = 1;\n  if (v) {\n    v;\n  } else expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/oneline-and.test.js', "it('x', () => {\n  const v = 1;\n  v && expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/oneline-or.test.js', "it('x', () => {\n  const v = 0;\n  v || expect(v).toBe(0);\n});\n"], // static-checks: allow planted fixture
+    ['testGuards', 'tests/else-block.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 1) {\n    v;\n  } else {\n    expect(v).toBe(1);\n  }\n});\n"], // static-checks: allow planted fixture
+    ['testGuards', 'tests/same-line-else.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 1) {\n    v;\n  } else { expect(v).toBe(1); }\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/same-line-block.test.js', "it('x', () => {\n  const v = 1;\n  if (v) { expect(v).toBe(1); }\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/ternary.test.js', "it('x', () => {\n  const v = 1;\n  v ? expect(v).toBe(1) : null;\n});\n"], // static-checks: allow planted fixture
   ])('fails %s on %s', (check, file, content) => {
