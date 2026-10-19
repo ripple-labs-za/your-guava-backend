@@ -103,7 +103,14 @@ describe('POST /api/items/confirm-all-new (BE-13-T06)', () => {
     await importCsv(token);
     const beforeItems = await Item.find({}).sort({ _id: 1 }).lean();
     const beforeSales = await Transaction.find({}).sort({ _id: 1 }).lean();
-    const rebuild = jest.spyOn(Transaction, 'aggregate').mockRejectedValueOnce(new Error('rebuild unavailable'));
+    const aggregate = Transaction.aggregate.bind(Transaction);
+    const rebuild = jest.spyOn(Transaction, 'aggregate').mockImplementationOnce((...args) => {
+      const query = aggregate(...args);
+      // Reject when Mongoose executes the session-bound query, rather than
+      // returning an eager rejected Promise without Aggregate.session().
+      jest.spyOn(query, 'exec').mockRejectedValueOnce(new Error('rebuild unavailable'));
+      return query;
+    });
     try {
       expect((await keepAll(token, { expectedCount: 3 })).status).toBe(500);
     } finally { rebuild.mockRestore(); }
