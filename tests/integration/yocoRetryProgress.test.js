@@ -59,7 +59,9 @@ it('makes substantial progress when the same range meets the sync deadline again
   // Model a healthy but nontrivial write cost, so redoing the committed prefix
   // deterministically spends the retry budget instead of depending on host load.
   const upsert = Transaction.findOneAndUpdate;
+  const upserted = [];
   jest.spyOn(Transaction, 'findOneAndUpdate').mockImplementation(async (...args) => {
+    upserted.push(String(args[0]?.receiptId));
     await new Promise((resolve) => setTimeout(resolve, 100));
     return upsert.apply(Transaction, args);
   });
@@ -69,9 +71,10 @@ it('makes substantial progress when the same range meets the sync deadline again
     amounts: { gross_amount: { amount: 3800 } }, payments: [{ payment_method: 'card' }],
   }));
   let previousCount = 0;
-  let firstCount = 0;
   const deadlines = [];
   for (let run = 1; run <= 3; run += 1) {
+    const committedBefore = new Set((await Transaction.distinct('receiptId', { cafeId })).map(String));
+    upserted.length = 0;
     axios.get.mockReset();
     axios.get.mockImplementation(async (url, config) => {
       await new Promise((resolve) => setTimeout(resolve, 40));
@@ -82,13 +85,14 @@ it('makes substantial progress when the same range meets the sync deadline again
     const res = await yocoRequest.post('/api/yoco/sync').set('Authorization', `Bearer ${token}`).send({});
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const count = await Transaction.countDocuments({ cafeId });
-    console.info(`retry run=${run} status=${res.status} ms=${Date.now() - started} committed=${count} added=${count - previousCount}`);
+    const prefixUpserts = upserted.filter((receiptId) => committedBefore.has(receiptId));
+    console.info(`retry run=${run} status=${res.status} ms=${Date.now() - started} committed=${count} added=${count - previousCount}`
+      + ` upserts=${upserted.length} prefixUpserts=${prefixUpserts.length}`);
     expect([200, 504]).toContain(res.status);
     expect(count).toBeGreaterThan(previousCount);
-    if (run === 1) firstCount = count;
-    // A retry must reach new pages, rather than spending its budget upserting the prefix again. Run 1 sets the yardstick
-    // (its count less zero is more than half of itself).
-    expect(count - previousCount).toBeGreaterThan(firstCount / 2);
+    // A retry must reach new pages, rather than spending its budget upserting the committed prefix again (ISSUES #107): no upsert
+    // may target a receipt an earlier run committed. This holds at any host load, unlike comparing a retry's throughput with run 1's.
+    expect(prefixUpserts).toEqual([]);
     if (res.status === 504) {
       deadlines.push(res.body);
     }
