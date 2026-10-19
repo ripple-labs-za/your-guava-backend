@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('../../src/utils/logger');
+const { CONSOLE_LOG_ALLOWED } = require('../fixtures/sourceHomes');
 
 const capture = (level = 'debug') => {
   const lines = [];
@@ -127,7 +128,8 @@ describe('logger', () => {
 
 describe('logging discipline in src', () => {
   const SRC_ROOT = path.resolve(__dirname, '../../src');
-  const SEEDS = new Set(['seed.js']);
+  const isSeed = (file) => CONSOLE_LOG_ALLOWED.includes(path.relative(SRC_ROOT, file).split(path.sep).join('/'));
+  const CONSOLE_LOG = /\bconsole\s*(?:\.\s*log\b|\[)|\}\s*=\s*console\b/;
   const walk = (dir) =>
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
@@ -136,13 +138,25 @@ describe('logging discipline in src', () => {
     });
   const offenders = (pattern, allowed = () => false) =>
     walk(SRC_ROOT)
-      .filter((file) => !SEEDS.has(path.basename(file)) && !allowed(file))
+      .filter((file) => !isSeed(file) && !allowed(file))
       .flatMap((file) => fs.readFileSync(file, 'utf8').split('\n')
         .map((line, index) => (pattern.test(line) ? `${path.relative(SRC_ROOT, file)}:${index + 1}` : null))
         .filter(Boolean));
 
+  it('allows only the root seed filename', () => {
+    const nestedSeed = path.join(SRC_ROOT, 'controllers', 'seed.js');
+    expect(isSeed(nestedSeed)).toBe(false);
+    expect(isSeed(path.join(SRC_ROOT, 'seed.js'))).toBe(true);
+  });
+
+  it('catches console spelling variants and destructured aliases', () => {
+    for (const source of ["console.log ('x')", "console . log('x')", "console['log']('x')", 'const { log } = console;']) {
+      expect(CONSOLE_LOG.test(source)).toBe(true);
+    }
+  });
+
   it('has no console.log in src outside the seed scripts', () => {
-    expect(offenders(/console\.log\(/)).toEqual([]);
+    expect(offenders(CONSOLE_LOG)).toEqual([]);
   });
 
   it('writes to the console only from the development email transport', () => {

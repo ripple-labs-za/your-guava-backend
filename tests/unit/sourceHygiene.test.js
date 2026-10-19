@@ -105,7 +105,7 @@ describe('source hygiene', () => {
 // in tests/fixtures/sourceHomes.js, so adding a shared helper is a one-line change.
 // ---------------------------------------------------------------------------
 const {
-  MAX_SOURCE_LINES, HELPER_HOMES, RETIRED_NAMES, SOURCE_PATTERNS, BARREL_FOLDERS, BARREL_EXCEPTIONS,
+  MAX_SOURCE_LINES, CONSOLE_LOG_ALLOWED, HELPER_HOMES, RETIRED_NAMES, SOURCE_PATTERNS, BARREL_FOLDERS, BARREL_EXCEPTIONS,
 } = require('../fixtures/sourceHomes');
 
 const relativeToSrc = (full) => path.relative(SRC_ROOT, full).split(path.sep).join('/');
@@ -136,16 +136,66 @@ const barrelViolations = (file, source) => [...source.matchAll(RELATIVE_REQUIRE)
     .map(([, barrel]) => `reached past its barrel ${barrel}  ${file}:${lineOf(source, match.index)}  ${match[0]}`);
 });
 
+const sourceLineCount = (source) => source.split('\n').length - Number(source.endsWith('\n'));
+
 describe('source structure (BE-11-T07)', () => {
   const sources = walk(SRC_ROOT).map((full) => ({ file: relativeToSrc(full), source: fs.readFileSync(full, 'utf8') }));
   const all = (scan) => sources.flatMap(({ file, source }) => scan(file, source));
 
   it('keeps every src file at or under 800 lines', () => {
     const over = sources
-      .map(({ file, source }) => [file, (source.match(/\n/g) || []).length])
+      .map(({ file, source }) => [file, sourceLineCount(source)])
       .filter(([, lines]) => lines > MAX_SOURCE_LINES)
       .map(([file, lines]) => `${file} (${lines})`);
     expect(over).toEqual([]);
+  });
+
+  it('counts an unterminated final line at the 800-line boundary, with LF or CRLF', () => {
+    for (const newline of ['\n', '\r\n']) {
+      const boundary = Array(800).fill('// line').join(newline);
+      expect(sourceLineCount(boundary)).toBe(800);
+      expect(sourceLineCount(boundary + newline)).toBe(800);
+      expect(sourceLineCount(boundary + newline + '// line')).toBe(801);
+    }
+  });
+
+  it('pins the exception budget and keeps completed helper homes mandatory', () => {
+    expect(BARREL_EXCEPTIONS).toEqual([['server.js', 'services/billing/reminders']]);
+    expect(CONSOLE_LOG_ALLOWED).toEqual(['seed.js']);
+    const patternAllowEntries = SOURCE_PATTERNS.flatMap(({ allow = [] }) => allow);
+    expect(patternAllowEntries).toHaveLength(7);
+    expect([...patternAllowEntries, ...CONSOLE_LOG_ALLOWED, ...BARREL_EXCEPTIONS]).toHaveLength(9);
+    expect(SOURCE_PATTERNS.map(({ allow, deny }) => ({ allow, deny }))).toEqual([
+      { allow: ['utils/tenancy.js'] },
+      { deny: ['controllers/'] },
+      { deny: ['controllers/'] },
+      { allow: ['utils/authPrimitives.js', 'controllers/auth/tokens.js'] },
+      { allow: ['utils/authPrimitives.js'] },
+      { allow: ['utils/authPrimitives.js'] },
+      { allow: ['utils/authPrimitives.js'] },
+      { allow: ['utils/authPrimitives.js'] },
+      { allow: [] },
+    ]);
+    expect(Object.keys(BARREL_FOLDERS)).toHaveLength(9);
+    expect(SOURCE_PATTERNS.map(({ rule }) => rule)).toEqual([
+      'req.user.cafeId read outside the tenancy helper',
+      'UTC day key in a controller',
+      'process-zone offset in a controller',
+      'token minted outside the token modules',
+      'SHA-256 hasher copy (use sha256Hex)',
+      'opaque token pattern copy',
+      'refresh cookie set by hand',
+      'refresh cookie cleared by hand',
+      'chunk helper copy (use chunksOf)',
+    ]);
+    expect(HELPER_HOMES).toMatchObject({
+      isTestEnvironment: 'config/posture.js',
+      isDemandLine: 'utils/demand.js',
+      outboundGet: 'utils/http.js',
+    });
+    expect(RETIRED_NAMES).toContain('computeDedupKey');
+    expect(declarationViolations('utils/probe.js', 'const computeDedupKey = () => {};'))
+      .toEqual([expect.stringContaining('retired name redefined')]);
   });
 
   it('declares each consolidated helper only in its home, and no retired helper at all', () => {

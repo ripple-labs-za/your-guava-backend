@@ -8,6 +8,7 @@
  *   SOURCE_PATTERNS  a pattern may appear only where it is allowed
  *   BARREL_FOLDERS   code outside a split folder reaches it only through the barrel,
  *                    because the tests mock and spy on the barrels
+ * A barrel re-export also requires checking that barrel's Jest mocks.
  * Adding a shared helper or a split folder? Add its row here in the same commit.
  * It mirrors backend-90/02-build/BE-11-code-structure/tools/one-definition.cjs.
  * Paths are relative to src/ with forward slashes.
@@ -30,8 +31,6 @@ const PASSWORD_HOME = exists('utils/password.js') ? 'utils/password.js' : 'utils
 const COOKIE_HOME = mentions('config/posture.js', 'refreshCookieOptions') ? 'config/posture.js' : 'utils/authPrimitives.js';
 
 const home = (file, names) => Object.fromEntries(names.map((name) => [name, file]));
-// Shared modules later cards create: guarded once they exist.
-const homeIfPresent = (file, names) => (exists(file) ? home(file, names) : {});
 
 const HELPER_HOMES = {
   ...home('utils/timezone.js', [
@@ -50,7 +49,7 @@ const HELPER_HOMES = {
   ]),
   ...home(PASSWORD_HOME, ['MIN_PASSWORD_LENGTH', 'MAX_PASSWORD_BYTES', 'passwordTooLong', 'passwordInputError', 'hashPassword']),
   ...home(COOKIE_HOME, ['refreshCookieOptions', 'REFRESH_COOKIE_MAX_AGE_MS']),
-  ...homeIfPresent('config/posture.js', ['isTestEnvironment', 'isRelaxedEnvironment', 'isHardenedEnvironment']),
+  ...home('config/posture.js', ['isTestEnvironment', 'isRelaxedEnvironment', 'isHardenedEnvironment']),
   ...home('utils/email.js', ['EMAIL_MAX_LENGTH', 'isValidEmail']),
   ...home('utils/tenancy.js', ['activeCafeId', 'scoped']),
   ...home('services/parser/limits.js', ['boundedInteger', 'parserLimits', 'createClientInputError']),
@@ -58,16 +57,16 @@ const HELPER_HOMES = {
   ...home('services/parser/headers.js', ['REQUIRED_FIELDS', 'requiredFieldsForMode']),
   ...home('services/parser/parse.js', ['VALID_ITEMS_MODES']),
   ...home('utils/itemCategory.js', ['ITEM_CATEGORIES', 'isItemCategory']),
-  ...homeIfPresent('utils/demand.js', [
+  ...home('utils/demand.js', [
     'IGNORED_LINE_STATUS', 'isDemandLine', 'demandLines', 'DEMAND_LINE_MATCH', 'demandItemsExpression',
   ]),
-  ...homeIfPresent('utils/http.js', ['OUTBOUND_SERVICES', 'outboundPolicy', 'outboundGet', 'outboundPost']),
+  ...home('utils/http.js', ['OUTBOUND_SERVICES', 'outboundPolicy', 'outboundGet', 'outboundPost']),
 };
 
 // The names the copies had before BE-11-T05 gave them one home.
 const RETIRED_NAMES = [
   // BE-11-T06 (056dfaf) removed the old key helpers; content-v1 resolves old rows too.
-  'transactionIdentity', 'identityComparisonKey', 'storedIdentityKeys', 'findExistingIdentities',
+  'transactionIdentity', 'identityComparisonKey', 'storedIdentityKeys', 'findExistingIdentities', 'computeDedupKey',
   'zonedTimeToUtc', 'getLocalDateParts', 'addLocalDays', 'localDayOrdinal', 'localDateKey', 'timezoneOffsetMs',
   'localMidnightUtc', 'inclusiveDays', 'TIME_RE', 'HOURS_TIME_RE', 'duplicateIdentityForRow', 'receiptIdentityKey',
   'hashRefreshToken', 'hashActionToken', 'hashInvitationToken', 'generateActionToken', 'generateInvitationToken',
