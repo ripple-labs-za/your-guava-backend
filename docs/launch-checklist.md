@@ -94,7 +94,10 @@ to finish in-flight requests and registered background work before the platform 
 The API runs pending automatic migrations at startup, after Mongoose has built every declared index and before it accepts traffic
 (`src/migrations/runner.js`). Each run is recorded in the `migrations` collection. Additive work runs before data rewrites, and index drops
 run last, only once their replacement exists. A failed or unfinished migration keeps `/api/ready` at 503, so a deploy never goes live
-half-migrated. Watch the deploy log for `migration_applied` or `migration_failed` lines.
+half-migrated. Watch the deploy log for `migration_applied`, `migration_verified` or `migration_failed` lines.
+If a previous process died holding a lease, startup retries every five seconds until the lease expires (at most ten minutes after its
+last heartbeat), then completes the migrations without another deploy. The entire retry loop stays registered as background work;
+after the 60-second startup deadline the API listens but readiness stays 503 until the migration checks pass.
 
 - Status, nothing written: `node src/migrations/runner.js`
 - Run pending automatic migrations by hand: `node src/migrations/runner.js --apply`

@@ -144,9 +144,21 @@ const runMigrations = async ({ migrations = registry, names = [], by = 'startup'
   return result;
 };
 
-const runStartupMigrations = async () => {
+const runStartupMigrations = async ({ migrations = registry, retryDelayMs = 5000 } = {}) => {
   try {
-    return await runMigrations({ by: 'startup' });
+    // server.js tracks this entire promise, including lease waits, as background
+    // work. A dead deploy's lease must recover without needing another restart.
+    let result;
+    do {
+      result = await runMigrations({ migrations, by: 'startup' });
+      if (result.locked.length > 0) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, retryDelayMs);
+          timer.unref();
+        });
+      }
+    } while (result.locked.length > 0);
+    return result;
   } catch (error) {
     logger.error('migrations_crashed', logger.errorFields(error, { stack: true }));
     return { applied: [], verified: [], skipped: [], failed: ['(runner)'], locked: [] };

@@ -4,6 +4,12 @@ const item = (name, category) => ({ _id: name, cafeId: 'cafe1', name, category }
 
 describe('recategorise-items migration', () => {
   describe('provenance test', () => {
+    it('keeps legacy mixed-case category provenance', () => {
+      const { updates, keptManual } = plan([{ ...item('House Coffee (Blend)', 'retail'), manualFields: ['Category'] }]);
+      expect(updates).toEqual([]);
+      expect(keptManual[0]).toMatchObject({ reason: 'manualFields' });
+    });
+
     it('keeps a category the owner set even when it equals what the old rules produced', () => {
       // "House Coffee (Blend)" is a retail bag of beans to this owner. The old rules
       // also said retail, so provenance-by-reproduction alone would overwrite it.

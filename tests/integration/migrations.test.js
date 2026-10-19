@@ -4,7 +4,7 @@ const { setup, teardown, clearDB, app } = require('../setup');
 const Transaction = require('../../src/models/Transaction.model');
 const Item = require('../../src/models/Item.model');
 const Migration = require('../../src/models/Migration.model');
-const { runMigrations, migrationReadiness } = require('../../src/migrations/runner');
+const { runMigrations, runStartupMigrations, migrationReadiness } = require('../../src/migrations/runner');
 const widen = require('../../src/migrations/widen-receipt-index');
 const recategorise = require('../../src/migrations/recategorise-items');
 const { dropIndexIfPresent } = require('../../src/migrations/indexTools');
@@ -135,6 +135,54 @@ describe('receipt index migration', () => {
 });
 
 describe('runner ordering and failure', () => {
+  it('retries a dead process lease at startup without requiring another deploy', async () => {
+    await createLegacyIndex();
+    await Migration.create({ _id: widen.name, status: 'running', lockedUntil: new Date(Date.now() + 60000), attempts: 1 });
+    const logger = require('../../src/utils/logger');
+    let locked;
+    const sawLock = new Promise((resolve) => { locked = resolve; });
+    const warn = jest.spyOn(logger, 'warn').mockImplementation((event) => {
+      if (event === 'migration_locked') locked();
+    });
+    const run = runStartupMigrations({ migrations: [widen], retryDelayMs: 20 });
+    try {
+      await sawLock;
+      await expect(migrationReadiness({ migrations: [widen] })).resolves.toMatchObject({ ok: false, running: [widen.name] });
+      // The holder died: no heartbeat renews its lease. Expire it without a timing budget.
+      await Migration.updateOne({ _id: widen.name }, { $set: { lockedUntil: new Date(Date.now() - 1) } });
+      const result = await run;
+      expect(result.failed).toEqual([]);
+      expect(result.locked).toEqual([]);
+      expect(result.applied).toContain(widen.name);
+      expect((await Migration.findById(widen.name).lean()).attempts).toBe(2);
+      await expect(migrationReadiness({ migrations: [widen] })).resolves.toMatchObject({ ok: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never records applied when up leaves work pending', async () => {
+    const migration = {
+      name: 'b90-incomplete', mode: 'auto', kind: 'data',
+      check: async () => ({ pending: true, detail: 'work remains' }),
+      up: jest.fn().mockResolvedValue({ touched: 1 }),
+    };
+    const result = await runMigrations({ migrations: [migration] });
+    expect(migration.up).toHaveBeenCalledTimes(1);
+    expect(result.applied).toEqual([]);
+    expect(result.failed).toEqual([migration.name]);
+    const ledger = await Migration.findById(migration.name).lean();
+    expect(ledger).toMatchObject({ status: 'failed', lastError: 'ran but is still pending: work remains' });
+    expect(ledger.runs.map((run) => run.status)).toEqual(['failed']);
+  });
+
+  it('readiness rechecks the database even when the ledger says applied', async () => {
+    await runMigrations({ migrations: [widen] });
+    expect((await Migration.findById(widen.name).lean()).status).toBe('applied');
+    await createLegacyIndex();
+    await expect(migrationReadiness({ migrations: [widen] })).resolves.toMatchObject({ ok: false, pending: [widen.name] });
+  });
+
   it('does not rerun a migration when a concurrent preflight becomes stale before acquiring its lease', async () => {
     let done = false;
     let firstInUp = false;
@@ -235,6 +283,16 @@ describe('runner ordering and failure', () => {
 });
 
 describe('recategorise-items through the runner', () => {
+  it('keeps a mixed-case manual category added between planning and applying', async () => {
+    const item = await Item.create({ cafeId: new mongoose.Types.ObjectId(), name: 'House Coffee (Blend)', category: 'retail' });
+    const { updates } = recategorise.plan([await Item.findById(item._id).lean()]);
+    expect(updates).toHaveLength(1);
+    // Raw driver models legacy provenance that predates the current enum.
+    await Item.collection.updateOne({ _id: item._id }, { $set: { manualFields: ['Category'] } });
+    await expect(recategorise.applyUpdates(updates)).resolves.toEqual({ modified: 0 });
+    expect((await Item.findById(item._id).lean()).category).toBe('retail');
+  });
+
   it('never runs a manual migration at startup, runs it when named, and keeps owner choices', async () => {
     const misfiled = await Item.create({ cafeId: new mongoose.Types.ObjectId(), name: 'House Coffee (Blend)', category: 'retail' });
     const ownerChoice = await Item.create({

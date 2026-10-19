@@ -58,7 +58,7 @@ const plan = (items) => {
     const legacy = legacyInferItemCategory(item.name);
     const next = inferItemCategory(item.name);
     if (next === stored) continue;
-    if (Array.isArray(item.manualFields) && item.manualFields.includes('category')) {
+    if (Array.isArray(item.manualFields) && item.manualFields.some((field) => /^category$/i.test(field))) {
       keptManual.push({ name: item.name, stored, wouldBecome: next, reason: 'manualFields' });
       continue;
     }
@@ -78,7 +78,7 @@ const guardedUpdate = (update) => ({
     filter: {
       _id: update._id,
       category: update.from === 'other' ? { $in: ['other', null] } : update.from,
-      manualFields: { $ne: 'category' },
+      manualFields: { $not: /^category$/i },
     },
     update: { $set: { category: update.to } },
   },
