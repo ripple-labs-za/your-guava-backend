@@ -62,7 +62,8 @@ describe('reencrypt-secrets migration plan', () => {
   });
 
   it('does not load dotenv or connect to a database when imported', () => {
+    // rotate (BE-12-T03) is the CLI's work as a function; importing still runs nothing.
     expect(Object.keys(require('../../src/migrations/reencrypt-secrets')).sort())
-      .toEqual(['applySecretUpgrades', 'planSecretUpgrades']);
+      .toEqual(['applySecretUpgrades', 'planSecretUpgrades', 'rotate']);
   });
 });
