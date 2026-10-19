@@ -26,16 +26,19 @@ const deliverPasswordReset = async (normalizedEmail) => {
   if (!(await authThrottle.consumeRecipientQuota('password_reset', normalizedEmail)).allowed) return;
   const user = await User.findOne({ email: normalizedEmail }).select('_id email name').lean();
   if (!user) return;
-  await PasswordResetToken.updateMany(
-    { userId: user._id, status: 'pending' },
-    { $set: { status: 'revoked', revokedAt: new Date() } }
-  );
   const resetToken = generateOpaqueToken();
   const record = await PasswordResetToken.create({
     userId: user._id,
     tokenHash: sha256Hex(resetToken),
     expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
   });
+  // Create first, then revoke only the older pending links (lower _id): requests a moment apart run these steps side
+  // by side after their responses, and revoke-then-create let each revoke the others before they existed, leaving
+  // several live links (UAT-01-S05). Whatever the interleaving, the newest link is the one that stays.
+  await PasswordResetToken.updateMany(
+    { userId: user._id, status: 'pending', _id: { $lt: record._id } },
+    { $set: { status: 'revoked', revokedAt: new Date() } }
+  );
   const result = await emailService.sendPasswordResetEmail({ user, resetToken, expiresAt: record.expiresAt });
   if (!emailService.deliveryAccepted(result)) {
     await PasswordResetToken.updateOne(
