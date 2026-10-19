@@ -14,6 +14,8 @@ const {
 } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
 
+const PERIOD_FORMATS = new Map([['weekly', '%G-W%V'], ['monthly', '%Y-%m']]);
+
 /**
  * GET /api/analytics/revenue
  * Revenue analytics grouped by period (daily/weekly/monthly)
@@ -35,10 +37,16 @@ const getRevenue = async (req, res, next) => {
       { $sort: { _id: 1 } },
     ], aggregateOptions());
 
-    const daily = await buckets('%Y-%m-%d');
-    let periodRows = daily;
-    if (period === 'weekly') periodRows = await buckets('%G-W%V');
-    else if (period === 'monthly') periodRows = await buckets('%Y-%m');
+    // The daily buckets, the period buckets and the trend read independent things, so they run together (BE-14-T02): a 365-day
+    // request waited for the window's daily scan before the trend's own scans started. The trend's current-window sum stays its
+    // own scan: computing it from the daily rows would change the summation order of a float sum, and the answer must not move.
+    const periodFormat = PERIOD_FORMATS.get(period); // a Map: ?period=constructor must not find Object's
+    const [daily, periodBuckets, trendResult] = await Promise.all([
+      buckets('%Y-%m-%d'),
+      periodFormat ? buckets(periodFormat) : null,
+      revenueTrend({ cafeObjectId, startDate, endDate, timezone }),
+    ]);
+    const periodRows = periodBuckets || daily;
     const data = periodRows.map((row) => ({
       date: row._id,
       revenue: parseFloat(row.revenue.toFixed(2)),
@@ -49,12 +57,7 @@ const getRevenue = async (req, res, next) => {
     const totalRevenue = daily.reduce((sum, row) => sum + row.revenue, 0);
     const { openDays, bestDay, worstDay } = dailySummary({ daily, tradingHours: getCafeTradingHours(cafe) });
 
-    const { trend, reason: trendReason, effectiveWindow, comparisonWindow } = await revenueTrend({
-      cafeObjectId,
-      startDate,
-      endDate,
-      timezone,
-    });
+    const { trend, reason: trendReason, effectiveWindow, comparisonWindow } = trendResult;
 
     const summary = {
       totalRevenue: parseFloat(totalRevenue.toFixed(2)),
