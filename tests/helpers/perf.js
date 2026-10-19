@@ -40,6 +40,21 @@ const countIntlFormatters = async (fn) => {
   }
 };
 
+// Count zoned formatting work even when DateTimeFormat itself is cached.
+const countFormatToParts = async (fn) => {
+  const original = Intl.DateTimeFormat.prototype.formatToParts;
+  let calls = 0;
+  Intl.DateTimeFormat.prototype.formatToParts = function countingFormatToParts(...args) {
+    calls += 1;
+    return original.apply(this, args);
+  };
+  try {
+    return { result: await fn(), calls };
+  } finally {
+    Intl.DateTimeFormat.prototype.formatToParts = original;
+  }
+};
+
 // Documents MongoDB's query executor examined while fn ran (the test process is the in-memory server's only client).
 const scannedDocuments = async (fn) => {
   const admin = mongoose.connection.db.admin();
@@ -121,4 +136,4 @@ const stageAndConfirm = async (request, token, buffer, fileName, { idempotencyKe
   return { stage, confirm };
 };
 
-module.exports = { MENU, countOperations, countIntlFormatters, scannedDocuments, yocoRows, yocoCsv, seedTransactions, stageAndConfirm };
+module.exports = { MENU, countOperations, countIntlFormatters, countFormatToParts, scannedDocuments, yocoRows, yocoCsv, seedTransactions, stageAndConfirm };
