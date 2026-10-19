@@ -7,7 +7,7 @@ const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezo
 const { getCafeTradingHours } = require('../../utils/tradingHours');
 const { rankMovers, itemTrend, MOVER_MIN_QTY_PER_WEEK } = require('../../services/analytics/movers');
 const { saleCount } = require('../../services/analytics/semantics');
-const { openDaysBetween, shiftDay } = require('../../services/analytics/windows');
+const { openDaysBetween, shiftDay, mongoRound } = require('../../services/analytics/windows');
 const Transaction = require('../../models/Transaction.model');
 const { buildDateMatch, analyticsRangeMeta, dateToString } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
@@ -31,11 +31,37 @@ const getItems = async (req, res, next) => {
       date: dateMatch,
     };
 
-    const presence = await Transaction.aggregate([
+    // One read of the window (BE-14-T02): the presence per day (first and last day, open days) and the top items come from the
+    // same scan. avgPerDay needs the open-day count, which only the presence branch gives, so it is computed after, rounded as
+    // $round does (mongoRound).
+    const [scan] = await Transaction.aggregate([
       { $match: matchStage },
-      { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
-      { $sort: { _id: 1 } },
+      {
+        $facet: {
+          presence: [
+            { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
+            { $sort: { _id: 1 } },
+          ],
+          top: [
+            { $unwind: '$items' },
+            { $match: DEMAND_LINE_MATCH },
+            {
+              $group: {
+                _id: '$items.name',
+                totalQty: { $sum: '$items.quantity' },
+                totalRevenue: {
+                  $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] },
+                },
+              },
+            },
+            { $sort: { totalRevenue: -1 } },
+            { $limit: 20 },
+            { $project: { _id: 0, name: '$_id', totalQty: 1, totalRevenue: { $round: ['$totalRevenue', 2] } } },
+          ],
+        },
+      },
     ], aggregateOptions());
+    const presence = scan.presence;
     if (presence.length === 0) {
       return res.status(200).json({
         success: true, items: [], data: [], risingItems: [], decliningItems: [],
@@ -52,33 +78,7 @@ const getItems = async (req, res, next) => {
     }).length;
 
     // Top 20 items overall
-    const itemsPipeline = [
-      { $match: matchStage },
-      { $unwind: '$items' },
-      { $match: DEMAND_LINE_MATCH },
-      {
-        $group: {
-          _id: '$items.name',
-          totalQty: { $sum: '$items.quantity' },
-          totalRevenue: {
-            $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] },
-          },
-        },
-      },
-      { $sort: { totalRevenue: -1 } },
-      { $limit: 20 },
-      {
-        $project: {
-          _id: 0,
-          name: '$_id',
-          totalQty: 1,
-          totalRevenue: { $round: ['$totalRevenue', 2] },
-          avgPerDay: openDays > 0 ? { $round: [{ $divide: ['$totalQty', openDays] }, 1] } : { $literal: 0 },
-        },
-      },
-    ];
-
-    const items = await Transaction.aggregate(itemsPipeline, aggregateOptions());
+    const items = scan.top.map((item) => ({ ...item, avgPerDay: openDays > 0 ? mongoRound(item.totalQty / openDays, 1) : 0 }));
 
     // Trend: latest 7 local trading days in the selected data vs previous 7 days.
     const trendEnd = zonedDayEnd(lastDay, timezone);
