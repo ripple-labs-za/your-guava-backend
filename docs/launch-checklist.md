@@ -98,6 +98,8 @@ half-migrated. Watch the deploy log for `migration_applied`, `migration_verified
 If a previous process died holding a lease, startup retries every five seconds until the lease expires (at most ten minutes after its
 last heartbeat), then completes the migrations without another deploy. The entire retry loop stays registered as background work;
 after the 60-second startup deadline the API listens but readiness stays 503 until the migration checks pass.
+SIGTERM stops lease retries within 100 ms so shutdown can drain normally. Each migration's first locked lease is logged at warn;
+repeat attempts in that startup are debug logs and still wait five seconds between lease checks.
 
 - Status, nothing written: `node src/migrations/runner.js`
 - Run pending automatic migrations by hand: `node src/migrations/runner.js --apply`

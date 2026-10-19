@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Migration = require('../models/Migration.model');
 const logger = require('../utils/logger');
 const registry = require('./index');
+const { isDraining } = require('../utils/lifecycle');
 
 const KIND_ORDER = { expand: 0, data: 1, contract: 2 };
 const DEFAULT_LEASE_MS = 10 * 60 * 1000;
@@ -64,7 +65,7 @@ const selectMigrations = (migrations, names) => {
     (names.length > 0 ? names.includes(migration.name) : migration.mode === 'auto'));
 };
 
-const runOne = async (migration, { by, leaseMs, result }) => {
+const runOne = async (migration, { by, leaseMs, result, warnedLocks }) => {
   const ctx = contextFor(false);
   const before = await migration.check(ctx);
   if (!before.pending) {
@@ -78,7 +79,9 @@ const runOne = async (migration, { by, leaseMs, result }) => {
   const lock = await acquire(migration, { by, leaseMs });
   if (!lock) {
     result.locked.push(migration.name);
-    logger.warn('migration_locked', { name: migration.name });
+    const level = warnedLocks.has(migration.name) ? 'debug' : 'warn';
+    logger[level]('migration_locked', { name: migration.name });
+    warnedLocks.add(migration.name);
     return false;
   }
   let renewal = Promise.resolve();
@@ -134,11 +137,13 @@ const runOne = async (migration, { by, leaseMs, result }) => {
   }
 };
 
-const runMigrations = async ({ migrations = registry, names = [], by = 'startup', leaseMs = DEFAULT_LEASE_MS } = {}) => {
+const runMigrations = async ({
+  migrations = registry, names = [], by = 'startup', leaseMs = DEFAULT_LEASE_MS, warnedLocks = new Set(),
+} = {}) => {
   const result = { applied: [], verified: [], skipped: [], failed: [], locked: [] };
   for (const migration of selectMigrations(migrations, names)) {
     // Later migrations may depend on this one, so the first failure stops the run.
-    if (!(await runOne(migration, { by, leaseMs, result }))) break;
+    if (!(await runOne(migration, { by, leaseMs, result, warnedLocks }))) break;
   }
   logger.info('migrations_complete', result);
   return result;
@@ -148,16 +153,26 @@ const runStartupMigrations = async ({ migrations = registry, retryDelayMs = 5000
   try {
     // server.js tracks this entire promise, including lease waits, as background
     // work. A dead deploy's lease must recover without needing another restart.
-    let result;
+    let result = { applied: [], verified: [], skipped: [], failed: [], locked: [] };
+    const warnedLocks = new Set();
     do {
-      result = await runMigrations({ migrations, by: 'startup' });
-      if (result.locked.length > 0) {
+      if (isDraining()) break;
+      result = await runMigrations({ migrations, by: 'startup', warnedLocks });
+      if (result.locked.length > 0 && !isDraining()) {
         await new Promise((resolve) => {
-          const timer = setTimeout(resolve, retryDelayMs);
-          timer.unref();
+          const deadline = Date.now() + retryDelayMs;
+          // Notice shutdown within 100 ms without shortening the lease retry
+          // cadence or adding a process-wide listener for each startup attempt.
+          const poll = () => {
+            const remaining = deadline - Date.now();
+            if (isDraining() || remaining <= 0) return resolve();
+            const timer = setTimeout(poll, Math.min(100, remaining));
+            timer.unref();
+          };
+          poll();
         });
       }
-    } while (result.locked.length > 0);
+    } while (result.locked.length > 0 && !isDraining());
     return result;
   } catch (error) {
     logger.error('migrations_crashed', logger.errorFields(error, { stack: true }));

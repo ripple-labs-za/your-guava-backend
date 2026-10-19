@@ -5,6 +5,8 @@ const mockRunStartupMigrations = jest.fn();
 jest.mock('../../src/migrations/runner', () => ({
   runStartupMigrations: (...args) => mockRunStartupMigrations(...args),
 }));
+jest.mock('../../src/migrations/index', () => []);
+jest.mock('../../src/models/Migration.model', () => ({ findOneAndUpdate: jest.fn() }));
 
 const mockListen = jest.fn();
 const mockConnectDB = jest.fn();
@@ -330,6 +332,48 @@ describe('server startup cleanup', () => {
       finishJob?.();
       await stopping;
       exit.mockRestore();
+    }
+  });
+
+  it('exits zero on SIGTERM while the real migration runner waits on a live lease', async () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate', 'nextTick'] });
+    process.env.MIGRATION_STARTUP_TIMEOUT_MS = '5000';
+    process.env.SHUTDOWN_TIMEOUT_MS = '1000';
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    let stopping;
+    try {
+      const migration = {
+        name: 'locked-during-shutdown', kind: 'contract', mode: 'auto',
+        check: async () => ({ pending: true, detail: 'pending' }),
+        up: jest.fn(),
+      };
+      const ledger = require('../../src/models/Migration.model');
+      ledger.findOneAndUpdate.mockResolvedValue(null);
+      const runner = jest.requireActual('../../src/migrations/runner');
+      mockRunStartupMigrations.mockImplementation(() => runner.runStartupMigrations({ migrations: [migration] }));
+      const logger = require('../../src/utils/logger');
+      const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+      const server = makeListeningServer();
+      server.close = jest.fn((callback) => callback());
+      listenWith(server);
+      const { start, shutdown } = require('../../src/server');
+      const starting = start();
+      await jest.advanceTimersByTimeAsync(5000);
+      await starting;
+      stopping = shutdown('SIGTERM', { exitProcess: true });
+      await jest.advanceTimersByTimeAsync(1000);
+      await stopping;
+      expect(exit).toHaveBeenCalledWith(0);
+      expect(error.mock.calls.some(([event]) => event === 'shutdown_timeout')).toBe(false);
+      expect(mockDisconnect).toHaveBeenCalledTimes(1);
+      expect(migration.up).not.toHaveBeenCalled();
+      expect(require('../../src/utils/lifecycle').pendingBackgroundWork()).toEqual([]);
+    } finally {
+      await stopping;
+      exit.mockRestore();
+      delete process.env.MIGRATION_STARTUP_TIMEOUT_MS;
+      delete process.env.SHUTDOWN_TIMEOUT_MS;
+      jest.useRealTimers();
     }
   });
 
