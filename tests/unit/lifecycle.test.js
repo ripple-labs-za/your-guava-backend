@@ -18,6 +18,13 @@ const deferred = () => {
 };
 
 describe('background work registry', () => {
+  it('offers an awaited I/O turn without registering detached work', async () => {
+    let ioRan = false;
+    setImmediate(() => { ioRan = true; });
+    await lifecycle.yieldToEventLoop();
+    expect(ioRan).toBe(true);
+    expect(lifecycle.pendingBackgroundWork()).toEqual([]);
+  });
   afterEach(() => {
     lifecycle.resetLifecycleForTests();
     jest.restoreAllMocks();
@@ -101,10 +108,7 @@ describe('background work registry', () => {
     const offenders = walk(SRC_ROOT)
       .filter((file) => !file.endsWith(path.join('utils', 'lifecycle.js')))
       .filter((file) => {
-        // An awaited cooperative yield in forecast generation is not detached work.
-        const source = fs.readFileSync(file, 'utf8').replace(
-          'await new Promise((resolve) => setImmediate(resolve));', ''
-        );
+        const source = fs.readFileSync(file, 'utf8');
         return /setImmediate\(/.test(source);
       })
       .map((file) => path.relative(SRC_ROOT, file));

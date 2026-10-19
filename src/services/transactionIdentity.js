@@ -1,4 +1,5 @@
 const Transaction = require('../models/Transaction.model');
+const { yieldToEventLoop } = require('../utils/lifecycle');
 const {
   safeTimezone, zonedDateKey, getZonedDateParts, zonedDayStart, zonedDayEnd, addZonedDays,
 } = require('../utils/timezone');
@@ -106,7 +107,7 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
       session
     ).lean();
     for (const [index, doc] of stored.entries()) {
-      if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+      if (index > 0 && index % 250 === 0) await yieldToEventLoop();
       const signature = receiptSignature(doc, timezone);
       hold(`${doc.receiptId}|${dayOf(signature)}`, {
         signature, minute: minuteOf(signature), total: doc.total, uploadId: doc.uploadId || null, inFile: false,
@@ -118,7 +119,7 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
   const conflicts = [];
   let inFileDuplicates = 0;
   for (const [index, row] of rows.entries()) {
-    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+    if (index > 0 && index % 250 === 0) await yieldToEventLoop();
     const signature = receiptSignature(row, timezone);
     const dayKey = row.dateKey || dayOf(signature);
     const key = `${row.receiptId}|${dayKey}`;
@@ -165,7 +166,7 @@ const resolveContentRows = async (rows, { cafeId, session, timezone, excludeUplo
   ).lean();
   const held = new Map();
   for (const [index, doc] of stored.entries()) {
-    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+      if (index > 0 && index % 250 === 0) await yieldToEventLoop();
     const signature = contentSignature(doc, timezone);
     const entry = held.get(signature) || { remaining: 0, keys: new Set(), uploads: [] };
     entry.remaining += 1;
@@ -177,7 +178,7 @@ const resolveContentRows = async (rows, { cafeId, session, timezone, excludeUplo
   const duplicates = [];
   const nextOccurrence = new Map();
   for (const [index, row] of rows.entries()) {
-    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+    if (index > 0 && index % 250 === 0) await yieldToEventLoop();
     const signature = contentSignature(row, timezone);
     const entry = held.get(signature);
     if (entry && entry.remaining > 0) {

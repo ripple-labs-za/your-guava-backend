@@ -33,6 +33,7 @@ const COOKIE_HOME = mentions('config/posture.js', 'refreshCookieOptions') ? 'con
 const home = (file, names) => Object.fromEntries(names.map((name) => [name, file]));
 
 const HELPER_HOMES = {
+  ...home('utils/lifecycle.js', ['yieldToEventLoop']),
   ...home('utils/timezone.js', [
     'DEFAULT_TIMEZONE', 'DATE_ONLY_RE', 'TIME_OF_DAY_RE', 'safeTimezone', 'getTimeZoneOffsetMs', 'zonedDateTimeToUtc',
     'getZonedDateParts', 'dateOnlyParts', 'addDatePartsDays', 'zonedDayStart', 'zonedDayEnd', 'addZonedDays', 'zonedDayOrdinal',

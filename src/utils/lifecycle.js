@@ -1,5 +1,8 @@
 const logger = require('./logger');
 
+// An awaited I/O turn is not detached background work; keep its timer here too.
+const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
 /**
  * Process lifecycle state shared by server.js, readiness and every piece of
  * detached work. Work a request starts and does not await must be registered
@@ -58,6 +61,7 @@ const resetLifecycleForTests = () => {
 };
 
 module.exports = {
+  yieldToEventLoop,
   runInBackground,
   trackBackground,
   drainBackgroundWork,

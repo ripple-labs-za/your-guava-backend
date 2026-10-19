@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { yieldToEventLoop } = require('../utils/lifecycle');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
@@ -128,7 +129,7 @@ const reconcileParsedRows = async (parsed, { cafeId, session }) => {
   for (const row of approved) if (!parsedItemsOf.has(row)) parsedItemsOf.set(row, row.items || []);
   const resolve = await menuItemResolverForRows(cafeId, approved.map((row) => ({ items: parsedItemsOf.get(row) })), session);
   for (const [index, row] of approved.entries()) {
-    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+    if (index > 0 && index % 250 === 0) await yieldToEventLoop();
     row.items = reconcileLines(parsedItemsOf.get(row), resolve);
   }
   return parsed;
@@ -291,7 +292,7 @@ const insertTransactionsInChunks = async (documents, { session, chunkSize = INSE
   }
   let inserted = 0;
   for (let index = 0; index < documents.length; index += chunkSize) {
-    if (index > 0) await new Promise((resolve) => setImmediate(resolve));
+    if (index > 0) await yieldToEventLoop();
     const chunk = documents.slice(index, index + chunkSize);
     await Transaction.insertMany(chunk, { ordered: true, ...(session ? { session } : {}) });
     inserted += chunk.length;

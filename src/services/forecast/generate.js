@@ -1,4 +1,5 @@
 const logger = require('../../utils/logger');
+const { yieldToEventLoop } = require('../../utils/lifecycle');
 // Forecast generation for a day and a week: trading availability, signals, grouping, calibration, per-item loop, upsert.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
 const Transaction = require('../../models/Transaction.model');
@@ -590,7 +591,7 @@ const generateForecastsForDates = async (cafeId, dates, { origin = 'live', conte
   // turn seven short calculations into one long event-loop stall.
   const settled = [];
   for (const target of targets) {
-    await new Promise((resolve) => setImmediate(resolve));
+    await yieldToEventLoop();
     try {
       settled.push({ status: 'fulfilled', value: await buildAndSaveForecast(cafeId, target, context, inputs, { origin }) });
     } catch (reason) {

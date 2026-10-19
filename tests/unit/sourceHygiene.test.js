@@ -222,6 +222,7 @@ describe('source structure (BE-11-T07)', () => {
       ["scoped", "utils/tenancy.js"],
       ["setRefreshCookie", "utils/authPrimitives.js"],
       ["sha256Hex", "utils/authPrimitives.js"],
+      ["yieldToEventLoop", "utils/lifecycle.js"],
       ["zonedDateKey", "utils/timezone.js"],
       ["zonedDateTimeToUtc", "utils/timezone.js"],
       ["zonedDayEnd", "utils/timezone.js"],
