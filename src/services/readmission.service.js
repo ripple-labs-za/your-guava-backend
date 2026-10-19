@@ -19,7 +19,7 @@ const HARD_SYNC_MAX_UPLOADS = 20;
 const DEFAULT_SYNC_MAX_ROWS = 50000;
 const HARD_SYNC_MAX_ROWS = 200000;
 const MAX_LISTED_OVERLAPS = 20;
-const SELECT = '_id cafeId fileName r2Key fileFingerprint columnMapping itemsMode dateRange completedAt';
+const SELECT = '_id cafeId fileName r2Key columnMapping itemsMode dateRange completedAt';
 
 const readmissionLimits = () => ({
   maxUploads: parser.boundedInteger(process.env.UPLOAD_READMIT_SYNC_MAX_UPLOADS, DEFAULT_SYNC_MAX_UPLOADS, 0, HARD_SYNC_MAX_UPLOADS),

@@ -17,6 +17,8 @@ jest.mock('../../src/services/anthropic.service', () => ({
 }));
 
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const Transaction = require('../../src/models/Transaction.model');
@@ -49,6 +51,8 @@ describe('Uploads API', () => {
         .set('Authorization', `Bearer ${token}`)
         .attach('file', yocoFixture);
       const uploadId = stage.body.uploadId;
+      expect((await Upload.findById(uploadId).lean()).fileFingerprint)
+        .toBe(crypto.createHash('sha256').update(fs.readFileSync(yocoFixture)).digest('hex'));
 
       const confirm = await request
         .post(`/api/uploads/${uploadId}/confirm`)
