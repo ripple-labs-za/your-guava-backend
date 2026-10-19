@@ -1,3 +1,4 @@
+const { execFileSync } = require('child_process');
 const {
   leaveDayBreakdown,
   describeWorkPattern,
@@ -47,5 +48,31 @@ describe('leave days on the working pattern (BE-08-T03)', () => {
   it('names a pattern in week order', () => {
     expect(describeWorkPattern([0, 5, 6])).toBe('Fri, Sat, Sun');
     expect(describeWorkPattern(undefined)).toBe('Mon, Tue, Wed, Thu, Fri');
+  });
+
+  // The suite runs pinned to SAST (tests/globalSetup.js), where UTC midnight is
+  // the same calendar day locally, so a slip from getUTCDay to getDay would pass
+  // here. A child process in a negative-offset zone, where UTC midnight is the
+  // evening before, counts the same leave the same way or fails (BE-08-T03 review).
+  it('counts the same days in a timezone behind UTC', () => {
+    const script = `
+      const { leaveDayBreakdown } = require(${JSON.stringify(require.resolve('../../src/services/workforce/workingDays'))});
+      const d = (key) => new Date(key + 'T00:00:00.000Z');
+      console.log(JSON.stringify({
+        localDayOfUtcMidnight: d('2026-10-03').getDay(),
+        weekend: leaveDayBreakdown(d('2026-10-03'), d('2026-10-04'), [5, 6, 0]),
+        friToMon: leaveDayBreakdown(d('2026-10-09'), d('2026-10-12'), [1, 2, 3, 4, 5]).days,
+        christmas: leaveDayBreakdown(d('2026-12-21'), d('2027-01-01'), [1, 2, 3, 4, 5]).days,
+      }));
+    `;
+    const output = execFileSync(process.execPath, ['-e', script], {
+      env: { ...process.env, TZ: 'America/New_York' },
+      encoding: 'utf8',
+    });
+    const result = JSON.parse(output.trim().split('\n').pop());
+    expect(result.localDayOfUtcMidnight).toBe(5); // Saturday 00:00 UTC is Friday evening in New York: the zone took effect
+    expect(result.weekend).toEqual({ days: 2, chargedDates: ['2026-10-03', '2026-10-04'], holidayDates: [] });
+    expect(result.friToMon).toBe(2);
+    expect(result.christmas).toBe(8);
   });
 });

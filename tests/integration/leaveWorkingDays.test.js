@@ -76,6 +76,14 @@ describe('Leave on the working pattern, public holidays and overlaps (BE-08-T03)
     const duplicate = await requestLeave(staffId, { startDate: '2026-11-02', endDate: '2026-11-06' });
     expect(duplicate.status).toBe(409);
 
+    // Both edges are inclusive: sharing only the first or only the last day is an overlap.
+    const startsOnItsEnd = await requestLeave(staffId, { startDate: '2026-11-06', endDate: '2026-11-09' });
+    expect(startsOnItsEnd.status).toBe(409);
+    expect(startsOnItsEnd.body.code).toBe('LEAVE_OVERLAP');
+    const endsOnItsStart = await requestLeave(staffId, { startDate: '2026-10-29', endDate: '2026-11-02' });
+    expect(endsOnItsStart.status).toBe(409);
+    expect(endsOnItsStart.body.code).toBe('LEAVE_OVERLAP');
+
     await auth(request.put(`/api/leave/${first.body.leaveRequest._id}/reject`)).expect(200);
     const afterReject = await requestLeave(staffId, { startDate: '2026-11-02', endDate: '2026-11-06' });
     expect(afterReject.status).toBe(201);
@@ -105,7 +113,7 @@ describe('Leave on the working pattern, public holidays and overlaps (BE-08-T03)
     expect(updated.status).toBe(200);
     expect(updated.body.staff.workDays).toEqual([0, 6]);
 
-    for (const workDays of [[], [7], ['1'], 'weekdays', [1.5], { $gt: 0 }]) {
+    for (const workDays of [[], [7], ['1'], 'weekdays', [1.5], { $gt: 0 }, [6, 6, 6, 6, 6, 6, 6, 6]]) {
       const res = await auth(request.put(`/api/staff/${staffId}`)).send({ workDays });
       expect({ workDays, status: res.status, field: res.body.field }).toEqual({ workDays, status: 400, field: 'workDays' });
     }
