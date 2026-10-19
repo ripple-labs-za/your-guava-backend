@@ -3,6 +3,7 @@ const path = require('path');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
+  previewBuffer: previewFileBuffer,
   MAX_ROW_ERRORS,
   runParserTask,
 } = require('./parser.service');
@@ -59,7 +60,7 @@ const yocoMapping = () => ({
  */
 const previewBuffer = async (buffer, fileExt = 'csv', { isolate = false, signal } = {}) => {
   if (isolate) return runParserTask('preview', buffer, { fileExt, signal });
-  return require('./parser/preview').previewBuffer(buffer, fileExt);
+  return previewFileBuffer(buffer, fileExt);
 };
 
 const cloneRowErrors = (rowErrors) =>

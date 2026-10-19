@@ -25,6 +25,7 @@ const { parsePackedItems } = require('./parser/packedItems');
 const { groupLinePerRow } = require('./parser/lineItems');
 const { VALID_ITEMS_MODES, parseBuffer } = require('./parser/parse');
 const { MAX_ROW_ERRORS } = require('./parser/rowErrors');
+const { previewBuffer } = require('./parser/preview');
 const { runParserTask, withRequestAbort } = require('./parser/runInWorker');
 
 module.exports = {
@@ -37,7 +38,7 @@ module.exports = {
   COLUMN_MAPPING_FIELDS, pickColumnMapping,
   // Readers and file checks
   csvSeparatorDirective, detectCsvSeparator, stripCsvSeparatorDirective, readCsv, csvMaxRowBytes, csvReadError,
-  readWorkbook, readWorkbookRows, assertSupportedFileBuffer, decodeCsvBuffer, detectCsvLayout, prepareCsv,
+  readWorkbook, readWorkbookRows, assertSupportedFileBuffer, decodeCsvBuffer, detectCsvLayout, prepareCsv, previewBuffer,
   streamXlsxSharedStrings, streamXlsxSheetCells, xlsxPartTooLargeError,
   // Limits
   parserLimits, boundedInteger, tooManyColumnsError,
