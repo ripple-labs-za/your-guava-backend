@@ -3,6 +3,8 @@ const {
   splitWeekHours,
   weekStartFor,
   localWeekBounds,
+  shiftHasStarted,
+  notStartedFilter,
 } = require('../../src/services/workforce/shiftHours');
 
 const d = (key) => new Date(`${key}T00:00:00.000Z`);
@@ -38,6 +40,25 @@ describe('shift hours (BE-08-T04)', () => {
   it('puts a Sunday in the week that began the Monday before', () => {
     expect(key(weekStartFor(d('2026-09-20')))).toBe('2026-09-14');
     expect(key(weekStartFor(d('2026-09-21')))).toBe('2026-09-21');
+  });
+
+  it('decides "started" the same way as a check and as a query, a shift starting now included', () => {
+    const clock = { today: d('2026-10-14'), time: '10:00' };
+    const shifts = [
+      { label: 'yesterday late', date: d('2026-10-13'), startTime: '23:00', started: true },
+      { label: 'earlier today', date: d('2026-10-14'), startTime: '09:59', started: true },
+      { label: 'starting now', date: d('2026-10-14'), startTime: '10:00', started: true },
+      { label: 'later today', date: d('2026-10-14'), startTime: '10:01', started: false },
+      { label: 'tomorrow at midnight', date: d('2026-10-15'), startTime: '00:00', started: false },
+    ];
+    // Evaluates notStartedFilter's { $or: [{ date: { $gt } }, { date, startTime: { $gt } }] } the way MongoDB would.
+    const matchesQuery = (shift, filter) => filter.$or.some((clause) => Object.entries(clause).every(([field, want]) => {
+      if (want && want.$gt !== undefined) return shift[field] > want.$gt;
+      return want instanceof Date ? shift[field].getTime() === want.getTime() : shift[field] === want;
+    }));
+    const filter = notStartedFilter(clock);
+    expect(shifts.map(({ label, date, startTime }) => [label, shiftHasStarted({ date, startTime }, clock), !matchesQuery({ date, startTime }, filter)]))
+      .toEqual(shifts.map(({ label, started }) => [label, started, started]));
   });
 
   it("takes this week from the cafe's calendar, not the server's", () => {

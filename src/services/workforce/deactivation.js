@@ -3,7 +3,7 @@ const Staff = require('../../models/Staff.model');
 const Shift = require('../../models/Shift.model');
 const LeaveRequest = require('../../models/LeaveRequest.model');
 const { cafeClock } = require('./cafeCalendar');
-const { recomputeStaffWeek, weekStartFor } = require('./shiftHours');
+const { recomputeStaffWeek, weekStartFor, notStartedFilter } = require('./shiftHours');
 
 /**
  * Deactivates a person and, in the same transaction, cancels their scheduled
@@ -14,7 +14,8 @@ const { recomputeStaffWeek, weekStartFor } = require('./shiftHours');
  * shifts and approved leave. Returns null when the person is not in this cafe.
  */
 const deactivateStaff = async ({ cafeId, staffId, actorUserId, now = new Date() }) => {
-  const { today, time } = await cafeClock(cafeId, now);
+  const clock = await cafeClock(cafeId, now);
+  const { today } = clock;
   const session = await mongoose.startSession();
   try {
     let result = null;
@@ -30,7 +31,7 @@ const deactivateStaff = async ({ cafeId, staffId, actorUserId, now = new Date() 
       }
       const shifts = await Shift.updateMany(
         // HH:MM strings compare in clock order; a shift starting this minute has started.
-        { cafeId, staffId, status: 'scheduled', $or: [{ date: { $gt: today } }, { date: today, startTime: { $gt: time } }] },
+        { cafeId, staffId, status: 'scheduled', ...notStartedFilter(clock) },
         { $set: { status: 'cancelled', regularHours: 0, overtimeHours: 0, type: 'regular' } },
         { session }
       );

@@ -7,9 +7,9 @@ const {
   dateOnlyInput, assertPlainBody, parseEnum, SHIFT_STATUSES,
 } = require('../services/workforce/input');
 const { WorkforceError, sendWorkforceError } = require('../services/workforce/errors');
-const { DAY_MS, cafeToday } = require('../services/workforce/cafeCalendar');
+const { DAY_MS, cafeToday, cafeClock } = require('../services/workforce/cafeCalendar');
 const {
-  requireShiftSpan, weekStartFor, round2, splitWeekHours, recomputeStaffWeek,
+  requireShiftSpan, weekStartFor, round2, splitWeekHours, recomputeStaffWeek, shiftHasStarted,
 } = require('../services/workforce/shiftHours');
 const {
   lockActiveStaff, touchStaff, findOverlappingShift, shiftOverlapError, approvedLeaveOn, shiftOnLeaveError,
@@ -215,6 +215,7 @@ const update = async (req, res, next) => {
     const endTime = body.endTime === undefined ? undefined : timeInput(body.endTime, 'endTime');
     const status = body.status === undefined ? undefined : parseEnum(body.status, SHIFT_STATUSES, 'status');
     const notes = optionalText(body.notes, 'notes', WORKFORCE_TEXT_LIMITS.notes);
+    const clock = status === 'completed' ? await cafeClock(cafeId) : null;
 
     await session.withTransaction(async () => {
       const existing = await Shift.findOne({ _id: id, cafeId }).session(session).lean();
@@ -233,7 +234,12 @@ const update = async (req, res, next) => {
       // person's cancelled shift cannot be brought back or moved; a cancel or a
       // note alone is bookkeeping and only takes their roster lock (BE-08-T04 review).
       const onlyNotes = [staffId, date, startTime, endTime, status].every((value) => value === undefined);
-      const needsActive = movesPerson || (target.status !== 'cancelled' && !onlyNotes);
+      // Marking a started shift completed is bookkeeping too: final pay for someone
+      // who has left depends on it (Orchy ruling). Same started rule as deactivation.
+      const completesStarted = clock !== null
+        && [staffId, date, startTime, endTime].every((value) => value === undefined)
+        && shiftHasStarted(existing, clock);
+      const needsActive = movesPerson || (target.status !== 'cancelled' && !onlyNotes && !completesStarted);
       if (needsActive) await lockActiveStaff({ cafeId, staffId: target.staffId, session });
       if (movesPerson || !needsActive) await touchStaff({ cafeId, staffId: existing.staffId, session });
       if (target.status !== 'cancelled') {

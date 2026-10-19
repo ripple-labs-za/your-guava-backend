@@ -67,6 +67,19 @@ const localWeekBounds = (instant, timezone) => {
   return { monday, sunday: new Date(monday.getTime() + 6 * DAY_MS) };
 };
 
+// One rule for "this shift has started", given the cafe's clock ({ today, time }
+// from cafeClock): its date is before today, or it is today and its HH:MM start
+// has come. The query form selects the shifts that have NOT started. Deactivation
+// and the bookkeeping on a deactivated person's shifts both use these (BE-08-T04).
+const shiftHasStarted = (shift, clock) => {
+  const day = utcDateOnly(shift.date).getTime();
+  const today = clock.today.getTime();
+  return day < today || (day === today && shift.startTime <= clock.time);
+};
+const notStartedFilter = (clock) => ({
+  $or: [{ date: { $gt: clock.today } }, { date: clock.today, startTime: { $gt: clock.time } }],
+});
+
 const round2 = (value) => Math.round(value * 100) / 100;
 
 /**
@@ -123,6 +136,8 @@ module.exports = {
   absoluteSpan,
   weekStartFor,
   localWeekBounds,
+  shiftHasStarted,
+  notStartedFilter,
   round2,
   splitWeekHours,
   recomputeStaffWeek,

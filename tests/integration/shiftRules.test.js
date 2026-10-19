@@ -211,6 +211,29 @@ describe('Shift rules (BE-08-T04)', () => {
       expect(noted.status).toBe(200);
     });
 
+    // Orchy ruling on round 1 (2): final pay for someone who has left needs their
+    // started shifts marked completed; a shift that has not started cannot be.
+    it("lets a deactivated person's started shift be marked completed, but not one that has not started", async () => {
+      const today = cafeTodayKey();
+      // 00:00 has always started by the time the test runs.
+      const startedToday = await createShift({ date: today, startTime: '00:00', endTime: '00:30' });
+      const tomorrow = await createShift({ date: plusDays(today, 1), startTime: '07:00', endTime: '15:00' });
+      await auth(request.delete(`/api/staff/${staffId}`)).expect(200);
+
+      const completed = await putShift(startedToday.body.shift._id, { status: 'completed' });
+      expect(completed.status).toBe(200);
+      expect(completed.body.shift.status).toBe('completed');
+
+      const notStarted = await putShift(tomorrow.body.shift._id, { status: 'completed' });
+      expect(notStarted.status).toBe(404);
+      expect(notStarted.body.code).toBe('STAFF_NOT_FOUND');
+      expect((await Shift.findById(tomorrow.body.shift._id).lean()).status).toBe('cancelled');
+
+      // Completing is all it may do: a time change on the started shift is still refused.
+      const retimed = await putShift(startedToday.body.shift._id, { status: 'completed', endTime: '01:00' });
+      expect(retimed.status).toBe(404);
+    });
+
     it('refuses to approve leave over rostered shifts and names the dates', async () => {
       await createShift({ date: '2026-11-03', startTime: '07:00', endTime: '15:00' }).expect(201);
       const fifth = await createShift({ date: '2026-11-05', startTime: '07:00', endTime: '15:00' });
