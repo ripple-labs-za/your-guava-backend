@@ -436,7 +436,7 @@ const combineStats = (entries, existing) => {
     name,
     lines: sum('lines'),
     totalQty: sum('totalQty'),
-    totalRevenue: sum('totalRevenue'),
+    totalRevenue: Math.round(sum('totalRevenue') * 1e6) / 1e6,
     needsReviewCount: sum('needsReviewCount'),
     priceMismatchCount: sum('priceMismatchCount'),
     observedPriceMin: minOf(collect('observedPriceMin')),

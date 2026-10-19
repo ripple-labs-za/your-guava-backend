@@ -13,7 +13,8 @@ const LEGACY_XLS_MESSAGE =
   'This is a legacy .xls file. In Excel choose File -> Save As -> "CSV UTF-8 (Comma delimited)" '
   + 'and upload that .csv.';
 
-const assertSupportedFileBufferUncached = (buffer, fileExt = 'csv') => {
+// Signature checks never inflate an archive and may run before worker dispatch.
+const assertSupportedFileSignature = (buffer, fileExt = 'csv') => {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw createClientInputError('Uploaded file is empty');
   }
@@ -36,7 +37,6 @@ const assertSupportedFileBufferUncached = (buffer, fileExt = 'csv') => {
     const isZip = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b &&
       validZipSuffixes.has(`${buffer[2]}:${buffer[3]}`);
     if (!isZip) throw createClientInputError('XLSX file signature is invalid');
-    assertSafeXlsxArchive(buffer);
     return;
   }
 
@@ -70,11 +70,13 @@ const VALIDATED = new WeakMap();
 const assertSupportedFileBuffer = (buffer, fileExt = 'csv') => {
   const ext = String(fileExt || '').toLowerCase();
   if (Buffer.isBuffer(buffer) && VALIDATED.get(buffer)?.has(ext)) return;
-  assertSupportedFileBufferUncached(buffer, ext);
+  assertSupportedFileSignature(buffer, ext);
+  if (ext === 'xlsx') assertSafeXlsxArchive(buffer);
   if (!VALIDATED.has(buffer)) VALIDATED.set(buffer, new Set());
   VALIDATED.get(buffer).add(ext);
 };
 
 module.exports = {
+  assertSupportedFileSignature,
   assertSupportedFileBuffer,
 };

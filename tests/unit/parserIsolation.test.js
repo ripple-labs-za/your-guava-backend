@@ -40,9 +40,50 @@ it('a crashed worker returns a bounded resource refusal, leaves no worker, and r
 });
 
 it('a timeout terminates the worker before rejecting and clears its queue slot', async () => {
+  const { Worker } = require('node:worker_threads');
+  const terminate = jest.spyOn(Worker.prototype, 'terminate');
   const p = pool({ timeoutMs: 5 });
-  await expect(p.run('hang', Buffer.alloc(0))).rejects.toMatchObject({ statusCode: 413, code: 'UPLOAD_PARSE_TIMEOUT' });
+  const pending = p.run('hang', Buffer.alloc(0));
+  const worker = [...p.jobs][0].worker;
+  try {
+    await expect(pending).rejects.toMatchObject({ statusCode: 413, code: 'UPLOAD_PARSE_TIMEOUT' });
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(worker.threadId).toBe(-1);
+    expect(p.stats()).toEqual({ active: 0, queued: 0 });
+  } finally {
+    // Also clean up when a no-terminate mutation fails the assertion.
+    await worker.terminate();
+    terminate.mockRestore();
+  }
+});
+
+it('a worker crash after work has begun frees the slot for the queued upload', async () => {
+  const p = pool();
+  const crashed = p.run('mid-crash', Buffer.alloc(0));
+  const worker = [...p.jobs][0].worker;
+  const next = p.run('echo', Buffer.from('next'));
+  await expect(crashed).rejects.toMatchObject({ statusCode: 413, code: 'UPLOAD_PARSE_RESOURCE_LIMIT' });
+  expect(worker.threadId).toBe(-1);
+  await expect(next).resolves.toMatchObject({ value: 'next' });
   expect(p.stats()).toEqual({ active: 0, queued: 0 });
+});
+
+it('a full parser queue answers 503 with a safe sentence and Retry-After', async () => {
+  const p = pool({ maxQueue: 0 });
+  const controller = new AbortController();
+  const active = p.run('hang', Buffer.alloc(0), { signal: controller.signal });
+  const req = new EventEmitter();
+  const res = new EventEmitter();
+  res.setHeader = jest.fn();
+  try {
+    await expect(withRequestAbort(req, res, () => p.run('echo', Buffer.from('busy'))))
+      .rejects.toMatchObject({ statusCode: 503, code: 'UPLOAD_PARSE_BUSY', publicCode: 'UPLOAD_PARSE_BUSY',
+        exposeMessage: true, message: 'Too many uploads are being parsed. Try again shortly.' });
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+  } finally {
+    controller.abort();
+    await expect(active).rejects.toMatchObject({ statusCode: 499 });
+  }
 });
 
 it('a cancelled active upload terminates its worker and removes request listeners', async () => {

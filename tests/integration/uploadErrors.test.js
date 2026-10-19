@@ -31,6 +31,21 @@ afterEach(async () => {
 });
 
 describe('upload storage failures', () => {
+  it('answers parser saturation with 503, Retry-After and the server sentence', async () => {
+    const { token } = await createTestUser();
+    const { ParserPool } = require('../../src/services/parser/runInWorker');
+    const message = 'Too many uploads are being parsed. Try again shortly.';
+    jest.spyOn(ParserPool.prototype, 'run').mockRejectedValue(Object.assign(new Error(message), {
+      statusCode: 503, code: 'UPLOAD_PARSE_BUSY', publicCode: 'UPLOAD_PARSE_BUSY', exposeMessage: true,
+    }));
+    const res = await request.post('/api/transactions/upload')
+      .set('Authorization', `Bearer ${token}`).attach('file', csvPath);
+    expect(res.status).toBe(503);
+    expect(res.headers['retry-after']).toBe('1');
+    expect(res.body).toMatchObject({ success: false, code: 'UPLOAD_PARSE_BUSY', message });
+    expect(mockR2Files.size).toBe(0);
+  });
+
   it('answers a disk failure with a fixed message and the request id, and logs the cause', async () => {
     const { token } = await createTestUser();
     const previousEnv = process.env.NODE_ENV;

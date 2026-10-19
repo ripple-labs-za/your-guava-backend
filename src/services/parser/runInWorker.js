@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { setSourceRowNumbers } = require('./rowErrors');
+const { assertSupportedFileSignature } = require('./fileType');
 
 const refusal = (message, statusCode, code) => Object.assign(new Error(message), { statusCode, code });
 const aborted = () => refusal('Upload was cancelled', 499, 'UPLOAD_ABORTED');
@@ -28,7 +29,8 @@ class ParserPool {
     const { signal, timeoutMs = this.timeoutMs, ...taskOptions } = options;
     if (signal?.aborted || this.closed) return Promise.reject(aborted());
     if (this.active >= this.concurrency && this.queue.length >= this.maxQueue) {
-      return Promise.reject(refusal('Too many uploads are being parsed. Try again shortly.', 413, 'UPLOAD_PARSE_BUSY'));
+      return Promise.reject(Object.assign(refusal('Too many uploads are being parsed. Try again shortly.', 503, 'UPLOAD_PARSE_BUSY'),
+        { publicCode: 'UPLOAD_PARSE_BUSY', exposeMessage: true }));
     }
     return new Promise((resolve, reject) => {
       const job = { task, buffer, taskOptions, started: false, settled: false };
@@ -98,7 +100,9 @@ class ParserPool {
 const pool = new ParserPool();
 const runParserTask = async (task, buffer, options = {}) => {
   if (options.signal?.aborted) throw aborted();
-  if (options.fileExt === 'xlsx' && ['preview', 'parse'].includes(task)) {
+  const fileExt = String(options.fileExt || 'csv').toLowerCase();
+  assertSupportedFileSignature(buffer, fileExt);
+  if (fileExt === 'xlsx' && ['preview', 'parse'].includes(task)) {
     try {
       await require('./preflight').preflightXlsx(buffer);
     } catch (error) {
@@ -108,7 +112,7 @@ const runParserTask = async (task, buffer, options = {}) => {
   }
   // Cancellation may arrive while bounded ZIP decompression yields.
   if (options.signal?.aborted) throw aborted();
-  return pool.run(task, buffer, options);
+  return pool.run(task, buffer, { ...options, fileExt });
 };
 
 // A normal incoming-request close means the body was consumed; only abort or an unfinished response close cancels.
@@ -119,7 +123,10 @@ const withRequestAbort = async (req, res, run) => {
   req.once('aborted', cancel);
   res.once('close', closed);
   if (req.aborted) cancel();
-  try { return await run(controller.signal); } finally {
+  try { return await run(controller.signal); } catch (error) {
+    if (error.code === 'UPLOAD_PARSE_BUSY') res.setHeader('Retry-After', '1');
+    throw error;
+  } finally {
     req.removeListener('aborted', cancel);
     res.removeListener('close', closed);
   }

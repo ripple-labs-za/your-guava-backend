@@ -61,9 +61,9 @@ const parseWithinRange = async (upload, range, timezone) => {
   const buffer = await r2.downloadFile(upload.r2Key);
   if (!Buffer.isBuffer(buffer)) throw new Error(`Stored file for upload ${upload._id} is unavailable`);
   const fileExt = String(upload.fileName || '').split('.').pop().toLowerCase();
-  // The same parse entry confirm uses.
+  // The same bounded worker as confirm: deletes and remaps can re-read thousands of stored rows.
   const parsed = await parser.parseBuffer(buffer, {
-    columnMapping: upload.columnMapping, itemsMode: upload.itemsMode, fileExt, timezone,
+    columnMapping: upload.columnMapping, itemsMode: upload.itemsMode, fileExt, timezone, isolate: true,
   });
   const rows = parsed.rows.filter((row) => row.dateKey >= range.firstDateKey && row.dateKey <= range.lastDateKey);
   return { upload, parsedRows: parsed.totalRows, parsed: { ...parsed, rows, errors: 0, rowErrors: [], totalRows: rows.length } };

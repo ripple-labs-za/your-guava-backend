@@ -214,3 +214,42 @@ it('H6: a merge and an upload deletion between additions preserve full-rebuild s
   await rebuildItemsForCafe(user.activeCafeId);
   expect(await itemsOf(user.activeCafeId)).toEqual(afterDelete);
 });
+
+it('H6: remapping a completed upload replaces its sums instead of adding them again', async () => {
+  const { token, user } = await createTestUser();
+  const first = await stageAndConfirm(request, token, yocoCsv(120, { prefix: 'REMAP' }), 'remap.csv');
+  expect(first.confirm.status).toBe(200);
+  const before = await itemsOf(user.activeCafeId);
+  const sums = (items) => items.map(({ name, totalSold, avgPrice, salesStats }) => ({
+    name, totalSold, avgPrice, lines: salesStats.lines, totalQty: salesStats.totalQty, totalRevenue: salesStats.totalRevenue,
+  }));
+  const remapped = await request.patch(`/api/uploads/${first.stage.body.uploadId}/mapping`)
+    .set('Authorization', `Bearer ${token}`).set('Idempotency-Key', 'remap-replace-sums')
+    .send({ columnMapping: first.stage.body.columnMapping, itemsMode: first.stage.body.itemsMode });
+  expect(remapped.status).toBe(200);
+  const afterRemap = await itemsOf(user.activeCafeId);
+  // Replacing the transactions gives lastExactPrice.order a new transaction id; all business sums stay identical.
+  expect(sums(afterRemap)).toEqual(sums(before));
+  await rebuildItemsForCafe(user.activeCafeId, { pruneOrphans: true });
+  expect(await itemsOf(user.activeCafeId)).toEqual(afterRemap);
+  expect(await Transaction.countDocuments({ cafeId: user.activeCafeId })).toBe(120);
+});
+
+it('readmission: deleting a 10k-row overlapping upload keeps the event loop responsive', async () => {
+  const { token } = await createTestUser();
+  const original = yocoCsv(10_000, { prefix: 'READMIT' });
+  const lines = original.toString().trimEnd().split('\n');
+  const extra = yocoCsv(1, { prefix: 'READMIT-EXTRA' }).toString().trimEnd().split('\n')[1];
+  const overlapping = Buffer.from([lines[0], ...lines.slice(2), extra].join('\n') + '\n');
+  const first = await stageAndConfirm(request, token, original, 'readmit-original.csv');
+  expect(first.confirm.status).toBe(200);
+  const second = await stageAndConfirm(request, token, overlapping, 'readmit-overlap.csv');
+  expect(second.confirm.status).toBe(200);
+  expect(second.confirm.body.stats.imported).toBe(1);
+  const outcome = await measureBudget(() => request.delete(`/api/uploads/${first.stage.body.uploadId}`)
+    .set('Authorization', `Bearer ${token}`));
+  expect(outcome.error).toBeUndefined();
+  expect(outcome.result.status).toBe(200);
+  expect(await Transaction.countDocuments({})).toBe(10_000);
+  expect(outcome.maxLoopDelayMs).toBeLessThan(250);
+});
