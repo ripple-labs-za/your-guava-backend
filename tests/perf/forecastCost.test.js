@@ -8,7 +8,7 @@ const Transaction = require('../../src/models/Transaction.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
 const forecastService = require('../../src/services/forecast.service');
 const generate = require('../../src/services/forecast/generate');
-const { zonedDayStart, addZonedDays } = require('../../src/utils/timezone');
+const { zonedDayStart, addZonedDays, zonedDateKey } = require('../../src/utils/timezone');
 const { countOperations, countFormatToParts, seedTransactions } = require('../helpers/perf');
 
 const request = supertest(app);
@@ -161,5 +161,36 @@ describe('forecast generation cost', () => {
     const { result, calls } = await countFormatToParts(() => forecastService.generateWeekForecast(owner.user.activeCafeId));
     expect(result).toHaveLength(7);
     expect(calls).toBeLessThanOrEqual(500); // a zoned ordinal per sale is 6,720 calls or more
+  });
+
+  it('F5: monthly slices neither drop nor double-score cafe-local days across DST', async () => {
+    const owner = await createTestUser();
+    const cafeId = owner.user.activeCafeId;
+    const zone = 'America/New_York';
+    const first = zonedDayStart('2026-02-06', zone);
+    const targets = Array.from({ length: 65 }, (_, index) => addZonedDays(first, index, zone));
+    await Forecast.insertMany(targets.map((date) => ({ cafeId, date, dateKey: zonedDateKey(date, zone), items: [] })));
+    await Transaction.insertMany(targets.map((date, index) => ({ cafeId, status: 'approved',
+      date: new Date(addZonedDays(date, 1, zone).getTime() - 3600_000), total: index + 1, items: [],
+    })));
+    expect(await forecastService.updateForecastActualsForRange(cafeId, targets[0], targets.at(-1), { timezone: zone }))
+      .toEqual({ scored: 65, cleared: 0 });
+    const stored = await Forecast.find({ cafeId }).sort({ date: 1 }).lean();
+    expect(stored.map((row) => row.actualRevenue)).toEqual(targets.map((_, index) => index + 1));
+    expect(stored.every((row) => row.actualTransactionCount === 1)).toBe(true);
+  });
+
+  it('F5: a capped range scores the newest 366 stored forecasts and leaves the oldest untouched', async () => {
+    const owner = await createTestUser();
+    const cafeId = owner.user.activeCafeId;
+    const last = addZonedDays(zonedDayStart(new Date(), ZONE), -1, ZONE);
+    const first = addZonedDays(last, -366, ZONE);
+    const targets = days(first, 367);
+    await Forecast.insertMany(targets.map((date) => ({ cafeId, date, items: [], actualRevenue: 1, actualsUpdatedAt: new Date() })));
+    expect(await forecastService.updateForecastActualsForRange(cafeId, first, last, { timezone: ZONE }))
+      .toEqual({ scored: 0, cleared: 366, capped: true });
+    const stored = await Forecast.find({ cafeId }).sort({ date: 1 }).lean();
+    expect(stored[0].actualRevenue).toBe(1);
+    expect(stored.slice(1).every((row) => row.actualRevenue === undefined && row.actualsUpdatedAt === undefined)).toBe(true);
   });
 });
