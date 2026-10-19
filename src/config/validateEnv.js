@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const { parseTrustProxyHops } = require('./proxy');
-const { nodeEnv, isProductionEnv, isHardenedEnvironment } = require('./posture');
+const { isProductionEnv, isHardenedEnvironment } = require('./posture');
 const { originChecksEnabled, workforceEnabled } = require('./flags');
 const { aiModelProblems } = require('./ai');
 const { NUMERIC_ENV, URL_ENV, isPlaceholder } = require('./envSpec');

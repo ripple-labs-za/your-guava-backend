@@ -23,7 +23,6 @@ const PACKED_QUANTITY = String.raw`-?\d+(?:[.,]\d+)?`;
 // Plenty of tills print U+00D7 rather than an ASCII x, and some print a capital
 // X. The sign used to stay glued to the item name, so "Flat White" and
 // "× Flat White" were two different products splitting one history in half.
-const PACKED_MARKER = String.raw`\s+[x×]\s+`;
 // The name may not cross a newline, and a newline separates basket lines. A
 // till that wraps its basket inside one quoted cell had only its LAST line
 // read: `.` never matches a newline and `$` is end-of-string, so the earlier
