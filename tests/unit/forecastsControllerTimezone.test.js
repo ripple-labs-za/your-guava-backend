@@ -6,6 +6,8 @@ const mockTransactionAggregate = jest.fn();
 const mockGenerateForecast = jest.fn();
 const mockUpdateForecastActuals = jest.fn();
 const mockClearApiCache = jest.fn();
+const mockRangeActuals = jest.fn();
+const mockMeter = jest.fn();
 
 jest.mock('../../src/models/Forecast.model', () => ({
   findOne: (...args) => mockForecastFindOne(...args),
@@ -25,7 +27,7 @@ jest.mock('../../src/services/forecast.service', () => ({
   invalidatePlanningForecasts: jest.fn(),
   loadForecastContext: async () => ({ timezone: 'America/New_York', inputsVersion: 0 }),
   loadForecastInputs: async () => ({}),
-  updateForecastActualsForRange: async () => ({ scored: 1, cleared: 0 }),
+  updateForecastActualsForRange: (...args) => mockRangeActuals(...args),
   BACKTEST_BASIS_NOTE: 'note',
   FORECAST_MODEL_VERSION: 'test-model',
   generateForecast: (...args) => mockGenerateForecast(...args),
@@ -50,7 +52,7 @@ jest.mock('../../src/services/anthropic.service', () => ({
 }));
 jest.mock('../../src/services/usage.service', () => ({
   historyBackfillCreditsPerDay: () => 1,
-  meterGuavaCredits: async ({ run }) => ({ result: await run(), replayed: false }),
+  meterGuavaCredits: (...args) => mockMeter(...args),
 }));
 
 const controller = require('../../src/controllers/forecasts.controller');
@@ -81,6 +83,8 @@ const forecastQuery = (value) => {
 describe('forecast controller cafe-local dates', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRangeActuals.mockResolvedValue({ scored: 1, cleared: 0 });
+    mockMeter.mockImplementation(async ({ run }) => ({ result: await run(), replayed: false }));
     jest.useFakeTimers().setSystemTime(new Date('2026-03-08T07:30:00.000Z'));
     mockCafeFindById.mockReturnValue(timezoneQuery());
     mockForecastFindOne.mockReturnValue(forecastQuery(null));
@@ -178,6 +182,33 @@ describe('forecast controller cafe-local dates', () => {
       startDate: '2026-03-08',
       endDate: '2026-03-08',
     }));
+  });
+
+  it.each(['scoring', 're-read'])('preserves an original 402 and clears caches when history %s fails', async (stage) => {
+    jest.setSystemTime(new Date('2026-03-10T12:00:00.000Z'));
+    mockCafeFindOne.mockReturnValue(timezoneQuery());
+    mockTransactionAggregate.mockResolvedValue([
+      { _id: '2026-03-08', actualRevenue: 100, transactionCount: 1 },
+      { _id: '2026-03-07', actualRevenue: 100, transactionCount: 1 },
+    ]);
+    const scoringError = new Error('actuals unavailable');
+    const original = Object.assign(new Error('No credits remain'), { statusCode: 402 });
+    const lean = jest.fn().mockResolvedValue([]);
+    mockForecastFind.mockReturnValue({ select: jest.fn().mockReturnThis(), lean });
+    mockMeter.mockResolvedValueOnce({ result: { forecastId: 'paid-day' }, replayed: false }).mockRejectedValueOnce(original);
+    if (stage === 'scoring') mockRangeActuals.mockRejectedValueOnce(scoringError);
+    else lean.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockRejectedValueOnce(scoringError);
+    const logger = require('../../src/utils/logger');
+    const log = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    const next = jest.fn();
+    try {
+      await controller.getHistory(req({ query: {
+        startDate: '2026-03-07', endDate: '2026-03-08', backfill: 'sync', backfillLimit: '2',
+      } }), response(), next);
+      expect(next).toHaveBeenCalledWith(original);
+      expect(mockClearApiCache).toHaveBeenCalledWith({ cafeId });
+      expect(log).toHaveBeenCalledWith('forecast_history_actuals_failed', expect.objectContaining({ cafeId }));
+    } finally { log.mockRestore(); }
   });
 
   it('clears response caches after a synchronous history batch generates a forecast', async () => {

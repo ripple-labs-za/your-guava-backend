@@ -3,6 +3,7 @@
 const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const Forecast = require('../../src/models/Forecast.model');
+const Cafe = require('../../src/models/Cafe.model');
 const Organization = require('../../src/models/Organization.model');
 const Transaction = require('../../src/models/Transaction.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
@@ -110,6 +111,43 @@ describe('forecast generation cost', () => {
     expect(again.result.forecasts[0].items.length).toBeGreaterThan(0);
   });
 
+  it('F2: an inputsVersion bump starts a fresh build while the old flight is held open', async () => {
+    const owner = await createTestUser();
+    const cafeId = owner.user.activeCafeId;
+    const day = zonedDayStart(new Date(), ZONE);
+    const oldContext = await generate.loadForecastContext(cafeId);
+    let release;
+    let entered;
+    const held = new Promise((resolve) => { release = resolve; });
+    const started = new Promise((resolve) => { entered = resolve; });
+    const original = Forecast.findOneAndUpdate.bind(Forecast);
+    const write = jest.spyOn(Forecast, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+      entered();
+      await held;
+      return original(...args);
+    });
+    const old = forecastService.generateForecastsForDates(cafeId, [day], { context: oldContext });
+    await started;
+    try {
+      await Cafe.updateOne({ _id: cafeId }, { $inc: { forecastInputsVersion: 1 } });
+      const freshContext = await generate.loadForecastContext(cafeId);
+      const fresh = forecastService.generateForecastsForDates(cafeId, [day], { context: freshContext });
+      // A missing-version key returns the held old promise; use a bounded watchdog and always release it.
+      let watchdog;
+      const result = await Promise.race([fresh, new Promise((resolve) => { watchdog = setTimeout(() => resolve(null), 3000); })]);
+      clearTimeout(watchdog);
+      expect(result).not.toBeNull();
+      expect(result.failures).toEqual([]);
+      expect(result.forecasts[0].inputsVersion).toBe(oldContext.inputsVersion + 1);
+      expect(write).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await old;
+      write.mockRestore();
+    }
+    expect(forecastService._test.inFlightGenerations()).toBe(0);
+  });
+
   it('F4: fourteen past days generated from shared inputs are stored exactly as fourteen single-day generations', async () => {
     const owner = await createTestUser();
     const cafeId = owner.user.activeCafeId;
@@ -149,6 +187,10 @@ describe('forecast generation cost', () => {
       actualTransactionCount: f.actualTransactionCount, itemAccuracy: f.itemAccuracy, calibrationExcluded: f.calibrationExcluded,
       items: (f.items || []).map((item) => ({ itemName: item.itemName, actualQty: item.actualQty })) });
     const afterRange = (await Forecast.find({ cafeId }).sort({ date: 1 }).lean()).map(actualsOf);
+    const other = await createTestUser({ email: 'range-other@yourguava.com' });
+    await seedTransactions(other.user.activeCafeId, { days: 40, perDay: 5 });
+    await forecastService.updateForecastActualsForRange(cafeId, range[0], range.at(-1), { timezone: ZONE });
+    expect((await Forecast.find({ cafeId }).sort({ date: 1 }).lean()).map(actualsOf)).toEqual(afterRange);
     expect(afterRange.at(-1).actualRevenue).toBeUndefined(); // today is never scored
     expect(afterRange[3].accuracy).toBeUndefined();          // the day without sales is cleared, not zeroed
     for (const day of range) await forecastService.updateForecastActuals(cafeId, day, { timezone: ZONE });

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const logger = require('../utils/logger');
 const Forecast = require('../models/Forecast.model');
 const Cafe = require('../models/Cafe.model');
 const Organization = require('../models/Organization.model');
@@ -606,13 +607,20 @@ const getHistory = async (req, res, next) => {
           // A later 402 or provider failure still leaves every earlier paid day
           // scored and visible, just as the former per-day loop did.
           if (builtKeys.length) {
-            const keys = [...builtKeys].sort();
-            await updateForecastActualsForRange(cafeId, keys[0], keys.at(-1), { timezone });
-            const scored = await Forecast.find({ cafeId, date: { $in: builtKeys.map((key) => zonedDayStart(key, timezone)) } })
-              .select(HISTORY_ROW_PROJECTION).lean();
-            for (const forecast of scored) forecastByDate.set(zonedDateKey(forecast.date, timezone), forecast);
-            generated = scored.filter((forecast) => !needsHistoryForecastRefresh(forecast)).length;
-            clearApiCache({ cafeId });
+            try {
+              const keys = [...builtKeys].sort();
+              await updateForecastActualsForRange(cafeId, keys[0], keys.at(-1), { timezone });
+              const scored = await Forecast.find({ cafeId, date: { $in: builtKeys.map((key) => zonedDayStart(key, timezone)) } })
+                .select(HISTORY_ROW_PROJECTION).lean();
+              for (const forecast of scored) forecastByDate.set(zonedDateKey(forecast.date, timezone), forecast);
+              generated = scored.filter((forecast) => !needsHistoryForecastRefresh(forecast)).length;
+            } catch (error) {
+              // Scoring can be retried; it must never replace a later day's original
+              // metering/provider error or leave earlier paid days hidden in the cache.
+              logger.error('forecast_history_actuals_failed', { cafeId: String(cafeId), ...logger.errorFields(error) });
+            } finally {
+              clearApiCache({ cafeId });
+            }
           }
         }
       });
