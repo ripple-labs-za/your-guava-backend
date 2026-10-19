@@ -283,6 +283,22 @@ const openSse = (res) => {
 
 const streamChatInsights = async (req, res, next) => {
   const requestAbort = abortWhenResponseCloses(res);
+  let heartbeat;
+  const stopHeartbeat = () => {
+    clearInterval(heartbeat);
+    heartbeat = undefined;
+  };
+  const startStream = () => {
+    openSse(res);
+    if (heartbeat || requestAbort.signal.aborted) return;
+    // Comments keep the connection alive while the provider thinks. They are
+    // not answer text and must never mark the credit reservation delivered.
+    heartbeat = setInterval(() => {
+      if (!res.destroyed && !res.writableEnded) res.write(': ping\n\n');
+    }, 15_000);
+    heartbeat.unref?.();
+  };
+  requestAbort.signal.addEventListener('abort', stopHeartbeat, { once: true });
   try {
     const cafeId = activeCafeId(req);
     const orgId = req.user.orgId;
@@ -291,7 +307,7 @@ const streamChatInsights = async (req, res, next) => {
     const conversation = await prepareChatConversation({ body: req.body, cafeId, orgId, authorizedCafeIds });
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      openSse(res);
+      startStream();
 
       const result = await streamBusinessChatResponse({
         cafeId,
@@ -333,7 +349,7 @@ const streamChatInsights = async (req, res, next) => {
       idempotencyKey,
       signal: requestAbort.signal,
       run: (meter) => {
-        openSse(res);
+        startStream();
 
         return streamBusinessChatResponse({
           cafeId,
@@ -412,6 +428,8 @@ const streamChatInsights = async (req, res, next) => {
     }
     return next(error);
   } finally {
+    stopHeartbeat();
+    requestAbort.signal.removeEventListener('abort', stopHeartbeat);
     requestAbort.dispose();
   }
 };
