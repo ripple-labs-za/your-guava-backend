@@ -4,6 +4,19 @@ jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
   messages: { create: mockAnthropicMessageCreate },
 })));
 
+// Express 5 (router 2.x) layers keep only a compiled matcher: record the path each layer was declared with,
+// so the guards below can see a :param on middleware (app.use('/api/x/:id', fn), router.use('/:id', fn)).
+jest.mock('router/lib/layer', () => {
+  const ActualLayer = jest.requireActual('router/lib/layer');
+  function RecordingLayer(declaredPath, options, fn) {
+    const layer = new ActualLayer(declaredPath, options, fn);
+    layer.declaredPath = declaredPath;
+    return layer;
+  }
+  RecordingLayer.prototype = ActualLayer.prototype;
+  return RecordingLayer;
+});
+
 const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
@@ -299,17 +312,24 @@ describe('route table', () => {
     expect(live.filter((router) => !parsedRouters.includes(router))).toHaveLength(0);
   });
 
-  it('finds no router nested inside a mounted router (its routes would be invisible here)', () => {
-    const nested = collectMounts().flatMap(({ prefix, file }) => routerOf(file).stack
-      .filter((layer) => layer.handle && Array.isArray(layer.handle.stack))
-      .map(() => `${prefix} (${file})`));
-    expect(nested).toEqual([]);
+  // A declared path with a :param (a string with ':', a RegExp, or an array holding either).
+  const declaresParam = (declared) => (Array.isArray(declared)
+    ? declared.some(declaresParam)
+    : declared instanceof RegExp || (typeof declared === 'string' && declared.includes(':')));
+
+  it('finds no router nested inside a mounted router, and no middleware on a :param path in one', () => {
+    const offending = collectMounts().flatMap(({ prefix, file }) => routerOf(file).stack
+      .filter((layer) => (layer.handle && Array.isArray(layer.handle.stack)) || (!layer.route && declaresParam(layer.declaredPath)))
+      .map((layer) => `${prefix} (${file}) ${String(layer.declaredPath)}`));
+    expect(offending).toEqual([]);
   });
 
-  it('finds no app-level route with a :param (it would bypass the routers this suite reads)', () => {
+  it('finds no app-level route or middleware with a :param (it would bypass the routers this suite reads)', () => {
+    // Every layer was built through RecordingLayer; a missing declaredPath means the guard went blind.
+    expect(app.router.stack.every((layer) => layer.declaredPath !== undefined)).toBe(true);
     const appLevel = app.router.stack
-      .filter((layer) => layer.route && layer.route.path.includes(':'))
-      .map((layer) => `${Object.keys(layer.route.methods).join(',').toUpperCase()} ${layer.route.path}`);
+      .filter((layer) => declaresParam(layer.declaredPath) || (layer.route && layer.route.path.includes(':')))
+      .map((layer) => String(layer.declaredPath));
     expect(appLevel).toEqual([]);
   });
 
