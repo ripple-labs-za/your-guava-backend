@@ -1,5 +1,12 @@
+// Ask Guava's answer comes from this mock; the cases below only care where the answer is saved.
+const mockAnthropicMessageCreate = jest.fn();
+jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
+  messages: { create: mockAnthropicMessageCreate },
+})));
+
 const fs = require('fs');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 const supertest = require('supertest');
 const { setup, teardown, createTestUser, createTestManager, app } = require('../setup');
 const emailService = require('../../src/services/email.service');
@@ -15,8 +22,11 @@ const PaymentSession = require('../../src/models/PaymentSession.model');
 const Shift = require('../../src/models/Shift.model');
 const Staff = require('../../src/models/Staff.model');
 const TeamInvitation = require('../../src/models/TeamInvitation.model');
+const Transaction = require('../../src/models/Transaction.model');
 const Upload = require('../../src/models/Upload.model');
+const UsageLedger = require('../../src/models/UsageLedger.model');
 const User = require('../../src/models/User.model');
+const { waitFor } = require('../helpers/waitFor');
 
 const request = supertest(app);
 const SRC = path.join(__dirname, '..', '..', 'src');
@@ -26,8 +36,11 @@ const REFUSED = [403, 404];
 // The route table. Mount prefixes come from src/app.js; route paths come from each router's own stack.
 // Express 5 layers do not keep the mount path, so app.js is parsed; every routes file must be found.
 // ---------------------------------------------------------------------------
+// A commented-out mount is not a mount: drop block comments and whole-line // comments before matching.
+const withoutComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
 const collectMounts = () => {
-  const source = fs.readFileSync(path.join(SRC, 'app.js'), 'utf8');
+  const source = withoutComments(fs.readFileSync(path.join(SRC, 'app.js'), 'utf8'));
   const requires = new Map();
   for (const m of source.matchAll(/const (\w+) = require\('\.\/routes\/([\w.]+)'\)/g)) requires.set(m[1], m[2]);
   const mounts = [];
@@ -263,6 +276,43 @@ describe('route table', () => {
     expect(mounted).toEqual(files);
   });
 
+  // The running app is the authority; app.js is parsed only for the mount prefixes (BE-12-T02 round 1).
+  // A mount behind a flag that tests/env.js leaves off is not live here, so it must have no :param route.
+  const FLAG_GATED = {
+    'yoco.routes.js': 'YOCO_INTEGRATION_ENABLED is off in tests/env.js (production keeps the legacy routes off too)',
+  };
+  const routerOf = (file) => require(path.join(SRC, 'routes', file));
+  const liveRouterLayers = () => app.router.stack.filter((layer) => layer.handle && Array.isArray(layer.handle.stack));
+
+  it('matches the parsed mounts with the routers the running app has mounted, both ways', () => {
+    const live = liveRouterLayers().map((layer) => layer.handle);
+    const parsed = collectMounts();
+    for (const { file } of parsed) {
+      const router = routerOf(file);
+      const mounted = live.includes(router);
+      const gatedWithoutParams = Boolean(FLAG_GATED[file])
+        && !router.stack.some((layer) => layer.route && layer.route.path.includes(':'));
+      expect({ file, mountedOrGatedWithoutParams: mounted || gatedWithoutParams })
+        .toEqual({ file, mountedOrGatedWithoutParams: true });
+    }
+    const parsedRouters = parsed.map(({ file }) => routerOf(file));
+    expect(live.filter((router) => !parsedRouters.includes(router))).toHaveLength(0);
+  });
+
+  it('finds no router nested inside a mounted router (its routes would be invisible here)', () => {
+    const nested = collectMounts().flatMap(({ prefix, file }) => routerOf(file).stack
+      .filter((layer) => layer.handle && Array.isArray(layer.handle.stack))
+      .map(() => `${prefix} (${file})`));
+    expect(nested).toEqual([]);
+  });
+
+  it('finds no app-level route with a :param (it would bypass the routers this suite reads)', () => {
+    const appLevel = app.router.stack
+      .filter((layer) => layer.route && layer.route.path.includes(':'))
+      .map((layer) => `${Object.keys(layer.route.methods).join(',').toUpperCase()} ${layer.route.path}`);
+    expect(appLevel).toEqual([]);
+  });
+
   it('covers every id-addressed route in the route table (a new route fails until it is added here)', () => {
     expect(collectIdRoutes()).toEqual([...Object.keys(MATRIX), ...Object.keys(EXEMPT)].sort());
   });
@@ -374,5 +424,77 @@ describe('ids in request bodies refuse other tenants', () => {
     expect(JSON.stringify(res.body)).not.toContain(String(victimItem.id));
     expect(JSON.stringify(res.body)).not.toContain(victimDoc.name);
     expect(await Item.findById(victimItem.id).lean()).toEqual(victimDoc);
+  });
+
+  // BE-12-T02 round 1 (reviewer-b90-3): four more id entry points, scoped today and now pinned.
+  it("POST /api/auth/refresh keeps the attacker's own cafe when the body asks for another organisation's", async () => {
+    // The refresh itself succeeds; the requested cafe is ignored because it is not one of the attacker's.
+    const res = await request.post('/api/auth/refresh').set('Cookie', world.attacker.cookie).send({ cafeId: world.cafeA1 });
+    expect(res.status).toBe(200);
+    expect(res.body.cafeId).toBe(world.attackerCafe);
+    expect(jwt.decode(res.body.accessToken).cafeId).toBe(world.attackerCafe);
+  });
+
+  it("Ask Guava, plain and streamed, never saves into another organisation's chat", async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    try {
+      await Transaction.create({
+        cafeId: world.attackerCafe, receiptId: unique('attacker-sale'), date: new Date(Date.now() - 3_600_000),
+        status: 'approved', total: 45, items: [{ name: 'Flat White', quantity: 1, unitPrice: 45 }],
+      });
+      // The plain endpoint asks for one message, the stream endpoint for events: answer each in its shape.
+      mockAnthropicMessageCreate.mockImplementation((params) => Promise.resolve(params && params.stream ? {
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'message_start', message: { id: 'msg_ct', model: 'test-model', usage: { input_tokens: 10 } } };
+          yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Saturdays are busiest.' } };
+          yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } };
+          yield { type: 'message_stop' };
+        },
+      } : {
+        id: 'msg_ct', model: 'test-model', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'Saturdays are busiest.' }], usage: { input_tokens: 10, output_tokens: 5 },
+      }));
+      const victimChat = await make.chat();
+      const before = await InsightChat.findById(victimChat.id).lean();
+      const messages = [{ role: 'user', content: 'Which day is best?' }];
+
+      for (const [endpoint, key] of [['/api/forecasts/insights/chat', unique('ct-chat')], ['/api/forecasts/insights/chat/stream', unique('ct-stream')]]) {
+        const res = await client('attacker').post(endpoint).set('Idempotency-Key', key).send({ messages, chatId: victimChat.id });
+        expect({ endpoint, status: res.status }).toEqual({ endpoint, status: 200 }); // answered, so the save path ran
+        await waitFor(async () => {
+          const row = await UsageLedger.findOne({ idempotencyKey: key }).lean();
+          return row && !['reserved', 'recovering'].includes(row.status);
+        }, { timeoutMs: 5000, message: `the ${endpoint} charge to settle` });
+      }
+      expect(await InsightChat.findById(victimChat.id).lean()).toEqual(before);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+      mockAnthropicMessageCreate.mockReset();
+    }
+  });
+
+  it("GET /api/leave?staffId= lists nothing for another organisation's or another cafe's staff", async () => {
+    const staff = await make.staff();
+    made(await client('victim').post('/api/leave')
+      .send({ staffId: staff.id, type: 'annual', startDate: '2026-11-16', endDate: '2026-11-17' }), (b) => b.leaveRequest._id);
+    for (const role of ['attacker', 'manager']) {
+      const res = await client(role).get(`/api/leave?staffId=${staff.id}`);
+      expect({ role, status: res.status, listed: (res.body.leaveRequests || []).length })
+        .toEqual({ role, status: 200, listed: 0 });
+    }
+  });
+
+  it("PUT /api/shifts/:id refuses to move the attacker's own shift onto another organisation's staff member", async () => {
+    const victimStaff = await make.staff();
+    const ownStaff = made(await client('attacker').post('/api/staff')
+      .send({ name: unique('Attacker Barista'), hourlyRate: 55 }), (b) => b.staff._id);
+    const ownShift = made(await client('attacker').post('/api/shifts')
+      .send({ staffId: ownStaff, date: '2026-10-07', startTime: '07:00', endTime: '15:00' }), (b) => b.shift._id);
+    const before = await Shift.findById(ownShift).lean();
+
+    const res = await client('attacker').put(`/api/shifts/${ownShift}`).send({ staffId: victimStaff.id });
+    expect(res.status).toBe(404);
+    expect(await Shift.findById(ownShift).lean()).toEqual(before);
+    expect(await Shift.countDocuments({ staffId: victimStaff.id })).toBe(0);
   });
 });
