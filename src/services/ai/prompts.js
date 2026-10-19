@@ -181,10 +181,10 @@ Be specific with numbers. Use local context only when it is supported by the sup
 
 <untrusted_business_records>
 Sales summary (the 14 completed days ${windowStart} to ${windowEnd}; today is not included):
-${fencedJson(summary)}
+${fencedJson(summary, { pretty: true })}
 
 Tomorrow's forecast (top ${MAX_FORECAST_ITEMS_IN_PROMPT} items by predicted quantity):
-${forecastSummary ? fencedJson(forecastSummary) : 'No forecast available yet.'}
+${forecastSummary ? fencedJson(forecastSummary, { pretty: true }) : 'No forecast available yet.'}
 </untrusted_business_records>
 
 Return ONLY a JSON array of insight strings. No markdown, no preamble, no explanation outside the array.
