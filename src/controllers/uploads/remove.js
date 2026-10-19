@@ -20,10 +20,18 @@ const { activeCafeId } = require('../../utils/tenancy');
 
 const remove = async (req, res, next) => {
   try {
+    const stagedOnly = req.query?.stagedOnly;
+    if (stagedOnly !== undefined && stagedOnly !== 'true') {
+      return res.status(400).json({ success: false, message: 'stagedOnly must be true when supplied' });
+    }
     const cafeId = activeCafeId(req);
     let upload = await Upload.findOne({ _id: req.params.id, cafeId });
     if (!upload || upload.status === 'deleted') {
       return res.status(404).json({ success: false, message: 'Upload not found' });
+    }
+    if (stagedOnly === 'true' && upload.status !== 'pending_mapping') {
+      return res.status(409).json({ success: false, code: 'UPLOAD_NOT_STAGED',
+        message: 'This upload is no longer waiting for mapping. Reload the page before making changes.' });
     }
     upload = await recoverStaleParsingUpload(upload, cafeId);
 
