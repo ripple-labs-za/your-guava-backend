@@ -81,11 +81,20 @@ const getHeatmap = async (req, res, next) => {
       { $sort: { dayOfWeek: 1, hour: 1 } },
     ];
 
-    const [dayCounts, rawData, coverage] = await Promise.all([
-      Transaction.aggregate(dayCountPipeline, aggregateOptions()),
-      Transaction.aggregate(hourlyTotalsPipeline, aggregateOptions()),
-      Transaction.aggregate(coveragePipeline, aggregateOptions()),
-    ]);
+    // One read of the window (BE-14-T02): the three groups share windowMatch, and each branch first applies only the keys its
+    // own pipeline adds (hourKnown for the day counts; hourKnown and the hour range for the hourly totals).
+    const extraKeys = (pipeline) => Object.fromEntries(Object.entries(pipeline[0].$match).filter(([key]) => !(key in windowMatch)));
+    const [scan] = await Transaction.aggregate([
+      { $match: windowMatch },
+      {
+        $facet: {
+          dayCounts: [{ $match: extraKeys(dayCountPipeline) }, ...dayCountPipeline.slice(1)],
+          hourly: [{ $match: extraKeys(hourlyTotalsPipeline) }, ...hourlyTotalsPipeline.slice(1)],
+          coverage: coveragePipeline.slice(1),
+        },
+      },
+    ], aggregateOptions());
+    const { dayCounts, hourly: rawData, coverage } = scan;
     const transactionsWithoutTime = coverage.find((entry) => entry._id === true)?.count || 0;
     const transactionsWithTime = coverage.find((entry) => entry._id === false)?.count || 0;
     const observedDaysByWeekday = new Map(
