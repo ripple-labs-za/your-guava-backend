@@ -127,7 +127,7 @@ describe('logger', () => {
 
 describe('logging discipline in src', () => {
   const SRC_ROOT = path.resolve(__dirname, '../../src');
-  const SEEDS = new Set(['seed.js', 'seed-bulk.js']);
+  const SEEDS = new Set(['seed.js']);
   const walk = (dir) =>
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);

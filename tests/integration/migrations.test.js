@@ -331,6 +331,49 @@ describe('BE-11-T06 contract migrations', () => {
   const forecasts = () => mongoose.connection.db.collection('forecasts');
   const keysOf = async (collection) => (await collection.indexes()).map((index) => JSON.stringify(index.key));
 
+  it('cleans legacy refresh-token fields even when their indexes are already gone', async () => {
+    const { insertedId } = await users().insertOne({ email: 'partial-refresh-cleanup@yourguava.com', refreshTokens: [] });
+    expect((await keysOf(users())).filter((key) => key.includes('refreshTokens'))).toEqual([]);
+    await expect(migrationReadiness()).resolves.toMatchObject({
+      ok: false, pending: expect.arrayContaining(['user-legacy-refresh-tokens']),
+    });
+
+    const result = await runMigrations({ names: ['user-legacy-refresh-tokens'], by: 'test' });
+
+    expect(result.applied).toEqual(['user-legacy-refresh-tokens']);
+    expect(result.verified).toEqual([]);
+    expect(await users().findOne({ _id: insertedId })).toEqual({
+      _id: insertedId, email: 'partial-refresh-cleanup@yourguava.com',
+    });
+    expect(await Migration.findById('user-legacy-refresh-tokens').lean()).toMatchObject({
+      status: 'applied', runs: [expect.objectContaining({ stats: { dropped: [], usersCleaned: 1 } })],
+    });
+  });
+
+  it('records a failed forecast cleanup and keeps both stale indexes when the replacement is absent', async () => {
+    await Forecast.init();
+    await forecasts().createIndex({ dateKey: 1 });
+    await forecasts().createIndex({ origin: 1 });
+    await forecasts().dropIndex('cafeId_1_date_1');
+    try {
+      expect(await keysOf(forecasts())).not.toContain('{"cafeId":1,"date":1}');
+
+      const result = await runMigrations({ names: ['forecast-unused-indexes'], by: 'test' });
+
+      expect(result.failed).toEqual(['forecast-unused-indexes']);
+      expect(result.applied).toEqual([]);
+      expect(await keysOf(forecasts())).toEqual(expect.arrayContaining(['{"dateKey":1}', '{"origin":1}']));
+      expect(await Migration.findById('forecast-unused-indexes').lean()).toMatchObject({
+        status: 'failed', lastError: expect.stringContaining('replacement index does not exist'),
+      });
+    } finally {
+      // Indexes survive clearDB: restore this test's removal for the remaining suites.
+      await forecasts().createIndex({ cafeId: 1, date: 1 }, { unique: true });
+      await dropIndexIfPresent(forecasts(), { dateKey: 1 });
+      await dropIndexIfPresent(forecasts(), { origin: 1 });
+    }
+  });
+
   it('drops the legacy refresh-token indexes and unsets the field, once', async () => {
     await users().createIndex({ 'refreshTokens.tokenHash': 1 }, { sparse: true });
     await users().createIndex({ 'refreshTokens.token': 1 }, { sparse: true });

@@ -123,7 +123,6 @@ const applyReadmission = async ({ prepared, cafeId, session, timezone }) => {
       cafeId,
       uploadId: upload._id,
       session,
-      bulk: true,
       itemsAlreadyReconciled: true,
       rebuildItems: false,
       failOnPersistenceError: true,

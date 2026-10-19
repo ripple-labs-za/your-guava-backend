@@ -1,4 +1,6 @@
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const mongoose = require('mongoose');
 const { setup, teardown, clearDB } = require('../setup');
 
@@ -48,6 +50,37 @@ describe('ingestion service', () => {
       // Total in DB should still be 4
       const count = await Transaction.countDocuments({ cafeId });
       expect(count).toBe(4);
+    });
+
+    it('keeps receipt-less ingestFile replay idempotent across byte-different exports of the same sale', async () => {
+      const cafeId = new mongoose.Types.ObjectId();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'b90-receiptless-'));
+      const file = path.join(dir, 'sales.csv');
+      const headers = 'Receipt,Date,Time,Status,Items,Note,Total (incl. tax)';
+      const original = Buffer.from(`${headers}\n,2026/01/15,09:30:00,Approved,1 x Latte,first export,38.00\n`);
+      const changed = Buffer.from(`${headers}\n,2026/01/15,09:30:00,Approved,1 x Latte,second export,38.00\n`);
+      try {
+        fs.writeFileSync(file, original);
+        const first = await ingestFile(file, cafeId, { timezone: 'Africa/Johannesburg' });
+        expect(first).toMatchObject({ imported: 1, errors: 0 });
+        const held = await Transaction.findOne({ cafeId }).lean();
+        expect(held.receiptId).toBeUndefined();
+        expect(held.dedupKey).toMatch(/^[a-f0-9]{64}$/);
+
+        const second = await ingestFile(file, cafeId, { timezone: 'Africa/Johannesburg' });
+        expect(second).toMatchObject({ imported: 0, skipped: 1, errors: 0, skippedByReason: { duplicate: 1 } });
+
+        expect(changed.equals(original)).toBe(false);
+        fs.writeFileSync(file, changed);
+        const third = await ingestFile(file, cafeId, { timezone: 'Africa/Johannesburg' });
+        // BE-03-T03 superseded file-scoped identity: changing a file's fingerprint
+        // must not count the same receipt-less sale twice through the seed path.
+        expect(third).toMatchObject({ imported: 0, skipped: 1, errors: 0, skippedByReason: { duplicate: 1 } });
+        expect(await Transaction.find({ cafeId }).lean()).toEqual([held]);
+      } finally {
+        fs.unlinkSync(file);
+        fs.rmdirSync(dir);
+      }
     });
 
     // BE-03-T09: the row-at-a-time path keeps skipped equal to the sum of its reasons, as the upload path does.
