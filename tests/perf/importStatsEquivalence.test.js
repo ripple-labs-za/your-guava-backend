@@ -68,6 +68,12 @@ const snapshot = async (cafeId) => round6((await Item.find({ cafeId }).select('+
   .map(({ _id, createdAt, updatedAt, __v, ...rest }) => ({ id: String(_id), ...rest }))
   .sort((a, b) => a.id.localeCompare(b.id)));
 
+const compareWithRebuild = async (cafeId) => {
+  const incremental = await snapshot(cafeId);
+  await rebuildItemsForCafe(cafeId, { pruneOrphans: true });
+  return { incremental, full: await snapshot(cafeId) };
+};
+
 const runSequence = async (seed, steps) => {
   const r = rng(seed);
   const { token, user } = await createTestUser();
@@ -77,6 +83,8 @@ const runSequence = async (seed, steps) => {
   const log = [];
   let incrementalImports = 0;
   for (let step = 0; step < steps; step += 1) {
+    const statuses = [];
+    const comparisons = [];
     const roll = r();
     const items = await Item.find({ cafeId }).lean();
     if (roll < 0.55 || uploads.length === 0) {
@@ -86,35 +94,12 @@ const runSequence = async (seed, steps) => {
         : { count: 20 + Math.floor(r() * 80), prefix: `S${seed}U${step}`, dayOffset: step * 7 };
       const { result, calls } = await countOperations(() => stageAndConfirm(request, token, yocoFile(r, spec), `f${step}.csv`));
       if (overlap && result.confirm.status === 409) { log.push(`import overlap: 409 every row already held`); continue; }
-      expect(result.confirm.status).toBe(200);
+      statuses.push(result.confirm.status);
       const scoped = calls.some((c) => c.collectionName === 'transactions' && c.method === 'aggregate' && c.params[0][0]?.$match?.uploadId);
       if (scoped) incrementalImports += 1;
       uploads.push({ id: result.stage.body.uploadId, mapping: result.stage.body.columnMapping, itemsMode: result.stage.body.itemsMode, ...spec });
-      const incremental = await snapshot(cafeId);
-      const rawBefore = await Item.find({ cafeId }).select('+salesStats').lean();
-      await rebuildItemsForCafe(cafeId, { pruneOrphans: true });
-      const full = await snapshot(cafeId);
-      const rawAfter = await Item.find({ cafeId }).select('+salesStats').lean();
-      if (process.env.REVIEW_RAW && JSON.stringify(incremental) !== JSON.stringify(full)) {
-        for (const a of rawBefore) {
-          const b = rawAfter.find((x) => String(x._id) === String(a._id));
-          if (b && a.avgPrice !== b.avgPrice) {
-            console.log(`RAW ${a.name}: incremental revenue ${a.salesStats.totalRevenue} qty ${a.salesStats.totalQty} avg ${a.avgPrice} `
-              + `exact ${a.salesStats.totalRevenue / a.salesStats.totalQty} | full revenue ${b.salesStats.totalRevenue} qty ${b.salesStats.totalQty} `
-              + `avg ${b.avgPrice} exact ${b.salesStats.totalRevenue / b.salesStats.totalQty}`);
-          }
-        }
-      }
       log.push(`import ${overlap ? 'overlap' : 'new'} ${spec.count} rows ${scoped ? 'incremental' : 'full'}`);
-      if (JSON.stringify(incremental) !== JSON.stringify(full)) {
-        // Name the first differing item and field for the report.
-        const byId = new Map(full.map((i) => [i.id, i]));
-        const diff = incremental.map((i) => [i, byId.get(i.id)]).find(([a, b]) => JSON.stringify(a) !== JSON.stringify(b));
-        const fields = diff && diff[1] ? Object.keys({ ...diff[0], ...diff[1] }).filter((k) => JSON.stringify(diff[0][k]) !== JSON.stringify(diff[1][k])) : ['(item set differs)'];
-        throw new Error(`seed ${seed} step ${step} (${log.at(-1)}): incremental != full on ${diff ? diff[0].name : '?'} fields ${fields.join(',')}\n`
-          + `incremental ${JSON.stringify(diff?.[0] && Object.fromEntries(fields.map((f) => [f, diff[0][f]])))}\n`
-          + `full ${JSON.stringify(diff?.[1] && Object.fromEntries(fields.map((f) => [f, diff[1][f]])))}\n${log.join('\n')}`);
-      }
+      comparisons.push(await compareWithRebuild(cafeId));
     } else if (roll < 0.65 && items.length >= 2) {
       const [source, target] = [items[Math.floor(r() * items.length)], items[Math.floor(r() * items.length)]];
       if (String(source._id) === String(target._id)) continue;
@@ -148,13 +133,15 @@ const runSequence = async (seed, steps) => {
       const res = await auth(request.patch(`/api/uploads/${target.id}/mapping`)).set('Idempotency-Key', `remap-${seed}-${step}`)
         .send({ columnMapping: target.mapping, itemsMode: target.itemsMode });
       log.push(`remap: ${res.status}`);
-      expect(res.status).toBe(200);
-      const incremental = await snapshot(cafeId);
-      await rebuildItemsForCafe(cafeId, { pruneOrphans: true });
-      if (JSON.stringify(incremental) !== JSON.stringify(await snapshot(cafeId))) {
-        throw new Error(`seed ${seed} step ${step}: items after a remap differ from a full rebuild\n${log.join('\n')}`);
-      }
+      statuses.push(res.status);
+      comparisons.push(await compareWithRebuild(cafeId));
     }
+    // Assert every import and remap outside the random operation branches. A newly created manual
+    // item legitimately lacks avgPrice/salesStats until its first rebuild, so other edits keep their
+    // original role as preparation for the next import rather than gaining new metadata assertions.
+    expect(statuses.every((status) => status === 200)).toBe(true);
+    expect({ seed, step, log, items: comparisons.map((pair) => pair.incremental) })
+      .toEqual({ seed, step, log, items: comparisons.map((pair) => pair.full) });
   }
   return { log, incrementalImports };
 };
