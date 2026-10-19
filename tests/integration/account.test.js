@@ -32,6 +32,17 @@ describe('Account API', () => {
     ownerUser = testUser.user;
   });
 
+it('does not aggregate the credit ledger for a manager who cannot see it', async () => {
+  const UsageLedger = require('../../src/models/UsageLedger.model');
+  const manager = await createTestManager(ownerToken, [ownerUser.activeCafeId]);
+  const aggregate = jest.spyOn(UsageLedger, 'aggregate');
+  const res = await request.get('/api/account').set('Authorization', `Bearer ${manager.token}`);
+  expect(res.status).toBe(200);
+  expect(res.body.account.usage.creditLedger).toBeUndefined();
+  expect(aggregate).not.toHaveBeenCalled();
+  aggregate.mockRestore();
+});
+
   it('returns account plan, seat, location, and Guava Credit usage', async () => {
     const res = await request
       .get('/api/account')
@@ -582,8 +593,9 @@ describe('Account API', () => {
   });
 
   it('summarises metered Guava Credit activity', async () => {
-    const { consumeGuavaCredits } = require('../../src/services/usage.service');
-    await consumeGuavaCredits(ownerUser.orgId, 3, {
+    const { meterGuavaCredits } = require('../../src/services/usage.service');
+    await meterGuavaCredits({
+      orgId: ownerUser.orgId, credits: 3, run: async () => null,
       featureKey: 'ask_guava_chat',
       label: 'Ask Guava answer',
       provider: 'anthropic',

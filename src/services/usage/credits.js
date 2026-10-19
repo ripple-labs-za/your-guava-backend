@@ -82,31 +82,6 @@ const creditComponents = (org) => {
   };
 };
 
-const ensureFreshCreditWindow = (org, now = new Date()) => {
-  if (!org) return org;
-  const access = billingAccessForOrganization(org, now);
-  if (!access.allowed) return org;
-
-  const plan = getPlan(org.plan);
-  const planIncluded = plan.includedGuavaCredits ?? plan.includedAiCredits;
-  const resetAt = asDate(org.aiCredits?.resetAt);
-  const bonusUsed = bonusUsedForCredits(org);
-  if (!resetAt || resetAt <= now) {
-    org.aiCredits = {
-      included: planIncluded,
-      bonus: org.aiCredits?.bonus || 0,
-      bonusUsed,
-      used: bonusUsed,
-      resetAt: creditResetDateForOrganization(org, access, now),
-    };
-  } else {
-    if (org.aiCredits.included !== planIncluded) org.aiCredits.included = planIncluded;
-    org.aiCredits.bonusUsed = bonusUsed;
-    if (nonNegativeNumber(org.aiCredits.used) < bonusUsed) org.aiCredits.used = bonusUsed;
-  }
-  return org;
-};
-
 const creditSnapshot = (org, now = new Date()) => {
   const { included, bonus, used, bonusUsed } = creditComponents(org);
   const access = billingAccessForOrganization(org, now);
@@ -281,27 +256,6 @@ const throwCreditReservationError = async (orgId, requested, now) => {
   throw insufficientCreditsError(creditSnapshot(latest, now), requested);
 };
 
-const reserveGuavaCredits = async (orgId, amount = 1) => {
-  const requested = normalizeCreditAmount(amount);
-  const now = new Date();
-  const current = await refreshCreditWindow(orgId, now);
-  const access = billingAccessForOrganization(current, now);
-  if (!access.allowed) throw billingRequiredError(access);
-  if (requested === 0) return { org: current, credits: creditSnapshot(current, now) };
-
-  const reservation = await reserveCreditsAtomic(orgId, requested, now);
-
-  if (!reservation) {
-    await throwCreditReservationError(orgId, requested, now);
-  }
-
-  return {
-    org: reservation.org,
-    credits: creditSnapshot(reservation.org, now),
-    creditAllocation: reservation.allocation,
-  };
-};
-
 const normalizeCreditAllocation = (allocation, fallbackCredits = 0) => {
   const total = normalizeCreditAmount(fallbackCredits);
   const included = Math.min(total, normalizeCreditAmount(allocation?.included));
@@ -347,26 +301,7 @@ const creditRefundPipeline = ({ allocation, expectedResetAt, conditionalIncluded
   ];
 };
 
-const refundGuavaCredits = async (
-  orgId,
-  amount = 1,
-  { resetAt, creditAllocation } = {}
-) => {
-  const refunded = normalizeCreditAmount(amount);
-  const expectedResetAt = asDate(resetAt);
-  const allocation = normalizeCreditAllocation(creditAllocation, refunded);
-  const org = await Organization.findOneAndUpdate(
-    {
-      _id: orgId,
-      ...(expectedResetAt ? { 'aiCredits.resetAt': expectedResetAt } : {}),
-    },
-    creditRefundPipeline({ allocation }),
-    { new: true }
-  );
-  return org ? creditSnapshot(org) : null;
-};
-
 module.exports = {
-  bonusUsedForCredits, creditComponents, ensureFreshCreditWindow, creditSnapshot, refreshCreditWindow, normalizeCreditAmount,
-  reserveCreditsAtomic, throwCreditReservationError, reserveGuavaCredits, normalizeCreditAllocation, creditRefundPipeline, refundGuavaCredits,
+  bonusUsedForCredits, creditComponents, creditSnapshot, refreshCreditWindow, normalizeCreditAmount,
+  reserveCreditsAtomic, throwCreditReservationError, normalizeCreditAllocation, creditRefundPipeline,
 };

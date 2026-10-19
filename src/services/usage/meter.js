@@ -1,4 +1,4 @@
-// Metering: feature costs, the diagnostics field, meterGuavaCredits and consumeGuavaCredits.
+// Metering: feature costs, the diagnostics field, meterGuavaCredits.
 // Moved from usage.service.js by BE-11-T04; behaviour unchanged.
 const Organization = require('../../models/Organization.model');
 const UsageLedger = require('../../models/UsageLedger.model');
@@ -239,24 +239,7 @@ const meterGuavaCredits = async ({
   }
 };
 
-const consumeGuavaCredits = async (orgId, amount = 1, options = {}) => {
-  const { guavaCredits } = await meterGuavaCredits({
-    orgId,
-    credits: amount,
-    featureKey: options.featureKey || 'manual',
-    label: options.label || 'Manual credit usage',
-    provider: options.provider,
-    cafeId: options.cafeId,
-    userId: options.userId,
-    relatedEntity: options.relatedEntity,
-    metadata: options.metadata,
-    idempotencyKey: options.idempotencyKey,
-    run: async () => null,
-  });
-  return guavaCredits;
-};
-
 module.exports = {
   historyBackfillCreditsPerDay,
-  FEATURE_COSTS, USAGE_DIAGNOSTICS_FIELD, withUsageDiagnostics, meterGuavaCredits, consumeGuavaCredits,
+  FEATURE_COSTS, USAGE_DIAGNOSTICS_FIELD, withUsageDiagnostics, meterGuavaCredits,
 };

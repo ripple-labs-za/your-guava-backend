@@ -42,9 +42,9 @@ describe('AI module structure (BE-11-T02)', () => {
   });
 
   it('reads every text block of a response, and tolerates a response with none', () => {
-    const { joinTextBlocks } = ai('json');
+    const { responseText } = require('../../src/services/anthropicClient.service');
     const message = { content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text: '[1,' }, { type: 'text', text: '2]' }] };
-    expect(joinTextBlocks(message)).toBe('[1,2]');
-    expect(joinTextBlocks({})).toBe('');
+    expect(responseText(message)).toBe('[1,2]');
+    expect(responseText({})).toBe('');
   });
 });

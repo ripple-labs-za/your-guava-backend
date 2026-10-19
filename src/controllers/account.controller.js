@@ -124,7 +124,7 @@ const hostedPaymentResponse = ({ res, field, session, account, extra = {} }) => 
 };
 
 const buildAccountPayload = async (userId) => {
-  const user = await User.findById(userId).select('-password -refreshTokens').lean();
+  const user = await User.findById(userId).select('-password').lean();
   if (!user) {
     const err = new Error('User not found');
     err.statusCode = 404;
@@ -153,7 +153,7 @@ const buildAccountPayload = async (userId) => {
   const isOwner = user.role === 'owner';
   const credits = creditSnapshot(org);
   const access = billingAccessForOrganization(org);
-  const usageLedger = await usageSummary(org._id);
+  const usageLedger = isOwner ? await usageSummary(org._id) : null;
 
   return {
     user: {
@@ -241,12 +241,8 @@ const getAccount = async (req, res, next) => {
 
 const getCreditBalance = async (req, res, next) => {
   try {
-    let orgId = req.user.orgId;
+    const orgId = req.user.orgId;
 
-    if (!orgId) {
-      const user = await User.findById(req.user.id).select('orgId').lean();
-      orgId = user?.orgId;
-    }
 
     const org = await refreshCreditWindow(orgId);
     if (!org) {
@@ -738,6 +734,5 @@ module.exports = {
   handleOneGateWebhook,
   handlePaystackReturn,
   handlePaystackWebhook,
-  mockCheckout: checkout,
   updateProfile,
 };

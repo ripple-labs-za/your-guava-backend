@@ -29,9 +29,7 @@ const {
   bonusUsedForCredits,
   meterGuavaCredits,
   reconcileStaleUsageReservations,
-  refundGuavaCredits,
   refreshCreditWindow,
-  reserveGuavaCredits,
 } = require('../../src/services/usage.service');
 const oneGate = require('../../src/services/onegate.service');
 
@@ -160,40 +158,29 @@ describe('production hardening regressions', () => {
     expect(context.topItems90d.map((item) => item.name)).not.toContain('Private Item');
   });
 
-  it('atomically prevents concurrent Guava Credit overspend and clamps refunds', async () => {
+  it('atomically prevents concurrent Guava Credit overspend and returns a failed run\'s credit', async () => {
     const owner = await createTestUser();
+    await UsageLedger.init();
     await Organization.updateOne(
       { _id: owner.user.orgId },
-      {
-        $set: {
-          'aiCredits.included': 400,
-          'aiCredits.bonus': 0,
-          'aiCredits.used': 399,
-          'aiCredits.resetAt': new Date(Date.now() + 86_400_000),
-        },
-      }
+      { $set: { 'aiCredits.included': 400, 'aiCredits.bonus': 0, 'aiCredits.used': 399, 'aiCredits.resetAt': new Date(Date.now() + 86_400_000) } }
     );
+    const spend = (key) => meterGuavaCredits({
+      orgId: owner.user.orgId, cafeId: owner.user.activeCafeId, userId: owner.user.id,
+      featureKey: 'history_backfill_day', idempotencyKey: key, run: async () => 'ok',
+    });
+    const results = await Promise.allSettled([spend('race-a'), spend('race-b')]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected.reason.statusCode).toBe(402);
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.used).toBe(400);
 
-    const reservations = await Promise.allSettled([
-      reserveGuavaCredits(owner.user.orgId, 1),
-      reserveGuavaCredits(owner.user.orgId, 1),
-    ]);
-    expect(reservations.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    expect(reservations.filter((result) => result.status === 'rejected')).toHaveLength(1);
-
-    let org = await Organization.findById(owner.user.orgId).lean();
-    expect(org.aiCredits.used).toBe(400);
-
-    await Promise.all([
-      refundGuavaCredits(owner.user.orgId, 1),
-      refundGuavaCredits(owner.user.orgId, 1),
-    ]);
-    org = await Organization.findById(owner.user.orgId).lean();
-    expect(org.aiCredits.used).toBe(398);
-
-    await refundGuavaCredits(owner.user.orgId, 1_000);
-    org = await Organization.findById(owner.user.orgId).lean();
-    expect(org.aiCredits.used).toBe(0);
+    await Organization.updateOne({ _id: owner.user.orgId }, { $set: { 'aiCredits.used': 390 } });
+    await expect(meterGuavaCredits({
+      orgId: owner.user.orgId, cafeId: owner.user.activeCafeId, userId: owner.user.id,
+      featureKey: 'history_backfill_day', idempotencyKey: 'fails', run: async () => { throw new Error('provider down'); },
+    })).rejects.toThrow('provider down');
+    expect((await Organization.findById(owner.user.orgId).lean()).aiCredits.used).toBe(390);
   });
 
   it('executes an idempotent metered operation only once', async () => {

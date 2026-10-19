@@ -15,7 +15,6 @@ const requireRole = (...roles) => {
 const ownerOnly = requireRole('owner');
 
 // Allows both owner and manager
-const authenticated = requireRole('owner', 'manager');
 
 const canSpendCredits = (user) =>
   Boolean(user && (user.role === 'owner' || user.permissions?.canSpendCredits === true));
@@ -34,7 +33,6 @@ const requireCreditSpend = (req, res, next) => {
 module.exports = {
   requireRole,
   ownerOnly,
-  authenticated,
   canSpendCredits,
   requireCreditSpend,
 };

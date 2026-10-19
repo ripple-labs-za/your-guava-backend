@@ -6,18 +6,6 @@ const OPERATION_FEATURE = {
   import_column_mapping: 'columnMapping', menu_item_ai_review: 'menuReview',
 };
 
-// Every text block, in order. A response that leads with a thinking or tool block, or splits
-// its answer across two text blocks, still yields the whole answer (analytics-ai-10).
-const joinTextBlocks = (message) => (message?.content || [])
-  .map((part) => (part?.type === 'text' ? part.text : ''))
-  .join('')
-  .trim();
-
-// Compatibility export; callers now read all text blocks through the provider boundary.
-const firstBlockText = joinTextBlocks;
-
-const stripJsonFences = (text) => text.replace(/```json|```/g, '').trim();
-
 const providerDiagnostics = (response, startedAt, operation) => {
   const feature = Object.hasOwn(OPERATION_FEATURE, operation) ? OPERATION_FEATURE[operation] : 'chat';
   const diagnostics = {
@@ -125,5 +113,5 @@ const validatedMappingProposal = (value) => {
 
 module.exports = {
   extractJson, validatedMappingProposal,
-  joinTextBlocks, firstBlockText, stripJsonFences, providerDiagnostics, validatedInsightStrings,
+  providerDiagnostics, validatedInsightStrings,
 };
