@@ -74,7 +74,10 @@ const getCombos = async (req, res, next) => {
             },
             { $unwind: '$pairs' },
             { $group: { _id: '$pairs', count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
+            // Ties by the pair itself: the same request answers the same list, and which tied pairs make the top 20 is stable.
+            // Both names explicitly: $sort on an array field compares only its smallest element.
+            { $set: { first: { $arrayElemAt: ['$_id', 0] }, second: { $arrayElemAt: ['$_id', 1] } } },
+            { $sort: { count: -1, first: 1, second: 1 } },
             { $limit: 20 },
             {
               $project: {
@@ -146,7 +149,10 @@ const getCombos = async (req, res, next) => {
         }
         const combos = [...pairCounts]
           .map(([key, count]) => ({ pair: JSON.parse(key), count }))
-          .sort((a, b) => b.count - a.count)
+          // The same order as the aggregation: count, then the pair (both names are plain strings, compared code unit by code unit).
+          .sort((a, b) => b.count - a.count || (a.pair[0] === b.pair[0]
+            ? (a.pair[1] < b.pair[1] ? -1 : 1)
+            : (a.pair[0] < b.pair[0] ? -1 : 1)))
           .slice(0, 20);
 
         return res.status(200).json({
