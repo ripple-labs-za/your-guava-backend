@@ -3,9 +3,6 @@ const path = require('path');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
-  readCsv,
-  readWorkbook,
-  assertSupportedFileBuffer,
   MAX_ROW_ERRORS,
   runParserTask,
 } = require('./parser.service');
@@ -57,27 +54,12 @@ const yocoMapping = () => ({
   itemsMode: 'packed',
 });
 
-// The upload preview: the header row and the first five data rows, read exactly as the import reads them.
-const PREVIEW_ROWS = 5;
-
-const previewWorkbook = async (buffer) => {
-  assertSupportedFileBuffer(buffer, 'xlsx');
-  // Take the sheet's own header row rather than the keys of the first data row,
-  // so an export covering a quiet period still reports its columns instead of
-  // looking like a file whose headers could not be read.
-  const { headers, rows } = await readWorkbook(buffer);
-  return { headers, sampleRows: rows.slice(0, PREVIEW_ROWS) };
-};
-
 /**
  * Returns headers + first 5 rows for AI/preset analysis.
  */
 const previewBuffer = async (buffer, fileExt = 'csv', { isolate = false, signal } = {}) => {
   if (isolate) return runParserTask('preview', buffer, { fileExt, signal });
-  assertSupportedFileBuffer(buffer, fileExt);
-  if (fileExt === 'xlsx') return previewWorkbook(buffer);
-  const { headers, rows } = await readCsv(buffer, { limit: PREVIEW_ROWS });
-  return { headers, sampleRows: rows };
+  return require('./parser/preview').previewBuffer(buffer, fileExt);
 };
 
 const cloneRowErrors = (rowErrors) =>

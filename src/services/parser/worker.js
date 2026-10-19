@@ -7,7 +7,7 @@ const { SOURCE_ROW_NUMBERS } = require('./rowErrors');
     const buffer = Buffer.from(workerData.buffer);
     let result;
     if (task === 'parse') result = await require('./parse').parseBuffer(buffer, options);
-    else if (task === 'preview') result = await require('../ingestion.service').previewBuffer(buffer, options.fileExt);
+    else if (task === 'preview') result = await require('./preview').previewBuffer(buffer, options.fileExt);
     else throw Object.assign(new Error('Unknown parser task'), { statusCode: 400 });
     // Structured clone omits non-enumerable source-row metadata; carry and restore it explicitly.
     const sources = Object.fromEntries(['rows', 'sampleRows'].map((field) =>

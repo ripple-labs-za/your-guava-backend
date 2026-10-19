@@ -4,6 +4,22 @@ const { ParserPool, runParserTask, withRequestAbort } = require('../../src/servi
 const { parseBuffer } = require('../../src/services/parser.service');
 const { SOURCE_ROW_NUMBERS } = require('../../src/services/parser/rowErrors');
 
+it('preview workers read the file without loading the persistence layer', async () => {
+  const { Worker } = require('node:worker_threads');
+  const worker = new Worker(path.join(__dirname, '../../src/services/parser/worker.js'), {
+    workerData: { task: 'preview', buffer: Buffer.from('Receipt,Date,Items,Total\nA,2026-01-05,1 x Latte,38\n'),
+      options: { fileExt: 'csv' } },
+    execArgv: ['--require', path.join(__dirname, '../fixtures/parser-no-models.cjs')],
+    resourceLimits: { maxOldGenerationSizeMb: 64 },
+  });
+  try {
+    const reply = await new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject); });
+    expect(reply.error).toBeUndefined();
+    expect(reply.result.headers).toEqual(['Receipt', 'Date', 'Items', 'Total']);
+    expect(reply.result.sampleRows).toEqual([{ Receipt: 'A', Date: '2026-01-05', Items: '1 x Latte', Total: '38' }]);
+  } finally { await worker.terminate(); }
+});
+
 const pools = [];
 const pool = (options = {}) => {
   const value = new ParserPool({ workerFile: path.join(__dirname, '../fixtures/parser-worker.cjs'),
