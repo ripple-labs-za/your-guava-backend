@@ -60,7 +60,8 @@ it.each([true, false])('keeps a silent first byte alive every 15 seconds without
   const options = ai.streamBusinessChatResponse.mock.calls[0][0];
   expect(options.signal.aborted).toBe(false);
   options.onDelta('Fine.');
-  if (paid) expect(markDelivered).toHaveBeenCalledTimes(1);
+  // Paid answers mark credits delivered on the first token; the unpaid answer never reaches the meter's markDelivered.
+  expect(markDelivered).toHaveBeenCalledTimes(paid ? 1 : 0);
   finish(result);
   await pending;
   expect(res.end).toHaveBeenCalledTimes(1);
