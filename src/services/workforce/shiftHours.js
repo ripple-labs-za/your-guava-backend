@@ -19,6 +19,7 @@ const toMinutes = (time) => {
  * 16:00-00:00). Equal times are refused: 0 h and 24 h are both likelier
  * typos than shifts.
  */
+// Hours are wall-clock: a shift across a DST change would be off by an hour (ISSUES #90; SAST has no DST).
 const shiftSpan = (startTime, endTime) => {
   if (typeof startTime !== 'string' || typeof endTime !== 'string') return null;
   if (!TIME_RE.test(startTime) || !TIME_RE.test(endTime)) return null;

@@ -229,8 +229,13 @@ const update = async (req, res, next) => {
       const span = requireShiftSpan(target.startTime, target.endTime);
       const movesPerson = String(target.staffId) !== String(existing.staffId);
 
-      if (movesPerson) await lockActiveStaff({ cafeId, staffId: target.staffId, session });
-      await touchStaff({ cafeId, staffId: existing.staffId, session });
+      // A shift that stays on the roster needs an active person, so a deactivated
+      // person's cancelled shift cannot be brought back or moved; a cancel or a
+      // note alone is bookkeeping and only takes their roster lock (BE-08-T04 review).
+      const onlyNotes = [staffId, date, startTime, endTime, status].every((value) => value === undefined);
+      const needsActive = movesPerson || (target.status !== 'cancelled' && !onlyNotes);
+      if (needsActive) await lockActiveStaff({ cafeId, staffId: target.staffId, session });
+      if (movesPerson || !needsActive) await touchStaff({ cafeId, staffId: existing.staffId, session });
       if (target.status !== 'cancelled') {
         const leave = await approvedLeaveOn({ cafeId, staffId: target.staffId, date: target.date, session });
         if (leave) throw shiftOnLeaveError(leave);

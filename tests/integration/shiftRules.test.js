@@ -2,6 +2,8 @@ const supertest = require('supertest');
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const Shift = require('../../src/models/Shift.model');
 const LeaveRequest = require('../../src/models/LeaveRequest.model');
+const { deactivateStaff } = require('../../src/services/workforce/deactivation');
+const { splitWeekHours } = require('../../src/services/workforce/shiftHours');
 
 const request = supertest(app);
 
@@ -16,6 +18,7 @@ const plusDays = (key, days) => new Date(new Date(`${key}T00:00:00Z`).getTime() 
 
 describe('Shift rules (BE-08-T04)', () => {
   let token;
+  let owner;
   let staffId;
 
   const auth = (req) => req.set('Authorization', `Bearer ${token}`);
@@ -29,7 +32,8 @@ describe('Shift rules (BE-08-T04)', () => {
   const summary = (startDate, endDate) => auth(request.get('/api/shifts/summary')).query({ startDate, endDate });
 
   beforeEach(async () => {
-    token = (await createTestUser()).token;
+    owner = await createTestUser();
+    token = owner.token;
     const staff = await auth(request.post('/api/staff')).send({ name: 'Rule Barista', hourlyRate: 55, startDate: '2026-01-05' });
     staffId = staff.body.staff._id;
   });
@@ -170,6 +174,113 @@ describe('Shift rules (BE-08-T04)', () => {
       expect(res.status).toBe(200);
       expect(res.body.cancelledShifts).toBe(1);
       expect((await Shift.findById(soon.body.shift._id).lean()).status).toBe('cancelled');
+    });
+  });
+
+  // BE-08-T04 fix-back (reviewer-b90-3, round 1).
+  describe('round 1 fix-back', () => {
+    const putShift = (id, body) => auth(request.put(`/api/shifts/${id}`)).send(body);
+
+    it('keeps a shift that already started today and cancels the ones that have not', async () => {
+      // 10:00 in Johannesburg on 2026-10-14 (08:00 UTC).
+      const now = new Date('2026-10-14T08:00:00Z');
+      const worked = await createShift({ date: '2026-10-14', startTime: '06:00', endTime: '09:00' });
+      const startsNow = await createShift({ date: '2026-10-14', startTime: '10:00', endTime: '11:00' });
+      const later = await createShift({ date: '2026-10-14', startTime: '14:00', endTime: '18:00' });
+      const tomorrow = await createShift({ date: '2026-10-15', startTime: '06:00', endTime: '09:00' });
+
+      const result = await deactivateStaff({ cafeId: owner.user.activeCafeId, staffId, actorUserId: owner.user.id, now });
+      expect(result.cancelledShifts).toBe(2);
+      const status = async (res) => (await Shift.findById(res.body.shift._id).lean()).status;
+      expect([await status(worked), await status(startsNow), await status(later), await status(tomorrow)])
+        .toEqual(['scheduled', 'scheduled', 'cancelled', 'cancelled']);
+    });
+
+    it("refuses to bring back a deactivated person's shift, but still lets a note change", async () => {
+      const soon = await createShift({ date: plusDays(cafeTodayKey(), 2), startTime: '07:00', endTime: '15:00' });
+      await auth(request.delete(`/api/staff/${staffId}`)).expect(200);
+
+      const revived = await putShift(soon.body.shift._id, { status: 'scheduled' });
+      expect(revived.status).toBe(404);
+      expect(revived.body.code).toBe('STAFF_NOT_FOUND');
+      const moved = await putShift(soon.body.shift._id, { status: 'scheduled', date: plusDays(cafeTodayKey(), 3) });
+      expect(moved.status).toBe(404);
+      expect((await Shift.findById(soon.body.shift._id).lean()).status).toBe('cancelled');
+
+      const noted = await putShift(soon.body.shift._id, { notes: 'Left the cafe' });
+      expect(noted.status).toBe(200);
+    });
+
+    it('refuses to approve leave over rostered shifts and names the dates', async () => {
+      await createShift({ date: '2026-11-03', startTime: '07:00', endTime: '15:00' }).expect(201);
+      const fifth = await createShift({ date: '2026-11-05', startTime: '07:00', endTime: '15:00' });
+      await createShift({ date: '2026-11-04', startTime: '07:00', endTime: '15:00', status: 'cancelled' }).expect(201);
+      const leave = await auth(request.post('/api/leave')).send({ staffId, type: 'annual', startDate: '2026-11-02', endDate: '2026-11-06' });
+      expect(leave.status).toBe(201); // creating the request stays allowed
+
+      const refused = await auth(request.put(`/api/leave/${leave.body.leaveRequest._id}/approve`));
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe('LEAVE_HAS_SHIFTS');
+      expect(refused.body.message).toMatch(/2026-11-03 and 2026-11-05/);
+      expect(refused.body.message).toMatch(/[Mm]ove or cancel/);
+
+      await auth(request.delete(`/api/shifts/${fifth.body.shift._id}`)).expect(200);
+      const third = (await Shift.findOne({ staffId, date: new Date('2026-11-03T00:00:00Z') }).lean())._id;
+      await putShift(third, { status: 'cancelled' }).expect(200);
+      await auth(request.put(`/api/leave/${leave.body.leaveRequest._id}/approve`)).expect(200);
+    });
+
+    it('never lets an approval and a shift on the same day both succeed at once', async () => {
+      for (const day of ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05']) {
+        const leave = await auth(request.post('/api/leave')).send({ staffId, type: 'unpaid', startDate: day, endDate: day });
+        expect(leave.status).toBe(201);
+        const [approved, shift] = await Promise.all([
+          auth(request.put(`/api/leave/${leave.body.leaveRequest._id}/approve`)),
+          createShift({ date: day, startTime: '07:00', endTime: '15:00' }),
+        ]);
+        const outcome = { day, approve: approved.status, shift: shift.status };
+        expect([outcome]).toEqual([expect.objectContaining({ day })]);
+        expect(approved.status === 200 && shift.status === 201).toBe(false);
+        expect([approved.body.code, shift.body.code].filter(Boolean)).toEqual(
+          approved.status === 200 ? ['SHIFT_ON_LEAVE'] : ['LEAVE_HAS_SHIFTS']
+        );
+      }
+    });
+
+    it('counts a Sunday shift in its own week and leaves the next Monday regular', async () => {
+      // The next Monday first, so a recompute window that reached into it would mark it overtime.
+      await createShift({ date: '2026-04-13', startTime: '06:00', endTime: '16:00' }).expect(201);
+      for (const date of ['2026-04-06', '2026-04-07', '2026-04-08', '2026-04-09', '2026-04-10', '2026-04-12']) {
+        await createShift({ date, startTime: '06:00', endTime: '16:00' }).expect(201);
+      }
+      const shifts = byDate(await shiftsBetween('2026-04-06', '2026-04-13'));
+      expect(shifts['2026-04-10']).toMatchObject({ type: 'overtime', overtimeHours: 5 });
+      expect(shifts['2026-04-12']).toMatchObject({ type: 'overtime', regularHours: 0, overtimeHours: 10 });
+      expect(shifts['2026-04-13']).toMatchObject({ type: 'regular', regularHours: 10, overtimeHours: 0 });
+    });
+
+    it('keeps the stored overtime right when a create and an update race for one person', async () => {
+      for (const monday of ['2026-05-04', '2026-05-11', '2026-05-18']) {
+        const ids = [];
+        for (let i = 0; i < 4; i += 1) {
+          ids.push((await createShift({ date: plusDays(monday, i), startTime: '06:00', endTime: '16:00' })).body.shift._id);
+        }
+        // Cancelling Monday and adding Friday at once: Friday must end up regular (Tuesday to Friday is 40 h).
+        const [cancelled, created] = await Promise.all([
+          putShift(ids[0], { status: 'cancelled' }),
+          createShift({ date: plusDays(monday, 4), startTime: '06:00', endTime: '16:00' }),
+        ]);
+        expect([cancelled.status, created.status]).toEqual([200, 201]);
+
+        const stored = await Shift.find({ staffId, date: { $gte: new Date(`${monday}T00:00:00Z`), $lt: new Date(`${plusDays(monday, 7)}T00:00:00Z`) } }).lean();
+        const expected = new Map(splitWeekHours(stored.filter((s) => s.status !== 'cancelled'))
+          .map(({ shift, regularHours, overtimeHours, type }) => [String(shift._id), { regularHours, overtimeHours, type }]));
+        for (const shift of stored.filter((s) => s.status !== 'cancelled')) {
+          expect({ monday, id: String(shift._id), regularHours: shift.regularHours, overtimeHours: shift.overtimeHours, type: shift.type })
+            .toEqual({ monday, id: String(shift._id), ...expected.get(String(shift._id)) });
+        }
+        expect(stored.find((s) => String(s._id) === String(created.body.shift._id))).toMatchObject({ type: 'regular', overtimeHours: 0 });
+      }
     });
   });
 

@@ -2,18 +2,19 @@ const mongoose = require('mongoose');
 const Staff = require('../../models/Staff.model');
 const Shift = require('../../models/Shift.model');
 const LeaveRequest = require('../../models/LeaveRequest.model');
-const { cafeToday } = require('./cafeCalendar');
+const { cafeClock } = require('./cafeCalendar');
 const { recomputeStaffWeek, weekStartFor } = require('./shiftHours');
 
 /**
  * Deactivates a person and, in the same transaction, cancels their scheduled
- * shifts from the cafe's today onwards and withdraws their pending leave, so
- * hours, pay and approvals stop including someone who has left. Past shifts
- * and approved leave are records and stay as they are. Returns null when the
- * person is not in this cafe.
+ * shifts that have not started yet (later dates, and today's with a start
+ * time still ahead on the cafe's clock) and withdraws their pending leave, so
+ * hours, pay and approvals stop including someone who has left. A shift
+ * already under way or worked earlier today is kept for pay, as are past
+ * shifts and approved leave. Returns null when the person is not in this cafe.
  */
-const deactivateStaff = async ({ cafeId, staffId, actorUserId }) => {
-  const today = await cafeToday(cafeId);
+const deactivateStaff = async ({ cafeId, staffId, actorUserId, now = new Date() }) => {
+  const { today, time } = await cafeClock(cafeId, now);
   const session = await mongoose.startSession();
   try {
     let result = null;
@@ -28,7 +29,8 @@ const deactivateStaff = async ({ cafeId, staffId, actorUserId }) => {
         return;
       }
       const shifts = await Shift.updateMany(
-        { cafeId, staffId, status: 'scheduled', date: { $gte: today } },
+        // HH:MM strings compare in clock order; a shift starting this minute has started.
+        { cafeId, staffId, status: 'scheduled', $or: [{ date: { $gt: today } }, { date: today, startTime: { $gt: time } }] },
         { $set: { status: 'cancelled', regularHours: 0, overtimeHours: 0, type: 'regular' } },
         { session }
       );

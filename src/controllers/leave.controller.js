@@ -16,6 +16,7 @@ const {
 } = require('../services/workforce/leaveCycles');
 const { leaveDayBreakdown, describeWorkPattern } = require('../services/workforce/workingDays');
 const { findOverlappingLeave, leaveOverlapError } = require('../services/workforce/leaveOverlap');
+const { touchStaff, rosteredShiftsBetween, leaveHasShiftsError } = require('../services/workforce/shiftGuards');
 
 const MAX_LEAVE_SPAN_DAYS = 366;
 const MAX_CALENDAR_SPAN_DAYS = 93;
@@ -136,6 +137,13 @@ const approve = async (req, res, next) => {
         .session(session)
         .lean();
       if (!staff) throw new WorkforceError(404, 'STAFF_NOT_FOUND', 'Staff member not found');
+      // The roster lock as well as the balance lock: a shift created for these days
+      // at the same moment write-conflicts here instead of slipping past the check.
+      await touchStaff({ cafeId, staffId: leaveRequest.staffId, session });
+      const rostered = await rosteredShiftsBetween({
+        cafeId, staffId: leaveRequest.staffId, start: leaveRequest.startDate, end: leaveRequest.endDate, session,
+      });
+      if (rostered.length > 0) throw leaveHasShiftsError(rostered, staff.name);
 
       if (leaveRequest.type !== 'unpaid') {
         const window = cycleWindow(leaveRequest.type, staff.startDate, leaveRequest.startDate);

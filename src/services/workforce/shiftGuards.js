@@ -68,4 +68,33 @@ const shiftOnLeaveError = (leave) =>
       `${formatDateOnly(leave.endDate)}. Cancel that leave first, or roster someone else.`
   );
 
-module.exports = { lockActiveStaff, touchStaff, findOverlappingShift, shiftOverlapError, approvedLeaveOn, shiftOnLeaveError };
+// Shifts still on the roster (not cancelled) on any day from start to end.
+const rosteredShiftsBetween = ({ cafeId, staffId, start, end, session = null }) =>
+  Shift.find({ cafeId, staffId, status: { $ne: 'cancelled' }, date: { $gte: start, $lte: end } })
+    .select('date')
+    .sort({ date: 1 })
+    .session(session)
+    .lean();
+
+const joinDates = (keys) => (keys.length <= 1 ? keys.join('') : `${keys.slice(0, -1).join(', ')} and ${keys[keys.length - 1]}`);
+
+// Approving leave over rostered days would leave the person both away and on
+// shift; the owner moves or cancels the shifts first (BE-08-T04, Orchy ruling).
+const leaveHasShiftsError = (shifts, who) =>
+  new WorkforceError(
+    409,
+    'LEAVE_HAS_SHIFTS',
+    `${who} has shifts on ${joinDates([...new Set(shifts.map((shift) => formatDateOnly(shift.date)))])} during this leave. ` +
+      'Move or cancel those shifts first, then approve the leave.'
+  );
+
+module.exports = {
+  lockActiveStaff,
+  touchStaff,
+  findOverlappingShift,
+  shiftOverlapError,
+  approvedLeaveOn,
+  shiftOnLeaveError,
+  rosteredShiftsBetween,
+  leaveHasShiftsError,
+};
