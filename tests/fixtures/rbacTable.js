@@ -119,6 +119,7 @@ const RBAC_TABLE = [
   ['POST', '/api/items/reconciliation/suggestions', 'credit', 'spends Guava Credits'],
   ['PUT', '/api/items/:id', 'member', 'menu review is data entry'],
   ['POST', '/api/items/:id/resolve', 'member', 'menu review is data entry; schedules a forecast refresh'],
+  ['POST', '/api/items/confirm-all-new', 'member', 'same menu review action as per-item resolve; one cafe-scoped batch'],
   ['GET', '/api/improvements', 'member', 'read'],
   ['POST', '/api/improvements', 'member', 'feedback'],
   ['GET', '/api/improvements/:id', 'member', 'read'],

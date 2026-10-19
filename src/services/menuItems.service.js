@@ -675,6 +675,10 @@ const stampLegacyForecastItemIds = async (cafeId, item, targetItem, session) => 
  */
 const updateTransactionMenuItemLinks = async (cafeId, item, targetItem = item, { clearPriceMismatch = false, session } = {}) => {
   await stampLegacyForecastItemIds(cafeId, item, targetItem, session);
+  await Transaction.bulkWrite(transactionLinkOps(cafeId, item, targetItem, { clearPriceMismatch }), { ...(session ? { session } : {}), ordered: true });
+};
+
+const transactionLinkOps = (cafeId, item, targetItem = item, { clearPriceMismatch = false } = {}) => {
   const rawNames = uniqueStrings([item.name, ...(item.aliases || [])]);
   const lineOf = (alias) => ({
     $or: [
@@ -696,22 +700,23 @@ const updateTransactionMenuItemLinks = async (cafeId, item, targetItem = item, {
     cafeId,
     $or: [{ 'items.salesItemId': item._id }, { 'items.name': { $in: rawNames } }, { 'items.rawName': { $in: rawNames } }],
   };
-  const options = session ? { session } : {};
   const status = lineStatusFor(targetItem);
   const keepMismatch = !clearPriceMismatch && status !== 'ignored';
-  await Transaction.updateMany(filter, {
+  const statusUpdate = {
     $set: { 'items.$[line].menuItemStatus': status },
     $unset: { 'items.$[line].priceVariancePct': '' },
-  }, {
-    arrayFilters: [keepMismatch ? { $and: [lineOf('line'), { 'line.menuItemStatus': { $ne: 'price_mismatch' } }] } : lineOf('line')],
-    ...options,
-  });
+  };
   const link = { 'items.$[line].salesItemId': targetItem._id, 'items.$[line].name': targetItem.name };
   if (String(item._id) !== String(targetItem._id)) link['items.$[line].rawName'] = item.name;
   if (targetItem.expectedPrice !== undefined) link['items.$[line].expectedPrice'] = targetItem.expectedPrice;
-  await Transaction.updateMany(filter, { $set: link }, { arrayFilters: [lineOf('line')], ...options });
+  return [
+    { updateMany: { filter, update: statusUpdate,
+      arrayFilters: [keepMismatch ? { $and: [lineOf('line'), { 'line.menuItemStatus': { $ne: 'price_mismatch' } }] } : lineOf('line')] } },
+    { updateMany: { filter, update: { $set: link }, arrayFilters: [lineOf('line')] } },
+  ];
 };
 
+const MAX_BULK_CONFIRM = 2000;
 // The pool is the same for every review item on the page bar the self
 // exclusion, so it is fetched once and passed in. Re-running it per item cost
 // 100 round trips and 10,000 documents for a single reconciliation page load.
@@ -757,6 +762,9 @@ const findMatchCandidates = async (cafeId, item, { limit = 3, pool = null } = {}
 
 // markManualFields and resolveMenuItem moved to menuCorrections.service.js (BE-03-T10).
 module.exports = {
+  transactionLinkOps,
+  confirmAllNeedsReview: (...args) => require('./menuCorrections.service').confirmAllNeedsReview(...args),
+  MAX_BULK_CONFIRM,
   normalizeItemName,
   uniqueStrings,
   buildAliasKeys,

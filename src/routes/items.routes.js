@@ -20,6 +20,7 @@ router.post(
   items.generateReconciliationSuggestions
 );
 router.put('/:id', items.update);
+router.post('/confirm-all-new', items.confirmAllNew);
 router.post('/:id/resolve', items.resolve);
 
 module.exports = router;

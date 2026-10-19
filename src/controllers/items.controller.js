@@ -7,6 +7,8 @@ const {
   buildAliasKeys,
   findMatchCandidates,
   loadMatchCandidatePool,
+  confirmAllNeedsReview,
+  MAX_BULK_CONFIRM,
 } = require('../services/menuItems.service');
 const { resolveMenuItem, updateMenuItem } = require('../services/menuCorrections.service');
 const {
@@ -235,7 +237,7 @@ const list = async (req, res, next) => {
     // The whole-cafe counts are a pass over every item; a caller paging through link targets sends counts=false.
     const wantsCounts = req.query.counts !== 'false';
     const [items, total, summary] = await Promise.all([
-      Item.find(filter).sort(ITEM_LIST_SORT).skip((page - 1) * limit).limit(limit).select(ITEM_LIST_PROJECTION).lean(),
+      Item.find(filter).sort(ITEM_LIST_SORT).skip((page - 1) * limit).limit(limit).select(ITEM_LIST_PROJECTION).populate('mergedInto', 'name').lean(),
       Item.countDocuments(filter),
       wantsCounts ? itemCounts(cafeId) : {},
     ]);
@@ -469,7 +471,23 @@ const resolve = async (req, res, next) => {
   }
 };
 
+const confirmAllNew = async (req, res, next) => {
+  try {
+    const expectedCount = req.body?.expectedCount;
+    if (!Number.isInteger(expectedCount) || expectedCount < 1 || expectedCount > MAX_BULK_CONFIRM) {
+      return res.status(400).json({ success: false, message: `expectedCount must be a whole number from 1 to ${MAX_BULK_CONFIRM}` });
+    }
+    const cafeId = activeCafeId(req);
+    const { confirmed } = await confirmAllNeedsReview(cafeId, { expectedCount });
+    await scheduleForecastRefreshAfterMenuChange(cafeId);
+    clearApiCache({ cafeId });
+    const { counts, needsReview } = await itemCounts(cafeId);
+    return res.status(200).json({ success: true, confirmed, meta: { needsReview, counts } });
+  } catch (error) { return next(error); }
+};
+
 module.exports = {
+  confirmAllNew,
   create,
   generateReconciliationSuggestions,
   list,

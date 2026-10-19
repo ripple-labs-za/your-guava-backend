@@ -1,9 +1,10 @@
 // The owner's corrections on Menu Items: link (map_to), confirm, ignore and edit. Moved out of menuItems.service.js by
 // BE-03-T10, which gave the edit its own rules and would have taken that module past 800 lines.
 const Item = require('../models/Item.model');
+const Transaction = require('../models/Transaction.model');
 const {
   normalizeItemName, uniqueStrings, buildAliasKeys, areSiblingVariants, updateTransactionMenuItemLinks, rebuildItemsForCafe,
-  runMenuMutation,
+  runMenuMutation, transactionLinkOps, MAX_BULK_CONFIRM,
 } = require('./menuItems.service');
 
 const MANUAL_FIELDS = ['category', 'expectedPrice', 'aliases'];
@@ -185,4 +186,33 @@ const updateInSession = async (cafeId, itemId, payload, session) => {
   return { item, changed: { identity, price: changed.expectedPrice, category: changed.category } };
 };
 
-module.exports = { markManualFields, resolveMenuItem, updateMenuItem };
+const bulkError = (statusCode, code, message, details) => Object.assign(new Error(message), {
+  statusCode, code, publicCode: code, details: { code, ...details },
+});
+const confirmAllNeedsReview = async (cafeId, { expectedCount }) => {
+  const filter = { cafeId, reviewStatus: 'needs_review', isActive: { $ne: false } };
+  const checkCount = (actual) => {
+    if (actual > MAX_BULK_CONFIRM) throw bulkError(400, 'TOO_MANY_ITEMS',
+      `There are ${actual} items waiting; confirm them in the list below.`, { actual, max: MAX_BULK_CONFIRM });
+    if (actual !== expectedCount) throw bulkError(409, 'ITEM_COUNT_CHANGED',
+      `${actual} items are waiting now, not ${expectedCount}. Review the list again.`, { expected: expectedCount, actual });
+  };
+  checkCount(await Item.countDocuments(filter));
+  return runMenuMutation(cafeId, async (session) => {
+    const items = await Item.find(filter).session(session);
+    checkCount(items.length);
+    const operations = [];
+    for (const item of items) {
+      item.reviewStatus = 'matched';
+      item.isActive = true;
+      // Identity and name are unchanged, so the legacy forecast stamp is a no-op.
+      operations.push(...transactionLinkOps(cafeId, item));
+    }
+    await Item.bulkSave(items, { session });
+    if (operations.length) await Transaction.bulkWrite(operations, { session, ordered: true });
+    await rebuildItemsForCafe(cafeId, { session });
+    return { confirmed: items.length };
+  });
+};
+
+module.exports = { markManualFields, resolveMenuItem, updateMenuItem, confirmAllNeedsReview };

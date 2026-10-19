@@ -365,6 +365,18 @@ describe('id-addressed routes refuse other tenants', () => {
 describe('ids in request bodies refuse other tenants', () => {
   const REFUSED_BODY = [400, 403, 404];
 
+  it('POST /api/items/confirm-all-new ignores a foreign cafe in the body and changes only the active cafe', async () => {
+    const victimItem = await Item.create({ cafeId: world.cafeA1, name: unique('Victim pending'), category: 'coffee', reviewStatus: 'needs_review' });
+    const attackerItem = await Item.create({ cafeId: world.attackerCafe, name: unique('Attacker pending'), category: 'coffee', reviewStatus: 'needs_review' });
+    const before = await Item.findById(victimItem._id).lean();
+    const count = await Item.countDocuments({ cafeId: world.attackerCafe, reviewStatus: 'needs_review', isActive: { $ne: false } });
+    const response = await client('attacker').post('/api/items/confirm-all-new')
+      .send({ expectedCount: count, cafeId: String(world.cafeA1) });
+    expect(response.status).toBe(200);
+    expect(await Item.findById(victimItem._id).lean()).toEqual(before);
+    expect((await Item.findById(attackerItem._id).lean()).reviewStatus).toBe('matched');
+  });
+
   it('POST /api/team/switch-cafe refuses another organisation\'s cafe', async () => {
     const before = await User.findById(world.attacker.user.id).select('activeCafeId cafeIds').lean();
     const res = await client('attacker').post('/api/team/switch-cafe').send({ cafeId: world.cafeA1 });
