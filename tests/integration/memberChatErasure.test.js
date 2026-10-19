@@ -4,6 +4,7 @@ const { setup, teardown, clearDB, createTestUser, createTestManager, app } = req
 const InsightChat = require('../../src/models/InsightChat.model');
 const User = require('../../src/models/User.model');
 const AuthSession = require('../../src/models/AuthSession.model');
+const AccessAuditEvent = require('../../src/models/AccessAuditEvent.model');
 const request = supertest(app);
 beforeAll(setup);
 afterAll(teardown);
@@ -34,6 +35,19 @@ test('chat deletion failure rolls back member and sessions inside the same trans
   const chat = await InsightChat.create({ cafeId: owner.user.activeCafeId, orgId: owner.user.orgId, userId: member.user.id });
   const sessions = await AuthSession.countDocuments({ userId: member.user.id });
   jest.spyOn(InsightChat, 'deleteMany').mockRejectedValue(new Error('chat deletion failed'));
+  const response = await request.delete(`/api/team/${member.user.id}`).set('Authorization', `Bearer ${owner.token}`);
+  expect(response.status).toBe(500);
+  expect(await User.findById(member.user.id)).not.toBeNull();
+  expect(await InsightChat.findById(chat._id)).not.toBeNull();
+  expect(await AuthSession.countDocuments({ userId: member.user.id })).toBe(sessions);
+});
+
+test('a later audit failure rolls back the actual chat deletion with the member and sessions', async () => {
+  const owner = await createTestUser();
+  const member = await createTestManager(owner.token, [owner.user.activeCafeId]);
+  const chat = await InsightChat.create({ cafeId: owner.user.activeCafeId, orgId: owner.user.orgId, userId: member.user.id });
+  const sessions = await AuthSession.countDocuments({ userId: member.user.id });
+  jest.spyOn(AccessAuditEvent, 'create').mockRejectedValue(new Error('audit unavailable'));
   const response = await request.delete(`/api/team/${member.user.id}`).set('Authorization', `Bearer ${owner.token}`);
   expect(response.status).toBe(500);
   expect(await User.findById(member.user.id)).not.toBeNull();

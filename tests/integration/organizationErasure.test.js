@@ -62,7 +62,8 @@ test('apply erases every scoped model, deletes stored files, anonymizes invoices
   const direct = new Set(['Organization', 'Cafe', 'User', 'Counter', 'PendingRegistration', 'AuthThrottle']);
   for (const [name, policy] of Object.entries(POLICIES)) {
     if (policy.action === 'keep' || direct.has(name)) continue;
-    await mongoose.model(name).collection.insertMany([
+    const model = mongoose.model(name);
+    const records = [
       { orgId, cafeId, userId, staffId: userId, tokenHash: `erase-${name}`, stateHash: `erase-${name}`,
         familyId: `erase-${name}`, reference: `erase-${name}`, r2Key: 'erasure/test.csv',
         amount: 100, currency: 'ZAR', provider: 'mock', kind: 'plan', status: 'paid',
@@ -70,7 +71,16 @@ test('apply erases every scoped model, deletes stored files, anonymizes invoices
         checkoutUrl: 'https://private.example', futurePersonalField: 'private' },
       { orgId: foreignOrg, cafeId: foreignCafe, userId: foreignUser, staffId: foreignUser,
         tokenHash: `keep-${name}`, stateHash: `keep-${name}`, familyId: `keep-${name}`, reference: `keep-${name}` },
-    ]);
+    ];
+    // Scope fields follow the actual schema: a Transaction has cafeId but no
+    // orgId/userId. A wrong scope must fail even though generic fixtures could
+    // accidentally make it work.
+    for (const row of records) {
+      for (const field of ['orgId', 'cafeId', 'userId']) {
+        if (!model.schema.path(field)) delete row[field];
+      }
+    }
+    await model.collection.insertMany(records);
   }
   await mongoose.model('Counter').collection.insertMany([
     { _id: `improvementTicket:${orgId}`, seq: 5 }, { _id: `improvementTicket:${foreignOrg}`, seq: 6 },
