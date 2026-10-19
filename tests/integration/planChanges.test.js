@@ -425,7 +425,7 @@ describe('bounded review credit windows, checkout guards and due boundary', () =
     if (kind === 'upgrade') { // static-checks: allow conditional-expect it.each row: an upgrade opens a new window, a renewal keeps it
       expect(org.aiCredits.included).toBe(6000);
       expect(org.aiCredits.resetAt).toEqual(addBillingCycle(org.currentPeriodStart, 'monthly'));
-    } else expect(org.aiCredits.resetAt).toEqual(resetAt);
+    } else expect(org.aiCredits.resetAt).toEqual(resetAt); // static-checks: allow conditional-expect the renewal half of the row above
   });
 
   it('rejects a hosted checkout conflict before creating a payment session or provider key', async () => {

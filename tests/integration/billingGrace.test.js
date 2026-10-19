@@ -13,7 +13,7 @@ describe('grace policy boundaries', () => {
     const now = new Date('2026-10-18T12:00:00.000Z');
     const access = billingAccessForOrganization({ billingStatus: 'past_due', currentPeriodEnd: new Date(now - DAY) }, now);
     expect(access.readOnly).toBe(days > 0);
-    if (days > 0) expect(access.graceEndsAt.getTime()).toBe(now.getTime() + (days - 1) * DAY);
+    expect(access.graceEndsAt).toEqual(days > 0 ? new Date(now.getTime() + (days - 1) * DAY) : null);
   });
 
   it('does not grant grace before an inferred trial end on a past-due record with no paid dates', () => {

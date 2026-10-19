@@ -18,17 +18,10 @@ const Transaction = require('../../src/models/Transaction.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
 const { _resetInsightsCache } = require('../../src/services/anthropic.service');
 const { suggestMenuItemReviews } = require('../../src/services/menuItemReviewAi.service');
+const { waitFor } = require('../helpers/waitFor');
 
 const request = supertest(app);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const waitFor = async (probe, attempts = 500) => {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const value = await probe();
-    if (value) return value;
-    await sleep(10);
-  }
-  throw new Error('Timed out waiting for the expected state');
-};
 const abortable = (signal) => new Promise((_resolve, reject) => {
   signal?.addEventListener('abort', () => {
     reject(Object.assign(new Error('Request was aborted.'), { name: 'APIUserAbortError' }));

@@ -175,7 +175,7 @@ describe('GET /api/analytics/revenue trend window', () => {
       .reduce((sum, doc) => sum + doc.total, 0);
     // Equal calendar spans retain real weekday mix effects: the 29-day spans can have 24 vs 25 open days.
     expect(res.body.summary.trend).toBe(Number((((current - previous) / previous) * 100).toFixed(1)) || 0);
-    if (days === 7 || days === 90) expect(res.body.summary.trend).toBe(0);
+    if (days === 7 || days === 90) expect(res.body.summary.trend).toBe(0); // static-checks: allow conditional-expect it.each row: only the 7- and 90-day spans always hold equal open days
     expect(res.body.meta.effectiveWindow.endDate).toBe(shift(today, -1));
     expect(res.body.meta.effectiveWindow.endReason).toBe('today_incomplete');
   });

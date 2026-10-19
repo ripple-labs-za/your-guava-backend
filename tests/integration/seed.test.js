@@ -1,6 +1,6 @@
 const path = require('path');
 const supertest = require('supertest');
-const { setup, teardown, clearDB, app } = require('../setup');
+const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const Cafe = require('../../src/models/Cafe.model');
 const Transaction = require('../../src/models/Transaction.model');
 const User = require('../../src/models/User.model');
@@ -33,9 +33,12 @@ describe('local seed script', () => {
   });
 
   it('refuses a database that is not a single loopback host, before touching anything', async () => {
+    // A user already present must survive: the seed's own reset would delete it, so an empty count alone proves nothing.
+    const existing = await createTestUser();
     await expect(seed({ mongoUri: 'mongodb://db.example.com:27017/guava', importFile: FIXTURE, manageConnection: false }))
       .rejects.toThrow(/loopback/);
-    expect(await User.countDocuments({})).toBe(0);
+    expect((await User.find({}).lean()).map((user) => String(user._id))).toEqual([String(existing.user.id)]);
+    expect(await User.countDocuments({ email: 'demo@yourguava.local' })).toBe(0);
   });
 
   it('refuses a missing import file and a short password with the same messages the CLI prints', async () => {

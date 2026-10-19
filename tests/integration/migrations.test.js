@@ -330,7 +330,14 @@ describe('legacy repairs through the runner', () => {
   const registry = require('../../src/migrations');
   const entry = (name) => registry.find((migration) => migration.name === name);
   const Cafe = require('../../src/models/Cafe.model');
-  const { decryptSecret, encryptSecret } = require('../../src/services/secrets.service');
+  const { currentKeyId, decryptSecret, encryptSecret, isEncrypted } = require('../../src/services/secrets.service');
+  // decryptSecret hands plaintext back unchanged, so a round trip alone cannot tell a re-seal from no write at all.
+  const expectSealed = (stored, plaintext) => {
+    expect(isEncrypted(stored)).toBe(true);
+    expect(stored.startsWith(`enc:v2:${currentKeyId()}:`)).toBe(true);
+    expect(stored).not.toContain(plaintext);
+    expect(decryptSecret(stored)).toBe(plaintext);
+  };
 
   it('rewrites the legacy free plan to Starter when named, leaves other plans, and is then done', async () => {
     const organizations = mongoose.connection.db.collection('organizations');
@@ -360,8 +367,7 @@ describe('legacy repairs through the runner', () => {
     expect(result.applied).toEqual(['reencrypt-secrets']);
 
     const stored = (await Cafe.collection.findOne({ _id: cafe._id })).accountingIntegrations.xero.accessToken;
-    expect(stored).not.toBe('legacy-plain-token');
-    expect(decryptSecret(stored)).toBe('legacy-plain-token');
+    expectSealed(stored, 'legacy-plain-token');
     await expect(entry('reencrypt-secrets').check()).resolves.toMatchObject({ pending: false });
   });
 
@@ -406,7 +412,7 @@ describe('legacy repairs through the runner', () => {
     printed.length = 0;
     await expect(rotate({ apply: true, print })).resolves.toMatchObject({ upgrades: 1, modified: 1 });
     expect(printed).toContain('modified: 1');
-    expect(decryptSecret((await Cafe.collection.findOne({ _id: cafe._id })).yocoTokens.accessToken)).toBe('cli-plain-secret');
+    expectSealed((await Cafe.collection.findOne({ _id: cafe._id })).yocoTokens.accessToken, 'cli-plain-secret');
   });
 
   it('refuses to re-seal while a stored token is unreadable, and changes nothing', async () => {

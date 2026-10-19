@@ -86,8 +86,9 @@ it('makes substantial progress when the same range meets the sync deadline again
     expect([200, 504]).toContain(res.status);
     expect(count).toBeGreaterThan(previousCount);
     if (run === 1) firstCount = count;
-    // A retry must reach new pages, rather than spending its budget upserting the prefix again.
-    if (run > 1) expect(count - previousCount).toBeGreaterThan(firstCount / 2);
+    // A retry must reach new pages, rather than spending its budget upserting the prefix again. Run 1 sets the yardstick
+    // (its count less zero is more than half of itself).
+    expect(count - previousCount).toBeGreaterThan(firstCount / 2);
     if (res.status === 504) {
       deadlines.push(res.body);
     }

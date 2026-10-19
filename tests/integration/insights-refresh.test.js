@@ -278,14 +278,6 @@ describe('explicit insight refresh', () => {
 
 describe('insight refresh lease, replay and window', () => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const waitFor = async (probe, attempts = 500) => {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const value = await probe();
-      if (value) return value;
-      await sleep(10);
-    }
-    throw new Error('Timed out waiting for the expected state');
-  };
   const refresh = (owner, key) => request
     .post('/api/forecasts/insights/refresh')
     .set('Authorization', `Bearer ${owner.token}`)

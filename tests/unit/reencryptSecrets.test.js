@@ -62,8 +62,17 @@ describe('reencrypt-secrets migration plan', () => {
   });
 
   it('does not load dotenv or connect to a database when imported', () => {
-    // rotate (BE-12-T03) is the CLI's work as a function; importing still runs nothing.
-    expect(Object.keys(require('../../src/migrations/reencrypt-secrets')).sort())
-      .toEqual(['applySecretUpgrades', 'planSecretUpgrades', 'rotate']);
+    // rotate (BE-12-T03) is the CLI's work as a function; importing still runs nothing. A fresh registry, so the
+    // spies sit on the very dotenv and mongoose instances the module gets.
+    jest.isolateModules(() => {
+      const config = jest.spyOn(require('dotenv'), 'config');
+      const connect = jest.spyOn(require('mongoose'), 'connect');
+      const migration = require('../../src/migrations/reencrypt-secrets');
+      expect(Object.keys(migration).sort()).toEqual(['applySecretUpgrades', 'planSecretUpgrades', 'rotate']);
+      expect(config).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      config.mockRestore();
+      connect.mockRestore();
+    });
   });
 });

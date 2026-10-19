@@ -107,7 +107,8 @@ describe('Guava Credit reservation lease breach', () => {
     finishRetry({ answer: 'retry answer' });
     const retryOutcome = await retry.catch((error) => error);
     expect(live).toMatchObject({ status: retryStatus, replayCount: 1 });
-    if (retryStatus === 'refunded') expect(live.recoveryReason).toBe('stale_reservation');
+    // A fresh reservation clears any earlier reason; only the swept retry carries one.
+    expect(live.recoveryReason).toBe(retryStatus === 'refunded' ? 'stale_reservation' : undefined);
     expect(live.resultPayload).toBeUndefined();
     expect(retryOutcome.result).toEqual({ answer: 'retry answer' });
     expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(3);
