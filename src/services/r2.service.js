@@ -1,6 +1,7 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { withDeadline, s3ClientTimeoutConfig } = require('../utils/http');
+const { isProductionEnv } = require('../config/posture');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -33,7 +34,7 @@ const getConfigurationStatus = () => {
   const missing = R2_ENV_KEYS.filter((key) => !process.env[key]);
   const configured = missing.length === 0;
   const partiallyConfigured = missing.length > 0 && missing.length < R2_ENV_KEYS.length;
-  const production = process.env.NODE_ENV === 'production';
+  const production = isProductionEnv();
   return {
     ok: configured || (!production && !partiallyConfigured),
     configured,
@@ -47,7 +48,7 @@ const localRoot = () => path.join(process.cwd(), 'uploads', 'r2');
 const useLocalStorage = () => {
   const status = getConfigurationStatus();
   if (!status.ok) {
-    const context = process.env.NODE_ENV === 'production'
+    const context = isProductionEnv()
       ? 'R2 storage is required in production'
       : 'R2 storage configuration is incomplete';
     throw new Error(`${context}; missing ${status.missing.join(', ')}`);

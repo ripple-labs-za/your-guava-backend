@@ -1,4 +1,5 @@
 const { outboundGet, outboundPost, isOutboundTimeout } = require('../utils/http');
+const { isProductionEnv } = require('../config/posture');
 
 /**
  * Paystack hosted checkout.
@@ -59,7 +60,7 @@ const baseUrl = () => {
   if (url.username || url.password) {
     throw new Error('PAYSTACK_API_URL must not contain credentials');
   }
-  if (process.env.NODE_ENV === 'production') {
+  if (isProductionEnv()) {
     if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== OFFICIAL_PAYSTACK_HOST) {
       throw new Error('PAYSTACK_API_URL must be the official Paystack API host in production');
     }

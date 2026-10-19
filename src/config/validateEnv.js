@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const { parseTrustProxyHops } = require('./proxy');
-const { nodeEnv, isHardenedEnvironment } = require('./posture');
+const { nodeEnv, isProductionEnv, isHardenedEnvironment } = require('./posture');
 const { originChecksEnabled, workforceEnabled } = require('./flags');
 const { aiModelProblems } = require('./ai');
 const { NUMERIC_ENV, URL_ENV, isPlaceholder } = require('./envSpec');
@@ -113,7 +113,7 @@ const isOfficialPaystackUrl = (value) =>
  */
 const validateEnv = () => {
   const errors = [];
-  const isProduction = nodeEnv() === 'production';
+  const isProduction = isProductionEnv();
   const yocoEnabled = enabled('YOCO_INTEGRATION_ENABLED');
   const accountingEnabled = enabled('ACCOUNTING_INTEGRATIONS_ENABLED');
 

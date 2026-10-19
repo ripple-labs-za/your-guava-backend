@@ -1,5 +1,6 @@
 const oneGate = require('./onegate.service');
 const paystack = require('./paystack.service');
+const { isProductionEnv } = require('../config/posture');
 
 /**
  * Resolves the hosted-checkout provider from PAYMENT_PROVIDER.
@@ -77,7 +78,7 @@ const hostedProviderNames = () => Object.keys(PROVIDERS);
  */
 const paymentCapability = () => {
   const name = providerName();
-  const production = process.env.NODE_ENV === 'production';
+  const production = isProductionEnv();
   if (!name) {
     return {
       ok: !production,

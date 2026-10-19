@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const { isProductionEnv } = require('../config/posture');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const User = require('../models/User.model');
@@ -51,7 +52,7 @@ const normalizedProfileText = (value) =>
  * flag by accident in production still cannot open it. See DECISIONS D-010.
  */
 const mockBillingEnabled = () =>
-  process.env.NODE_ENV !== 'production' &&
+  !isProductionEnv() &&
   String(process.env.BILLING_MOCK_ENABLED || '').trim().toLowerCase() === 'true';
 
 /** The active card-payment provider, visible to every account role. */

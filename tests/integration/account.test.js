@@ -203,11 +203,11 @@ describe('Account API', () => {
     expect(await Forecast.countDocuments({})).toBe(0);
   });
 
-  it('does not allow mock checkout in production', async () => {
+  it.each(['production', ' Production'])('does not allow mock checkout in %p', async (environment) => {
     // Deliberately opts in AND sets production: the flag must not be enough.
     const savedNodeEnv = process.env.NODE_ENV;
     const savedFlag = process.env.BILLING_MOCK_ENABLED;
-    process.env.NODE_ENV = 'production';
+    process.env.NODE_ENV = environment;
     process.env.BILLING_MOCK_ENABLED = 'true';
 
     try {

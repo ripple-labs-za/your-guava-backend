@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { isProductionEnv } = require('../config/posture');
 const { outboundGet, outboundPost, toUpstreamError } = require('../utils/http');
 
 const DEFAULT_BASE_URL = 'https://payments.onegate.co.za';
@@ -14,7 +15,7 @@ const cleanBaseUrl = (value) => {
   if (url.username || url.password) {
     throw new Error('ONEGATE_API_URL must not contain credentials');
   }
-  if (process.env.NODE_ENV === 'production') {
+  if (isProductionEnv()) {
     if (url.protocol !== 'https:') {
       throw new Error('ONEGATE_API_URL must use HTTPS in production');
     }
