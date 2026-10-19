@@ -677,9 +677,9 @@ git commit -m "feat: team management — invite managers, switch cafes, add cafe
 ### Task 7: Update Seed Script for Multi-Shop
 
 **Files:**
-- Modify: `src/seed.js` or `src/seed-bulk.js`
+- Modify: `src/seed.js` or `src/seed.js`
 
-- [ ] **Step 1: Update seed-bulk.js to create Organization**
+- [ ] **Step 1: Update seed.js to create Organization**
 
 Add Organization creation between User and Cafe creation. Update User to have role, orgId, cafeIds, activeCafeId. Update Cafe to use orgId instead of ownerId.
 
@@ -712,7 +712,7 @@ await user.save();
 - [ ] **Step 2: Commit**
 
 ```bash
-git add src/seed-bulk.js
+git add src/seed.js
 git commit -m "feat: seed script creates organization"
 ```
 

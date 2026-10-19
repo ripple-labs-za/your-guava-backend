@@ -5,7 +5,16 @@
  * Usage: node scripts/smoke-pipeline.js [apiBaseUrl]
  * Exits non-zero on the first failed expectation.
  */
-const API = (process.argv[2] || 'http://localhost:5000/api').replace(/\/$/, '');
+const fs = require('fs');
+const args = process.argv.slice(2);
+const option = (name) => {
+  const index = args.indexOf(name);
+  return index < 0 ? undefined : args[index + 1];
+};
+const API = (args[0] || 'http://localhost:5155/api').replace(/\/$/, '');
+const ORIGIN = option('--origin') || 'http://localhost:5185';
+const VERIFY_LOG = option('--verify-log');
+const LOGIN = option('--login');
 
 const PRICES = { 'Flat White': 40, Cappuccino: 38, Croissant: 35 };
 const flatWhiteQtyFor = (dayOfWeek) => 5 + dayOfWeek;
@@ -39,26 +48,53 @@ let failures = 0;
 const check = (label, ok, detail = '') => {
   console.log(`${ok ? '  PASS' : '  FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures += 1;
+  if (!ok) throw new Error(label);
+};
+
+const signIn = async () => {
+  const headers = { 'Content-Type': 'application/json', Origin: ORIGIN };
+  let email;
+  let password;
+  if (LOGIN) {
+    const colon = LOGIN.indexOf(':');
+    if (colon < 1) throw new Error('--login must be email:password');
+    email = LOGIN.slice(0, colon);
+    password = LOGIN.slice(colon + 1);
+  } else {
+    if (!VERIFY_LOG) throw new Error('Pass --verify-log <backend log> or --login email:password for email verification');
+    email = `smoke-${Date.now()}@yourguava.test`;
+    password = 'smoke-test-password-1';
+    const offset = fs.statSync(VERIFY_LOG).size;
+    const registered = await fetch(`${API}/auth/register`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ email, password, name: 'Smoke Tester', cafeName: 'Smoke Cafe' }),
+    });
+    check('register account (verification required)', registered.status === 202);
+    let token;
+    for (let attempt = 0; attempt < 30 && !token; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const fresh = fs.readFileSync(VERIFY_LOG).subarray(offset).toString('utf8');
+      const at = fresh.indexOf(email);
+      if (at !== -1) token = fresh.slice(at).match(/verify-email#token=([A-Za-z0-9_-]{43})/)?.[1];
+    }
+    check('verification link written to the backend log', Boolean(token));
+    const verified = await fetch(`${API}/auth/verify-email`, {
+      method: 'POST', headers, body: JSON.stringify({ token, password }),
+    });
+    check('verify email', verified.status === 201);
+  }
+  const response = await fetch(`${API}/auth/login`, {
+    method: 'POST', headers, body: JSON.stringify({ email, password }),
+  });
+  const body = await response.json();
+  check('log in', response.status === 200 && Boolean(body.accessToken));
+  return body.accessToken;
 };
 
 (async () => {
   console.log(`Smoke-testing ${API}\n`);
 
-  // 1. Register a fresh account
-  const email = `smoke-${Date.now()}@yourguava.test`;
-  const registerRes = await fetch(`${API}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email,
-      password: 'smoke-test-password-1',
-      name: 'Smoke Tester',
-      cafeName: 'Smoke Cafe',
-    }),
-  });
-  const register = await registerRes.json();
-  check('register account', registerRes.status === 201 && Boolean(register.accessToken));
-  const auth = { Authorization: `Bearer ${register.accessToken}` };
+  const auth = { Authorization: `Bearer ${await signIn()}`, Origin: ORIGIN };
 
   // 2. Upload a POS export (Yoco format, 56 days of history)
   const csv = buildHistoryCsv(56);

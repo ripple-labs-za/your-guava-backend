@@ -8,26 +8,33 @@
  */
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
-const args = process.argv.slice(2);
-const port = Number(args.find((arg) => /^\d+$/.test(arg))) || 27017;
-const dbPathIndex = args.indexOf('--dbpath');
-const dbPath = dbPathIndex === -1 ? undefined : args[dbPathIndex + 1];
-
-(async () => {
+const startDevMongo = async ({ port = 27017, dbPath } = {}) => {
   const replSet = await MongoMemoryReplSet.create({
     replSet: { name: 'rs0', count: 1, storageEngine: 'wiredTiger' },
     instanceOpts: [{ port, ...(dbPath ? { dbPath } : {}) }],
   });
-  console.log(`[dev-mongo] replica set rs0 on 127.0.0.1:${port}${dbPath ? ` (data in ${dbPath})` : ' (temporary data)'}`);
-  console.log(`[dev-mongo] MONGODB_URI=mongodb://127.0.0.1:${port}/your-guava?replicaSet=rs0`);
-  console.log('[dev-mongo] Ctrl+C to stop.');
-  const stop = async () => {
-    await replSet.stop();
-    process.exit(0);
-  };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
-})().catch((error) => {
-  console.error('[dev-mongo] failed to start:', error.message);
-  process.exit(1);
-});
+  return { replSet, uri: `mongodb://127.0.0.1:${port}/your-guava?replicaSet=rs0` };
+};
+
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const port = Number(args.find((arg) => /^\d+$/.test(arg))) || 27017;
+  const dbPathIndex = args.indexOf('--dbpath');
+  const dbPath = dbPathIndex === -1 ? undefined : args[dbPathIndex + 1];
+  startDevMongo({ port, dbPath }).then(({ replSet }) => {
+    console.log(`[dev-mongo] replica set rs0 on 127.0.0.1:${port}${dbPath ? ` (data in ${dbPath})` : ' (temporary data)'}`);
+    console.log(`[dev-mongo] MONGODB_URI=mongodb://127.0.0.1:${port}/your-guava?replicaSet=rs0`);
+    console.log('[dev-mongo] Ctrl+C to stop.');
+    const stop = async () => {
+      await replSet.stop();
+      process.exit(0);
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+  }).catch((error) => {
+    console.error('[dev-mongo] failed to start:', error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { startDevMongo };
