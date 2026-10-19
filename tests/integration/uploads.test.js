@@ -907,15 +907,29 @@ describe('Uploads API', () => {
   });
 
   describe('Upload triggers actuals back-fill', () => {
-    it('after confirm, calls updateForecastActuals for each day in the upload range', async () => {
+    // The fixture's approved sales are on 15 and 16 January 2026 (the 15th's third row is Declined).
+    it('after confirm, fills actuals for each day in the upload range and no other', async () => {
       const Forecast = require('../../src/models/Forecast.model');
+      const { zonedDateTimeToUtc } = require('../../src/utils/timezone');
+      const me = await request.get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+      const cafeId = me.body.activeCafeId;
+      expect(cafeId).toBeTruthy();
+      const day = (d) => zonedDateTimeToUtc({ year: 2026, month: 1, day: d }, 'Africa/Johannesburg');
+      for (const d of [14, 15, 16]) {
+        await Forecast.create({ cafeId, date: day(d), generatedAt: new Date(), items: [], totalPredictedRevenue: 100 });
+      }
 
       const stage = await request.post('/api/transactions/upload').set('Authorization', `Bearer ${token}`).attach('file', yocoFixture);
-      await request.post(`/api/uploads/${stage.body.uploadId}/confirm`).set('Authorization', `Bearer ${token}`).send({ columnMapping: stage.body.columnMapping, itemsMode: stage.body.itemsMode });
+      const confirm = await request.post(`/api/uploads/${stage.body.uploadId}/confirm`).set('Authorization', `Bearer ${token}`)
+        .send({ columnMapping: stage.body.columnMapping, itemsMode: stage.body.itemsMode });
+      expect(confirm.status).toBe(200);
 
-      // generateWeekForecast should have created 7 forecasts for today + 6 future days
-      const after = await Forecast.countDocuments({});
-      expect(after).toBeGreaterThanOrEqual(7);
+      const [d14, d15, d16] = await Promise.all([14, 15, 16].map((d) => Forecast.findOne({ cafeId, date: day(d) }).lean()));
+      expect(d15.actualsUpdatedAt).toBeTruthy();
+      expect(d15.actualRevenue).toBeGreaterThan(0);
+      expect(d16.actualsUpdatedAt).toBeTruthy();
+      expect(d16.actualRevenue).toBeGreaterThan(0);
+      expect(d14.actualsUpdatedAt).toBeUndefined();
     });
   });
 
@@ -1132,8 +1146,8 @@ describe('Uploads API', () => {
       const Forecast = require('../../src/models/Forecast.model');
       // Get cafeId from the registered user
       const u = await createTestUser({ email: 'd@yourguava.com', cafeName: 'Cafe D', orgName: 'Org D' });
-      const cafeId = u.user?.cafeIds?.[0];
-      if (!cafeId) return; // skip if shape doesn't expose cafeId
+      const cafeId = u.user.activeCafeId;
+      expect(cafeId).toBeTruthy();
 
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);

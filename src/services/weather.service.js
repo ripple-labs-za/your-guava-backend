@@ -178,13 +178,19 @@ const getWeatherForecast = async (lat, lng, date) => {
     );
 
     const forecastDays = response.data?.forecast?.forecastday || [];
+    // The requested day present but rejected by normaliseDay is a different
+    // failure from the day being absent, and says so (BE-12-T03).
+    let requestedDayRejected = false;
     for (const forecastDay of forecastDays) {
-      rememberDay(lat, lng, forecastDay);
+      const kept = rememberDay(lat, lng, forecastDay);
+      if (!kept && forecastDay?.date === dateStr) requestedDayRejected = true;
     }
 
     const result = readCache(cacheKey);
     if (!result) {
-      return unavailableWeatherSignal('Weather provider returned no data for this date');
+      return unavailableWeatherSignal(requestedDayRejected
+        ? 'Weather provider returned implausible values for this date'
+        : 'Weather provider returned no data for this date');
     }
     return result;
   } catch (error) {

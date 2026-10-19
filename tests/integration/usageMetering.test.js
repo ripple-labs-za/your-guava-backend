@@ -10,6 +10,8 @@ const {
   meterGuavaCredits,
   reconcileStaleUsageReservations,
 } = require('../../src/services/usage.service');
+// Deadline-based (5 s), not 200 x 5 ms: a loaded runner gets the same wall-clock budget.
+const { waitFor } = require('../helpers/waitFor');
 
 beforeAll(setup);
 afterAll(teardown);
@@ -17,15 +19,6 @@ afterEach(async () => {
   jest.restoreAllMocks();
   await clearDB();
 });
-
-const waitFor = async (probe, attempts = 200) => {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const value = await probe();
-    if (value) return value;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('Timed out waiting for the expected state');
-};
 
 describe('metered Guava Credit amounts', () => {
   it('refuses a credit amount that is not a non-negative number', async () => {

@@ -287,12 +287,11 @@ describe('Shifts API', () => {
       expect(res.body.summary).toBeDefined();
       expect(Array.isArray(res.body.summary)).toBe(true);
 
-      if (res.body.summary.length > 0) {
-        const entry = res.body.summary[0];
-        expect(entry.totalHours).toBeDefined();
-        expect(entry.estimatedPay).toBeDefined();
-        expect(entry.overThreshold).toBeDefined();
-      }
+      // 07:00-15:00 is 8 h at the R55 rate; estimatedPay is owner-only and this is the owner's token.
+      expect(res.body.summary).toHaveLength(1);
+      expect(res.body.summary[0]).toEqual(expect.objectContaining({
+        staffId, totalHours: 8, estimatedPay: 440, overThreshold: false,
+      }));
     });
 
     it('applies the overtime threshold independently to each week', async () => {

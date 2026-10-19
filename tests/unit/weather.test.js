@@ -210,13 +210,13 @@ describe('weather service', () => {
     errorSpy.mockRestore();
   });
 
-  it('rejects impossible core weather metrics instead of applying them', async () => {
+  it('rejects implausible core weather metrics with their own reason', async () => {
     axios.get.mockResolvedValueOnce({
       data: {
         forecast: {
           forecastday: [
             {
-              date: new Date().toISOString().slice(0, 10),
+              date: toDateKey(new Date()), // the service's own local key, not a UTC slice
               day: {
                 avgtemp_c: 999,
                 avghumidity: 140,
@@ -233,7 +233,41 @@ describe('weather service', () => {
     expect(result).toEqual({
       available: false,
       condition: 'Unavailable',
-      unavailableReason: 'Weather provider returned no data for this date',
+      unavailableReason: 'Weather provider returned implausible values for this date',
     });
+  });
+
+  it('still says no data when the provider answers only for another day', async () => {
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    axios.get.mockResolvedValueOnce({
+      data: { forecast: { forecastday: [{ date: toDateKey(tomorrow), day: { avgtemp_c: 22, avghumidity: 60, condition: { text: 'Sunny' } } }] } },
+    });
+
+    const result = await getWeatherForecast(-33.8, 18.5, new Date());
+
+    expect(result).toEqual(expect.objectContaining({
+      available: false, unavailableReason: 'Weather provider returned no data for this date',
+    }));
+  });
+
+  it('gives the implausible reason for the requested day and still caches a valid neighbour', async () => {
+    const today = new Date();
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    axios.get.mockResolvedValueOnce({
+      data: {
+        forecast: {
+          forecastday: [
+            { date: toDateKey(today), day: { avgtemp_c: 999, avghumidity: 140, condition: { text: 'Sunny' } } },
+            { date: toDateKey(tomorrow), day: { avgtemp_c: 21, avghumidity: 55, condition: { text: 'Cloudy' } } },
+          ],
+        },
+      },
+    });
+
+    expect((await getWeatherForecast(-33.7, 18.6, today)).unavailableReason)
+      .toBe('Weather provider returned implausible values for this date');
+    const cached = await getWeatherForecast(-33.7, 18.6, tomorrow);
+    expect(cached).toEqual(expect.objectContaining({ temp: 21 }));
+    expect(axios.get).toHaveBeenCalledTimes(1);
   });
 });

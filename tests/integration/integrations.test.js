@@ -230,15 +230,9 @@ describe('Integrations API', () => {
       .get('/api/auth/me')
       .set('Authorization', `Bearer ${token}`);
 
-    const cafeId =
-      meRes.body.activeCafeId ||
-      meRes.body.cafeId ||
-      (meRes.body.cafeIds && meRes.body.cafeIds[0]);
-
-    if (!cafeId) {
-      // If we can't determine cafeId, skip gracefully
-      return;
-    }
+    // /auth/me returns activeCafeId at the top level; a missing one is a failure, not a skip.
+    const cafeId = meRes.body.activeCafeId;
+    expect(cafeId).toBeTruthy();
 
     // Simulate a connected Xero integration
     await Cafe.findByIdAndUpdate(cafeId, {

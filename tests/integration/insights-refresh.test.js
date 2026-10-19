@@ -19,6 +19,7 @@ const InsightChat = require('../../src/models/InsightChat.model');
 const Transaction = require('../../src/models/Transaction.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
 const { _resetInsightsCache } = require('../../src/services/anthropic.service');
+const { waitFor } = require('../helpers/waitFor');
 
 const request = supertest(app);
 
@@ -49,9 +50,16 @@ describe('explicit insight refresh', () => {
     const owner = await createTestUser();
     await UsageLedger.init();
     await seedRecentSales(owner.user.activeCafeId);
-    mockAnthropicMessageCreate.mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return { content: [{ type: 'text', text: '["Prepare more flat whites tomorrow."]' }] };
+    // The provider blocks until the test has seen the second request lose the lease
+    // race, then answers: the verdict depends on order, not on the machine's speed.
+    let releaseProvider;
+    let providerEntered;
+    const entered = new Promise((resolve) => { providerEntered = resolve; });
+    mockAnthropicMessageCreate.mockImplementation(() => {
+      providerEntered();
+      return new Promise((resolve) => {
+        releaseProvider = () => resolve({ content: [{ type: 'text', text: '["Prepare more flat whites tomorrow."]' }] });
+      });
     });
 
     const initialRead = await request
@@ -72,7 +80,21 @@ describe('explicit insight refresh', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .set('Idempotency-Key', 'stable-insight-refresh')
       .send({});
-    const [first, second] = await Promise.all([refreshRequest(), refreshRequest()]);
+    const reads = jest.spyOn(GeneratedInsight, 'findOne');
+    const claims = jest.spyOn(GeneratedInsight, 'findOneAndUpdate');
+    const firstPromise = refreshRequest().then((response) => response);
+    await entered; // the first request holds the refresh lease and is inside the provider call
+    const claimsBefore = claims.mock.calls.length;
+    const secondPromise = refreshRequest().then((response) => response);
+    // The second request has lost the lease once it has tried to claim it and then polled the cache again.
+    await waitFor(() => {
+      const lastClaim = claims.mock.invocationCallOrder.at(-1) ?? 0;
+      return claims.mock.calls.length > claimsBefore && reads.mock.invocationCallOrder.some((order) => order > lastClaim);
+    }, { timeoutMs: 5000, message: 'the second refresh to wait on the first' });
+    releaseProvider();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    reads.mockRestore();
+    claims.mockRestore();
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
