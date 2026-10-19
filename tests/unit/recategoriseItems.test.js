@@ -4,6 +4,21 @@ const item = (name, category) => ({ _id: name, cafeId: 'cafe1', name, category }
 
 describe('recategorise-items migration', () => {
   describe('provenance test', () => {
+    it('keeps a category the owner set even when it equals what the old rules produced', () => {
+      // "House Coffee (Blend)" is a retail bag of beans to this owner. The old rules
+      // also said retail, so provenance-by-reproduction alone would overwrite it.
+      const { updates, keptManual } = plan([{ ...item('House Coffee (Blend)', 'retail'), manualFields: ['category'] }]);
+      expect(updates).toHaveLength(0);
+      expect(keptManual).toEqual([
+        expect.objectContaining({ name: 'House Coffee (Blend)', stored: 'retail', wouldBecome: 'coffee', reason: 'manualFields' }),
+      ]);
+    });
+
+    it('still repairs an auto-assigned value when only price or aliases were set by hand', () => {
+      const { updates } = plan([{ ...item('House Coffee (Blend)', 'retail'), manualFields: ['expectedPrice', 'aliases'] }]);
+      expect(updates).toEqual([expect.objectContaining({ from: 'retail', to: 'coffee' })]);
+    });
+
     it('repairs an item the old classifier misfiled', () => {
       // "House Coffee (Blend)" became retail under the old 'blend' rule.
       const { updates } = plan([item('House Coffee (Blend)', 'retail')]);

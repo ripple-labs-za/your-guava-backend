@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-require('dotenv').config();
 const mongoose = require('mongoose');
 const Upload = require('../models/Upload.model');
 const Cafe = require('../models/Cafe.model');
@@ -47,6 +46,7 @@ const markDateOnlyHours = async ({ apply = false } = {}) => {
 };
 
 if (require.main === module) {
+  require('dotenv').config();
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     const summary = await markDateOnlyHours({ apply: process.argv.includes('--apply') });

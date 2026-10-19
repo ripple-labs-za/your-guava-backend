@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-require('dotenv').config();
 const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
 const Transaction = require('../models/Transaction.model');
@@ -28,6 +27,7 @@ const relinkIgnoredLines = async ({ apply = false } = {}) => {
 };
 
 if (require.main === module) {
+  require('dotenv').config();
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     const summary = await relinkIgnoredLines({ apply: process.argv.includes('--apply') });

@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-require('dotenv').config();
 const mongoose = require('mongoose');
 const Improvement = require('../models/Improvement.model');
 
@@ -25,6 +24,7 @@ const migrateImprovementTicketIndexes = async ({ apply = false } = {}) => {
 };
 
 if (require.main === module) {
+  require('dotenv').config();
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
     const result = await migrateImprovementTicketIndexes({ apply: process.argv.includes('--apply') });

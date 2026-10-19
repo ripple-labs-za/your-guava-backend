@@ -6,6 +6,9 @@ jest.mock('../../src/config/validateEnv', () => jest.fn());
 jest.mock('../../src/services/r2.service', () => ({ getConfigurationStatus: () => ({ ok: true }) }));
 jest.mock('../../src/services/email.service', () => ({ deliveryCapability: () => ({ ok: true }) }));
 jest.mock('../../src/services/paymentProvider.service', () => ({ paymentCapability: () => ({ ok: true }) }));
+jest.mock('../../src/migrations/runner', () => ({
+  migrationReadiness: async () => ({ ok: true, pending: [], running: [], failed: [] }),
+}));
 const lifecycle = require('../../src/utils/lifecycle');
 const { readiness, _resetReadinessCache } = require('../../src/controllers/health.controller');
 

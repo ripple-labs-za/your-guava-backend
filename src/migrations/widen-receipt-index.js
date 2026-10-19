@@ -1,65 +1,58 @@
-const logger = require('../utils/logger');
-require('dotenv').config();
-const mongoose = require('mongoose');
+const Transaction = require('../models/Transaction.model');
+const { sameKey, declaredIndexes, listIndexesSafe, dropIndexIfPresent } = require('./indexTools');
 
 /**
- * Replaces the unique index {cafeId, receiptId} with {cafeId, receiptId, date}.
- *
- * Receipt numbers are only unique within a trading day on tills that restart
- * their numbering each morning. Under the old index the second day's "#0001"
- * collided with the first, and the whole import was refused.
- *
- * Safe to run against existing data: every row that satisfied the narrower
- * uniqueness also satisfies the wider one, so no document can conflict. Mongoose
- * will not drop the old index on its own -- an index it no longer declares is
- * simply left in place -- which is why this exists.
- *
- *   node src/migrations/widen-receipt-index.js          # report only
- *   node src/migrations/widen-receipt-index.js --apply  # make the change
+ * Receipt numbers are unique per trading day, not forever: tills that restart
+ * their numbering each morning reuse "#0001" daily. Mongoose never drops an index
+ * it no longer declares, so a database that ran an older build keeps the unique
+ * {cafeId, receiptId} index and refuses day two. This drops every unique receipt
+ * index the schema does not declare, after making sure the declared ones exist.
+ * Safe on existing data: rows unique on the narrower key are unique on the wider one.
  */
+const LEGACY_KEY = { cafeId: 1, receiptId: 1 };
+const isReceiptKey = (key) => {
+  const fields = Object.keys(key);
+  return fields[0] === 'cafeId' && fields[1] === 'receiptId';
+};
+const declaredReceiptIndexes = () =>
+  declaredIndexes(Transaction).filter(({ key, options }) => options.unique && isReceiptKey(key));
 
-const OLD_KEY = { cafeId: 1, receiptId: 1 };
-const NEW_KEY = { cafeId: 1, receiptId: 1, date: 1 };
-const sameKey = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const undeclaredReceiptIndexes = async (collection) => {
+  const declared = declaredReceiptIndexes();
+  return (await listIndexesSafe(collection)).filter((index) =>
+    index.unique && isReceiptKey(index.key) && !declared.some((wanted) => sameKey(wanted.key, index.key)));
+};
 
-async function migrate() {
-  const apply = process.argv.includes('--apply');
-  await mongoose.connect(process.env.MONGODB_URI);
-  const collection = mongoose.connection.collection('transactions');
-  const indexes = await collection.indexes();
-
-  const old = indexes.find((i) => sameKey(i.key, OLD_KEY) && i.unique);
-  const next = indexes.find((i) => sameKey(i.key, NEW_KEY) && i.unique);
-
-  logger.printLine(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
-  logger.printLine(`  old unique {cafeId, receiptId}       : ${old ? old.name : 'absent'}`);
-  logger.printLine(`  new unique {cafeId, receiptId, date} : ${next ? next.name : 'absent'}`);
-
-  if (!apply) {
-    logger.printLine('\nRe-run with --apply to make the change.');
-    await mongoose.disconnect();
-    process.exit(0);
-  }
-
-  if (!next) {
-    await collection.createIndex(NEW_KEY, {
-      unique: true,
-      partialFilterExpression: { receiptId: { $type: 'string' } },
-    });
-    logger.printLine('  created the wider unique index');
-  }
-  if (old) {
-    await collection.dropIndex(old.name);
-    logger.printLine(`  dropped ${old.name}`);
-  }
-
-  logger.printLine('done');
-  await mongoose.disconnect();
-  process.exit(0);
-}
+module.exports = {
+  name: 'widen-receipt-index',
+  description: 'Drop unique receipt indexes the Transaction schema no longer declares (the legacy {cafeId, receiptId} one)',
+  kind: 'contract',
+  mode: 'auto',
+  LEGACY_KEY,
+  async check({ db }) {
+    const stale = await undeclaredReceiptIndexes(db.collection('transactions'));
+    return stale.length > 0
+      ? { pending: true, detail: `undeclared unique receipt index: ${stale.map((index) => index.name).join(', ')}` }
+      : { pending: false, detail: 'only declared receipt indexes present' };
+  },
+  async up({ db }) {
+    const collection = db.collection('transactions');
+    const declared = declaredReceiptIndexes();
+    for (const { key, options } of declared) {
+      await collection.createIndex(key, options); // additive first; a no-op when Model.init already built it
+    }
+    const dropped = [];
+    for (const index of await undeclaredReceiptIndexes(collection)) {
+      await dropIndexIfPresent(collection, index.key, { requireOneOf: declared.map((wanted) => wanted.key) });
+      dropped.push(index.name);
+    }
+    return { ensured: declared.length, dropped };
+  },
+};
 
 if (require.main === module) {
-  migrate().catch((e) => { logger.fatal('migration_cli_failed', logger.errorFields(e, { stack: true })); process.exit(1); });
+  // The documented command still works: report by default, --apply to run it.
+  const { cli } = require('./runner');
+  const args = process.argv.includes('--apply') ? ['--apply', 'widen-receipt-index'] : [];
+  cli(args).then((code) => process.exit(code), () => process.exit(1));
 }
-
-module.exports = { OLD_KEY, NEW_KEY };

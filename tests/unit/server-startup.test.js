@@ -1,6 +1,11 @@
 process.env.LOG_LEVEL = 'silent';
 const { EventEmitter } = require('events');
 
+const mockRunStartupMigrations = jest.fn();
+jest.mock('../../src/migrations/runner', () => ({
+  runStartupMigrations: (...args) => mockRunStartupMigrations(...args),
+}));
+
 const mockListen = jest.fn();
 const mockConnectDB = jest.fn();
 const mockValidateEnv = jest.fn();
@@ -65,6 +70,7 @@ describe('server startup cleanup', () => {
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
+    mockRunStartupMigrations.mockResolvedValue({ applied: [], verified: [], skipped: [], failed: [], locked: [] });
     mockConnectDB.mockResolvedValue(undefined);
     mockPaymentInit.mockResolvedValue(undefined);
     mockTeamInvitationInit.mockResolvedValue(undefined);
@@ -93,6 +99,58 @@ describe('server startup cleanup', () => {
     mockUsageReconciliation.mockResolvedValue({ refunded: 0, errors: 0 });
     mockBillingReminders.mockResolvedValue({ scanned: 0, sent: 0, skipped: 0, failed: 0 });
     mockMongoose.connection.readyState = 1;
+  });
+
+  it('runs pending migrations after the indexes exist and before listening', async () => {
+    const order = [];
+    mockTransactionInit.mockImplementation(async () => { order.push('indexes'); });
+    mockRunStartupMigrations.mockImplementation(async () => {
+      order.push('migrations');
+      return { applied: [], verified: [], skipped: [], failed: [], locked: [] };
+    });
+    const server = makeListeningServer();
+    mockListen.mockImplementationOnce(() => {
+      order.push('listen');
+      queueMicrotask(() => server.emit('listening'));
+      return server;
+    });
+    const { start, shutdown } = require('../../src/server');
+    await start();
+    expect(order).toEqual(['indexes', 'migrations', 'listen']);
+    server.close = (callback) => callback();
+    await shutdown();
+  });
+
+  it('still listens when a migration fails, so readiness can report it', async () => {
+    mockRunStartupMigrations.mockResolvedValue({ applied: [], verified: [], skipped: [], failed: ['widen-receipt-index'], locked: [] });
+    const server = makeListeningServer();
+    listenWith(server);
+    const { start, shutdown } = require('../../src/server');
+    await start();
+    expect(mockListen).toHaveBeenCalledTimes(1);
+    server.close = (callback) => callback();
+    await shutdown();
+  });
+
+  it('listens after MIGRATION_STARTUP_TIMEOUT_MS while a slow migration keeps running', async () => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate', 'nextTick'] });
+    process.env.MIGRATION_STARTUP_TIMEOUT_MS = '5000';
+    try {
+      mockRunStartupMigrations.mockReturnValue(new Promise(() => {}));
+      const server = makeListeningServer();
+      listenWith(server);
+      const { start } = require('../../src/server');
+      const started = start();
+      await jest.advanceTimersByTimeAsync(5000);
+      await started;
+      expect(mockListen).toHaveBeenCalledTimes(1);
+      const lifecycle = require('../../src/utils/lifecycle');
+      expect(lifecycle.pendingBackgroundWork().map((entry) => entry.name)).toContain('startup_migrations');
+      lifecycle.resetLifecycleForTests();
+    } finally {
+      delete process.env.MIGRATION_STARTUP_TIMEOUT_MS;
+      jest.useRealTimers();
+    }
   });
 
   it('disconnects Mongo when a critical index fails before listen', async () => {

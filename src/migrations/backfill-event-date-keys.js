@@ -1,5 +1,4 @@
 const logger = require('../utils/logger');
-require('dotenv').config();
 const mongoose = require('mongoose');
 const Cafe = require('../models/Cafe.model');
 const Event = require('../models/Event.model');
@@ -27,6 +26,7 @@ const backfillEventDateKeys = async ({ apply = false, cafeId } = {}) => {
 };
 
 if (require.main === module) {
+  require('dotenv').config();
   mongoose.connect(process.env.MONGODB_URI)
     .then(() => backfillEventDateKeys({ apply: process.argv.includes('--apply') }))
     .then((stats) => { logger.printLine(JSON.stringify(stats)); return mongoose.disconnect(); })

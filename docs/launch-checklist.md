@@ -88,3 +88,14 @@ temporary upload files under `uploads/`. Scale out only after that state moves t
 `restartPolicyType: ALWAYS` restarts the API after any exit; a crash writes one `process_unhandled_rejection` or
 `process_uncaught_exception` JSON line first. `drainingSeconds: 15` gives the graceful shutdown (`SHUTDOWN_TIMEOUT_MS`, default 10 s) time
 to finish in-flight requests and registered background work before the platform sends SIGKILL.
+
+## Migrations
+
+The API runs pending automatic migrations at startup, after Mongoose has built every declared index and before it accepts traffic
+(`src/migrations/runner.js`). Each run is recorded in the `migrations` collection. Additive work runs before data rewrites, and index drops
+run last, only once their replacement exists. A failed or unfinished migration keeps `/api/ready` at 503, so a deploy never goes live
+half-migrated. Watch the deploy log for `migration_applied` or `migration_failed` lines.
+
+- Status, nothing written: `node src/migrations/runner.js`
+- Run pending automatic migrations by hand: `node src/migrations/runner.js --apply`
+- Run a manual one after reading its dry run: `node src/migrations/runner.js --apply recategorise-items`

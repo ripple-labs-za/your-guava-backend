@@ -1,8 +1,4 @@
-const logger = require('../utils/logger');
-require('dotenv').config();
-const mongoose = require('mongoose');
 const Item = require('../models/Item.model');
-const Cafe = require('../models/Cafe.model');
 const { inferItemCategory } = require('../utils/itemCategory');
 
 /**
@@ -17,15 +13,16 @@ const { inferItemCategory } = require('../utils/itemCategory');
  * "other", so as never to overwrite a choice a human made.
  *
  * That same protection is the problem this script has to solve carefully:
- * nothing records whether a stored category was auto-assigned or set by hand.
+ * Since 02c69a4, Item.manualFields records an owner's choice explicitly; it wins over
+ * provenance-by-reproduction for categories set by hand.
  * The test used here is provenance by reproduction -- if the stored value is
  * exactly what the OLD classifier would have produced, no human changed it and
  * it is safe to re-infer. If it differs, someone corrected it, and it is left
  * alone. That is why a frozen copy of the old rules lives below: it is evidence,
  * not logic, and must not be "tidied up" to match the current classifier.
  *
- *   node src/migrations/recategorise-items.js            # dry run, changes nothing
- *   node src/migrations/recategorise-items.js --apply    # write the changes
+ *   node src/migrations/runner.js            # dry run, changes nothing
+ *   node src/migrations/runner.js --apply recategorise-items    # write the changes
  */
 
 /** FROZEN copy of the pre-fix classifier. Do not edit -- see the note above. */
@@ -51,85 +48,105 @@ const legacyInferItemCategory = (name = '') => {
   return 'other';
 };
 
+const BATCH_SIZE = 500;
+
 const plan = (items) => {
   const updates = [];
   const keptManual = [];
-
   for (const item of items) {
     const stored = item.category || 'other';
     const legacy = legacyInferItemCategory(item.name);
     const next = inferItemCategory(item.name);
-
     if (next === stored) continue;
-
+    if (Array.isArray(item.manualFields) && item.manualFields.includes('category')) {
+      keptManual.push({ name: item.name, stored, wouldBecome: next, reason: 'manualFields' });
+      continue;
+    }
     // A stored value the old rules would not have produced was set by a person.
     if (stored !== legacy) {
-      keptManual.push({ name: item.name, stored, wouldBecome: next });
+      keptManual.push({ name: item.name, stored, wouldBecome: next, reason: 'differs_from_legacy' });
       continue;
     }
     updates.push({ _id: item._id, cafeId: item.cafeId, name: item.name, from: stored, to: next });
   }
-
   return { updates, keptManual };
 };
 
-async function migrate() {
-  const apply = process.argv.includes('--apply');
-  await mongoose.connect(process.env.MONGODB_URI);
+// The filter re-checks what plan() saw, so an owner edit between planning and applying wins.
+const guardedUpdate = (update) => ({
+  updateOne: {
+    filter: {
+      _id: update._id,
+      category: update.from === 'other' ? { $in: ['other', null] } : update.from,
+      manualFields: { $ne: 'category' },
+    },
+    update: { $set: { category: update.to } },
+  },
+});
 
-  const items = await Item.find({}).select('_id cafeId name category').lean();
-  const { updates, keptManual } = plan(items);
+const applyUpdates = async (updates) => {
+  if (updates.length === 0) return { modified: 0 };
+  const result = await Item.bulkWrite(updates.map(guardedUpdate), { ordered: false });
+  return { modified: result.modifiedCount };
+};
 
-  const cafeIds = [...new Set(updates.map((u) => String(u.cafeId)))];
-  const cafes = await Cafe.find({ _id: { $in: cafeIds } }).select('name').lean();
-  const cafeName = new Map(cafes.map((c) => [String(c._id), c.name]));
-
-  logger.printLine(`\n${apply ? 'APPLYING' : 'DRY RUN — no changes will be written'}`);
-  logger.printLine(`items scanned            : ${items.length}`);
-  logger.printLine(`already correct          : ${items.length - updates.length - keptManual.length}`);
-  logger.printLine(`manual choices preserved : ${keptManual.length}`);
-  logger.printLine(`to recategorise          : ${updates.length}\n`);
-
-  const byMove = new Map();
-  for (const u of updates) {
-    const key = `${u.from} -> ${u.to}`;
-    if (!byMove.has(key)) byMove.set(key, []);
-    byMove.get(key).push(u);
-  }
-  for (const [move, rows] of [...byMove.entries()].sort((a, b) => b[1].length - a[1].length)) {
-    logger.printLine(`  ${move.padEnd(22)} ${String(rows.length).padStart(4)}`);
-    for (const r of rows.slice(0, 5)) {
-      logger.printLine(`      ${r.name}  (${cafeName.get(String(r.cafeId)) || r.cafeId})`);
+const scan = async (onBatch) => {
+  let batch = [];
+  const cursor = Item.find({})
+    .select('_id cafeId name category manualFields')
+    .lean()
+    .cursor({ batchSize: BATCH_SIZE });
+  for await (const item of cursor) {
+    batch.push(item);
+    if (batch.length === BATCH_SIZE) {
+      await onBatch(batch);
+      batch = [];
     }
-    if (rows.length > 5) logger.printLine(`      ... and ${rows.length - 5} more`);
   }
+  if (batch.length > 0) await onBatch(batch);
+};
 
-  if (keptManual.length > 0) {
-    logger.printLine('\nleft untouched because a person had set them:');
-    for (const k of keptManual.slice(0, 10)) {
-      logger.printLine(`  ${k.name}: kept "${k.stored}" (would otherwise become "${k.wouldBecome}")`);
-    }
-    if (keptManual.length > 10) logger.printLine(`  ... and ${keptManual.length - 10} more`);
-  }
-
-  if (apply && updates.length > 0) {
-    const result = await Item.bulkWrite(
-      updates.map((u) => ({
-        updateOne: { filter: { _id: u._id }, update: { $set: { category: u.to } } },
-      }))
-    );
-    logger.printLine(`\nmodified: ${result.modifiedCount}`);
-    logger.printLine('Forecasts regenerate on their own; existing stored forecasts keep their old factors until then.');
-  } else if (!apply) {
-    logger.printLine('\nRe-run with --apply to write these changes.');
-  }
-
-  await mongoose.disconnect();
-  process.exit(0);
-}
-
-module.exports = { plan, legacyInferItemCategory };
+module.exports = {
+  name: 'recategorise-items',
+  description: 'Re-infer categories the old classifier misfiled; never touches a category an owner set',
+  kind: 'data',
+  mode: 'manual',
+  plan,
+  legacyInferItemCategory,
+  applyUpdates,
+  async check() {
+    const moves = new Map();
+    let scanned = 0;
+    let kept = 0;
+    await scan(async (batch) => {
+      const { updates, keptManual } = plan(batch);
+      scanned += batch.length;
+      kept += keptManual.length;
+      for (const { from, to } of updates) moves.set(`${from}->${to}`, (moves.get(`${from}->${to}`) || 0) + 1);
+    });
+    const toChange = [...moves.values()].reduce((sum, count) => sum + count, 0);
+    const byMove = [...moves.entries()].map(([move, count]) => `${move} ${count}`).join(', ');
+    return {
+      pending: toChange > 0,
+      detail: `${scanned} scanned, ${toChange} to recategorise${byMove ? ` (${byMove})` : ''}, ${kept} owner choices kept`,
+    };
+  },
+  async up() {
+    const totals = { scanned: 0, planned: 0, modified: 0, keptManual: 0 };
+    await scan(async (batch) => {
+      const { updates, keptManual } = plan(batch);
+      const { modified } = await applyUpdates(updates);
+      totals.scanned += batch.length;
+      totals.planned += updates.length;
+      totals.modified += modified;
+      totals.keptManual += keptManual.length;
+    });
+    return totals;
+  },
+};
 
 if (require.main === module) {
-  migrate().catch((e) => { logger.fatal('migration_cli_failed', logger.errorFields(e, { stack: true })); process.exit(1); });
+  const { cli } = require('./runner');
+  const args = process.argv.includes('--apply') ? ['--apply', 'recategorise-items'] : [];
+  cli(args).then((code) => process.exit(code), () => process.exit(1));
 }

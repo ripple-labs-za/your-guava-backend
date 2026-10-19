@@ -4,6 +4,7 @@ const {
   markDraining,
   pendingBackgroundWork,
   withDeadline,
+  trackBackground,
 } = require('./utils/lifecycle');
 require('dotenv').config();
 const paymentProvider = require('./services/paymentProvider.service');
@@ -183,6 +184,29 @@ const cleanupFailedStart = async () => {
   if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
 };
 
+const { runStartupMigrations } = require('./migrations/runner');
+const DEFAULT_MIGRATION_STARTUP_TIMEOUT_MS = 60 * 1000;
+
+// Additive indexes exist (Model.init) before any migration drops one. A failed
+// migration does not stop the boot: readiness stays 503 and names it, Railway
+// keeps the previous deployment serving, and the ledger says what went wrong.
+const runMigrationsBeforeListen = async () => {
+  const timeoutMs = boundedInteger(
+    process.env.MIGRATION_STARTUP_TIMEOUT_MS,
+    DEFAULT_MIGRATION_STARTUP_TIMEOUT_MS,
+    5 * 1000,
+    10 * 60 * 1000
+  );
+  const run = runStartupMigrations();
+  trackBackground('startup_migrations', run);
+  try {
+    await withDeadline(run, timeoutMs, 'startup migrations');
+  } catch (error) {
+    if (error.code !== 'DEADLINE_EXCEEDED') throw error;
+    logger.warn('migrations_still_running', { timeoutMs });
+  }
+};
+
 const start = async () => {
   if (httpServer) return httpServer;
   try {
@@ -215,6 +239,7 @@ const start = async () => {
       logger.error('index_init_timeout', { timeoutMs: indexTimeoutMs });
       throw Object.assign(new Error(`index initialisation exceeded ${indexTimeoutMs}ms`), { code: 'INDEX_INIT_TIMEOUT' });
     }
+    await runMigrationsBeforeListen();
     httpServer = app.listen(PORT);
     const candidateServer = httpServer;
     await new Promise((resolve, reject) => {

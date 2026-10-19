@@ -1,4 +1,6 @@
+const { migrationReadiness } = require('../migrations/runner');
 const { isDraining } = require('../utils/lifecycle');
+const { isProductionEnv } = require('../config/posture');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
 const { sha256Hex } = require('../utils/authPrimitives');
@@ -21,7 +23,7 @@ const requiredEnvNames = () => [
   'JWT_SECRET',
   'JWT_REFRESH_SECRET',
   'MONGODB_URI',
-  ...(process.env.NODE_ENV === 'production'
+  ...(isProductionEnv()
     ? ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']
     : []),
 ];
@@ -106,6 +108,9 @@ const computeReadiness = async () => {
     email: email.deliveryCapability(),
     payments: paymentProvider.paymentCapability(),
     eventLoop: eventLoopCheck(),
+    migrations: await migrationReadiness().catch((error) => ({
+      ok: false, state: 'unavailable', errorCode: String(error.code || error.name || 'unknown'),
+    })),
   };
   return { ready: Object.values(checks).every((check) => check.ok), checks };
 };
