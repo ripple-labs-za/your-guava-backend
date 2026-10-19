@@ -7,6 +7,7 @@ const {
   readWorkbook,
   assertSupportedFileBuffer,
   MAX_ROW_ERRORS,
+  runParserTask,
 } = require('./parser.service');
 const {
   resolveIdentities, tallyDuplicatesByUpload,
@@ -20,6 +21,7 @@ const {
 } = require('../utils/transactionStatus');
 const {
   rebuildItemsForCafe,
+  rebuildItemsForUpload,
   reconcileTransactionItems,
   reconcileLines,
   menuItemResolverForRows,
@@ -70,7 +72,8 @@ const previewWorkbook = async (buffer) => {
 /**
  * Returns headers + first 5 rows for AI/preset analysis.
  */
-const previewBuffer = async (buffer, fileExt = 'csv') => {
+const previewBuffer = async (buffer, fileExt = 'csv', { isolate = false, signal } = {}) => {
+  if (isolate) return runParserTask('preview', buffer, { fileExt, signal });
   assertSupportedFileBuffer(buffer, fileExt);
   if (fileExt === 'xlsx') return previewWorkbook(buffer);
   const { headers, rows } = await readCsv(buffer, { limit: PREVIEW_ROWS });
@@ -141,7 +144,10 @@ const reconcileParsedRows = async (parsed, { cafeId, session }) => {
   const approved = parsed.rows.filter((row) => normaliseTransactionStatus(row.status).status === 'approved');
   for (const row of approved) if (!parsedItemsOf.has(row)) parsedItemsOf.set(row, row.items || []);
   const resolve = await menuItemResolverForRows(cafeId, approved.map((row) => ({ items: parsedItemsOf.get(row) })), session);
-  for (const row of approved) row.items = reconcileLines(parsedItemsOf.get(row), resolve);
+  for (const [index, row] of approved.entries()) {
+    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
+    row.items = reconcileLines(parsedItemsOf.get(row), resolve);
+  }
   return parsed;
 };
 
@@ -215,9 +221,9 @@ const persistParsedRowsBulk = async (
   const documents = resolution.importable.map(({ row, identity }) =>
     transactionDocument(row, { cafeId, uploadId, identity })
   );
-  if (documents.length > 0) {
-    await Transaction.insertMany(documents, { ordered: true, ...(session ? { session } : {}) });
-  }
+  // The helper's 1000-row default is an upper bound. HTTP imports use 100: casting 1000 hydrated documents
+  // still exceeded the loop budget on the shared host after parsing moved to a worker.
+  await insertTransactionsInChunks(documents, { session, chunkSize: 100 });
 
   return {
     imported: documents.length,
@@ -292,7 +298,27 @@ const ingestFile = async (filePath, cafeId, { timezone } = {}) => {
   return ingestParsedRows(buffer, { cafeId, uploadId: null, columnMapping: mapping, itemsMode, fileExt: ext, timezone });
 };
 
+const INSERT_CHUNK_SIZE = 1000;
+
+// Mongoose casts and validates a whole insertMany batch before the driver sends it. Bound that synchronous work,
+// yielding between batches while preserving ordered writes and the caller's transaction rollback semantics.
+const insertTransactionsInChunks = async (documents, { session, chunkSize = INSERT_CHUNK_SIZE } = {}) => {
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || chunkSize > INSERT_CHUNK_SIZE) {
+    throw new RangeError(`chunkSize must be an integer from 1 to ${INSERT_CHUNK_SIZE}`);
+  }
+  let inserted = 0;
+  for (let index = 0; index < documents.length; index += chunkSize) {
+    if (index > 0) await new Promise((resolve) => setImmediate(resolve));
+    const chunk = documents.slice(index, index + chunkSize);
+    await Transaction.insertMany(chunk, { ordered: true, ...(session ? { session } : {}) });
+    inserted += chunk.length;
+  }
+  return inserted;
+};
+
 module.exports = {
+  INSERT_CHUNK_SIZE,
+  insertTransactionsInChunks,
   ingestFile,
   ingestParsedRows,
   persistParsedRows,
@@ -301,4 +327,5 @@ module.exports = {
   yocoMapping,
   previewBuffer,
   rebuildItemsForCafe,
+  rebuildItemsForUpload,
 };

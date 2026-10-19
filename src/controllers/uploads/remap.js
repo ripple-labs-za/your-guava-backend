@@ -82,12 +82,14 @@ const remap = async (req, res, next) => {
         throw err;
       }
       const ext = upload.fileName.split('.').pop().toLowerCase();
-      parsed = await parser.parseBuffer(buffer, {
+      parsed = await parser.withRequestAbort(req, res, (signal) => parser.parseBuffer(buffer, {
         columnMapping,
         itemsMode,
         fileExt: ext,
         timezone,
-      });
+        isolate: true,
+        signal,
+      }));
       assertParsedRowsImportable(parsed, { allowSeverePartial: allowPartialImport === true });
       await assertRemapHasImportableRows(
         parsed,

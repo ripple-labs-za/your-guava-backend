@@ -25,10 +25,12 @@ const { parsePackedItems } = require('./parser/packedItems');
 const { groupLinePerRow } = require('./parser/lineItems');
 const { VALID_ITEMS_MODES, parseBuffer } = require('./parser/parse');
 const { MAX_ROW_ERRORS } = require('./parser/rowErrors');
+const { runParserTask, withRequestAbort } = require('./parser/runInWorker');
 
 module.exports = {
   // The import pipeline
   parseBuffer, groupLinePerRow, parsePackedItems, VALID_ITEMS_MODES, MAX_ROW_ERRORS,
+  runParserTask, withRequestAbort,
   // Headers and cells
   requiredFieldsForMode, normaliseHeader, headerDeduper, normaliseCell, normaliseRow, normaliseRows, MAX_HEADER_CHARS,
   // Column mappings

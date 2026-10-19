@@ -79,6 +79,17 @@ const itemSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // Internal running sums let an import add its rows without re-reading the cafe's whole history.
+    salesStats: {
+      type: new mongoose.Schema({
+        lines: Number,
+        totalQty: Number,
+        totalRevenue: Number,
+        needsReviewCount: Number,
+        lastExactPrice: { date: Date, order: mongoose.Schema.Types.ObjectId, value: Number },
+      }, { _id: false }),
+      select: false,
+    },
   },
   { timestamps: true }
 );

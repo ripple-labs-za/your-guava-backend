@@ -105,7 +105,8 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
         .select('receiptId date total tip discount items.salesItemId items.name items.quantity uploadId'),
       session
     ).lean();
-    for (const doc of stored) {
+    for (const [index, doc] of stored.entries()) {
+      if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
       const signature = receiptSignature(doc, timezone);
       hold(`${doc.receiptId}|${dayOf(signature)}`, {
         signature, minute: minuteOf(signature), total: doc.total, uploadId: doc.uploadId || null, inFile: false,
@@ -116,7 +117,8 @@ const resolveReceiptRows = async (rows, { cafeId, session, timezone, excludeUplo
   const duplicates = [];
   const conflicts = [];
   let inFileDuplicates = 0;
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
     const signature = receiptSignature(row, timezone);
     const dayKey = row.dateKey || dayOf(signature);
     const key = `${row.receiptId}|${dayKey}`;
@@ -162,7 +164,8 @@ const resolveContentRows = async (rows, { cafeId, session, timezone, excludeUplo
     session
   ).lean();
   const held = new Map();
-  for (const doc of stored) {
+  for (const [index, doc] of stored.entries()) {
+    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
     const signature = contentSignature(doc, timezone);
     const entry = held.get(signature) || { remaining: 0, keys: new Set(), uploads: [] };
     entry.remaining += 1;
@@ -173,7 +176,8 @@ const resolveContentRows = async (rows, { cafeId, session, timezone, excludeUplo
   const importable = [];
   const duplicates = [];
   const nextOccurrence = new Map();
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    if (index > 0 && index % 250 === 0) await new Promise((resume) => setImmediate(resume));
     const signature = contentSignature(row, timezone);
     const entry = held.get(signature);
     if (entry && entry.remaining > 0) {

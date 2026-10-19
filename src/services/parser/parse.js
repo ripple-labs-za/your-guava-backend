@@ -123,8 +123,10 @@ const dateSpan = (rows) => {
  */
 const parseBuffer = async (
   buffer,
-  { columnMapping, itemsMode = 'packed', fileExt = 'csv', timezone = DEFAULT_TIMEZONE }
+  { columnMapping, itemsMode = 'packed', fileExt = 'csv', timezone = DEFAULT_TIMEZONE, isolate = false, signal }
 ) => {
+  if (isolate) return require('./runInWorker').runParserTask('parse', buffer,
+    { columnMapping, itemsMode, fileExt, timezone, signal });
   if (!VALID_ITEMS_MODES.has(itemsMode)) {
     throw new Error(`Invalid itemsMode: ${itemsMode}`);
   }

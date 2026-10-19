@@ -176,7 +176,7 @@ const commitParsedUpload = async ({
       // 10,000-row import budget (evidence ab-lock-3x3.txt).
       await lockCafeMenu(cafeId, session);
       await ingestion.reconcileParsedRows(parsed, { cafeId, session });
-      await Transaction.deleteMany({ cafeId, uploadId: upload._id }).session(session);
+      const replaced = await Transaction.deleteMany({ cafeId, uploadId: upload._id }).session(session);
       result = await ingestion.persistParsedRows(parsed, {
         cafeId,
         uploadId: upload._id,
@@ -190,7 +190,12 @@ const commitParsedUpload = async ({
       const overlap = await describeOverlap(result.duplicatesByUpload, { cafeId, session });
       // A remap that no longer imports some rows lets overlapping uploads re-admit them (BE-03-T02).
       readmitted = await readmissionService.applyReadmission({ prepared, cafeId, session, timezone });
-      await ingestion.rebuildItemsForCafe(cafeId, { session, pruneOrphans: true });
+      // Replaced rows and re-admitted overlaps change earlier uploads too; only a pure addition can add running sums.
+      if (replaced.deletedCount > 0 || readmitted.applied.length > 0) {
+        await ingestion.rebuildItemsForCafe(cafeId, { session, pruneOrphans: true });
+      } else {
+        await ingestion.rebuildItemsForUpload(cafeId, upload._id, { session, pruneOrphans: true });
+      }
 
       committedUpload = await Upload.findOneAndUpdate(
         {

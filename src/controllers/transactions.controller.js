@@ -107,13 +107,14 @@ const upload = async (req, res, next) => {
     // its 400s carry their message and code; validating here as well inflated a workbook twice more (BE-03-T13).
     let preview;
     try {
-      preview = await ingestion.previewBuffer(buffer, ext);
+      preview = await parser.withRequestAbort(req, res, (signal) => ingestion.previewBuffer(buffer, ext, { isolate: true, signal }));
     } catch (err) {
       await cleanupLocalFile(filePath);
-      return res.status(400).json({
+      const parseStatus = [400, 413, 499].includes(err.statusCode) ? err.statusCode : 400;
+      return res.status(parseStatus).json({
         success: false,
         ...publicCodeOf(err),
-        message: err.statusCode === 400
+        message: [400, 413, 499].includes(err.statusCode)
           ? err.message
           : 'Could not read this file. Please upload a valid CSV or XLSX export.',
       });

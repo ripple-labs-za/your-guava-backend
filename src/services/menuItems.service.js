@@ -103,6 +103,10 @@ const runMenuMutation = async (cafeId, work) => {
 // receipt (parser priceSource 'derived') is not a price observation. Rows
 // written before the flag existed carry no priceSource and are exact.
 const isExactPrice = (item = {}) => item.priceSource !== 'derived';
+const ZERO_SALES_STATS = { lines: 0, totalQty: 0, totalRevenue: 0, needsReviewCount: 0, lastExactPrice: null };
+const salesStatsOf = (combined) => ({ lines: combined.lines, totalQty: combined.totalQty,
+  totalRevenue: combined.totalRevenue, needsReviewCount: combined.needsReviewCount,
+  lastExactPrice: combined.lastExactPrice || null });
 
 const newMenuItemFields = (name, item = {}) => {
   const unitPrice = Number.isFinite(Number(item.unitPrice)) ? Number(item.unitPrice) : undefined;
@@ -124,6 +128,7 @@ const newMenuItemFields = (name, item = {}) => {
     lastObservedPrice: learnedPrice,
     firstSeenAt: new Date(),
     lastSeenAt: new Date(),
+    salesStats: { ...ZERO_SALES_STATS },
   };
 };
 
@@ -336,9 +341,9 @@ const laterExactPrice = (a, b) => {
   return String(a.order) >= String(b.order) ? a : b;
 };
 
-const cafeSalesStats = (cafeObjectId, session) => {
+const cafeSalesStats = (cafeObjectId, session, { uploadId } = {}) => {
   const aggregation = Transaction.aggregate([
-    { $match: { cafeId: cafeObjectId, status: 'approved' } },
+    { $match: { cafeId: cafeObjectId, status: 'approved', ...(uploadId ? { uploadId: toObjectId(uploadId) } : {}) } },
     { $unwind: '$items' },
     { $match: { 'items.name': { $nin: [null, ''] } } },
     {
@@ -348,6 +353,7 @@ const cafeSalesStats = (cafeObjectId, session) => {
           name: '$items.name',
         },
         rawNames: { $addToSet: '$items.rawName' },
+        lines: { $sum: 1 },
         totalQty: { $sum: '$items.quantity' },
         totalRevenue: {
           $sum: {
@@ -428,6 +434,7 @@ const combineStats = (entries, existing) => {
 
   return {
     name,
+    lines: sum('lines'),
     totalQty: sum('totalQty'),
     totalRevenue: sum('totalRevenue'),
     needsReviewCount: sum('needsReviewCount'),
@@ -510,24 +517,12 @@ const deleteUntouchedOrphans = async (cafeObjectId, noSales, session) => {
     $and: [
       { $or: [{ manualFields: { $exists: false } }, { manualFields: { $size: 0 } }] },
       { $or: [{ notes: { $exists: false } }, { notes: null }, { notes: '' }] },
+      noSales,
     ],
-    ...noSales,
   }, { session });
 };
 
-const rebuildItemsForCafe = async (cafeId, options = {}) => {
-  const { session, pruneOrphans = false } = options;
-  // Every rebuild holds the cafe's menu lock inside a transaction, its own when the caller has none (BE-03-T12).
-  if (!session) return runMenuMutation(cafeId, (own) => rebuildItemsForCafe(cafeId, { session: own, pruneOrphans }));
-  await lockCafeMenu(cafeId, session);
-  const cafeObjectId = toObjectId(cafeId);
-  const stats = await cafeSalesStats(cafeObjectId, session);
-
-  // The cafe's whole menu in one query. Resolving each stats group with its own
-  // findOne, then upserting it with its own findOneAndUpdate, was 2 round trips
-  // per menu item — 600 sequential queries for a 300-item cafe, on every upload
-  // commit, every upload delete and every single menu-item edit.
-  const existingItems = await withSession(Item.find({ cafeId: cafeObjectId }).lean(), session);
+const existingItemResolver = (existingItems) => {
   const byId = new Map(existingItems.map((document) => [String(document._id), document]));
   const byName = new Map();
   const byKey = new Map();
@@ -537,9 +532,20 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
       byKey.set(document.normalizedName, document);
     }
   }
-  const resolveExisting = (entry) => (entry._id.salesItemId
+  return (entry) => (entry._id.salesItemId
     ? byId.get(String(entry._id.salesItemId)) || null
     : byName.get(entry._id.name) || byKey.get(normalizeItemName(entry._id.name)) || null);
+};
+
+const rebuildItemsForCafe = async (cafeId, options = {}) => {
+  const { session, pruneOrphans = false } = options;
+  // Every rebuild holds the cafe's menu lock inside a transaction, its own when the caller has none (BE-03-T12).
+  if (!session) return runMenuMutation(cafeId, (own) => rebuildItemsForCafe(cafeId, { session: own, pruneOrphans }));
+  await lockCafeMenu(cafeId, session);
+  const cafeObjectId = toObjectId(cafeId);
+  const stats = await cafeSalesStats(cafeObjectId, session);
+  const existingItems = await withSession(Item.find({ cafeId: cafeObjectId }).lean(), session);
+  const resolveExisting = existingItemResolver(existingItems);
 
   const groups = groupStatsByTargetItem(stats, resolveExisting);
   const activeIds = groups.filter((group) => group.existing).map((group) => group.existing._id);
@@ -557,13 +563,14 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
     : {};
   await Item.updateMany(
     { cafeId: cafeObjectId, ...noSales },
-    { $set: { totalSold: 0, avgPrice: 0 } },
+    { $set: { totalSold: 0, avgPrice: 0, salesStats: { ...ZERO_SALES_STATS } } },
     session ? { session } : undefined
   );
   if (pruneOrphans) await deleteUntouchedOrphans(cafeObjectId, noSales, session);
 
   const operations = groups.map(({ existing, entries }) => {
-    const fields = rebuiltItemFields(combineStats(entries, existing), existing);
+    const combined = combineStats(entries, existing);
+    const fields = { ...rebuiltItemFields(combined, existing), salesStats: salesStatsOf(combined) };
     return {
       updateOne: {
         filter: existing
@@ -579,6 +586,43 @@ const rebuildItemsForCafe = async (cafeId, options = {}) => {
   });
   if (operations.length > 0) {
     await Item.bulkWrite(operations, { ordered: false, ...(session ? { session } : {}) });
+  }
+};
+
+const storedStatsEntry = (item) => (item.salesStats.lines === 0 ? null : {
+  _id: { salesItemId: item._id, name: item.name }, rawNames: [], lines: item.salesStats.lines,
+  totalQty: item.salesStats.totalQty, totalRevenue: item.salesStats.totalRevenue,
+  needsReviewCount: item.salesStats.needsReviewCount, priceMismatchCount: item.priceMismatchCount || 0,
+  lastPriceMismatchAt: item.lastPriceMismatchAt ?? null, observedPriceMin: item.observedPriceMin ?? null,
+  observedPriceMax: item.observedPriceMax ?? null, firstSeenAt: item.firstSeenAt ?? null,
+  lastSeenAt: item.lastSeenAt ?? null, lastExactPrice: item.salesStats.lastExactPrice ?? null,
+});
+
+// A first confirm only adds sales. Legacy items without sums heal through one full rebuild; removals, remaps,
+// merges and readmission keep that full path. The same menu lock serializes both forms (BE-03-T12).
+const rebuildItemsForUpload = async (cafeId, uploadId, { session, pruneOrphans = false } = {}) => {
+  if (!session) return runMenuMutation(cafeId, (own) => rebuildItemsForUpload(cafeId, uploadId,
+    { session: own, pruneOrphans }));
+  await lockCafeMenu(cafeId, session);
+  const cafeObjectId = toObjectId(cafeId);
+  const existingItems = await withSession(Item.find({ cafeId: cafeObjectId }).select('+salesStats').lean(), session);
+  if (existingItems.some((item) => !item.salesStats)) return rebuildItemsForCafe(cafeId, { session, pruneOrphans });
+  const stats = await cafeSalesStats(cafeObjectId, session, { uploadId });
+  const groups = groupStatsByTargetItem(stats, existingItemResolver(existingItems));
+  const operations = groups.map(({ existing, entries }) => {
+    const stored = existing ? storedStatsEntry(existing) : null;
+    const combined = combineStats(stored ? [...entries, stored] : entries, existing);
+    const fields = { ...rebuiltItemFields(combined, existing), salesStats: salesStatsOf(combined) };
+    return { updateOne: {
+      filter: existing ? { _id: existing._id } : { cafeId: cafeObjectId, normalizedName: fields.normalizedName },
+      update: { $set: fields, $setOnInsert: { cafeId: cafeObjectId, source: 'imported' } }, upsert: true,
+    } };
+  });
+  if (operations.length > 0) await Item.bulkWrite(operations, { ordered: false, session });
+  if (pruneOrphans) {
+    const active = new Set(groups.filter((group) => group.existing).map((group) => String(group.existing._id)));
+    const unused = existingItems.filter((item) => item.salesStats.lines === 0 && !active.has(String(item._id)));
+    if (unused.length > 0) await deleteUntouchedOrphans(cafeObjectId, { _id: { $in: unused.map((item) => item._id) } }, session);
   }
 };
 
@@ -721,6 +765,7 @@ module.exports = {
   reconcileLines,
   menuItemResolverForRows,
   rebuildItemsForCafe,
+  rebuildItemsForUpload,
   lockCafeMenu,
   runMenuMutation,
   findMatchCandidates,
