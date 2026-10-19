@@ -7,7 +7,8 @@ The steps below run a local replica set and seed ten weeks of sales so Today can
 
 ## Prerequisites and installation
 
-Use Node 24 (see `.nvmrc`) and check out the portal repository beside this repository.
+Use Node 24 (see `.nvmrc`) and check out the `your-guava-portal` repository beside `your-guava-backend`.
+The folders should be siblings: `your-guava-backend/` and `your-guava-portal/`; run portal commands from `../your-guava-portal`.
 MongoDB must support transactions: use Docker, or the in-memory replica set below.
 On a clean machine, install the locked dependencies with `npm ci` in each repository.
 There is no direct-node equivalent for installing dependencies. On the owner's incident workstation, never run npm,
@@ -36,7 +37,8 @@ WORKFORCE_ENABLED=false
 ```
 
 Generate a different fresh value for each of `JWT_SECRET`, `JWT_REFRESH_SECRET`, `TOKEN_ENCRYPTION_KEY` and
-`DOWNLOAD_SIGNING_SECRET` with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+`DOWNLOAD_SIGNING_SECRET` with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` (32 bytes as 64 hex characters).
+`TOKEN_ENCRYPTION_KEY` accepts any value of at least 32 characters, as described in `.env.example`.
 The first two placeholders are refused at startup. The download signing secret is required for local storage and must
 differ from all three other secrets. Keep the encryption key stable between runs or reconnect stored integrations.
 
@@ -45,6 +47,7 @@ empty, including `PAYMENT_PROVIDER`, `PAYSTACK_SECRET_KEY`, `RESEND_API_KEY` and
 Email uses the console (`EMAIL_CONSOLE_LINKS=true` prints local verification links), storage uses local disk, and payments are unavailable.
 Without an AI key, AI features are unavailable. Optionally set `BILLING_MOCK_ENABLED=true` for local plan/credit changes without
 a provider. Production refuses mock billing (D-010). Keep accounting, Yoco and workforce flags false.
+Yoco OAuth and webhooks are off for MVP behind `YOCO_INTEGRATION_ENABLED`; CSV upload presets still work.
 
 ## Demo data
 
@@ -55,6 +58,8 @@ Use a dedicated local database. It refuses production, remote hosts and multi-ho
 node scripts/gen-demo-sales.js --out demo-sales.csv
 node src/seed.js demo-sales.csv
 ```
+
+After `Ingesting POS data`, the seed can be silent for about two minutes; wait for its completion summary.
 
 The deterministic export ends yesterday, contains ten weeks of history, and uses Yoco's `Approved` status.
 Use `--end YYYY-MM-DD --weeks 10` for a fixed date; omit `--out` to write CSV to stdout.
@@ -75,7 +80,9 @@ Log in with the seeded owner and open `/today`: expect menu items including Flat
 
 ## Tests and checks
 
-Run `npm test` or `node node_modules/jest/bin/jest.js --runInBand`.
+CI runs `npm test -- --runInBand`; the direct equivalent is
+`node node_modules/jest/bin/jest.js --detectOpenHandles --runInBand`.
+`npm test` alone runs without `--runInBand` (parallel workers), with `--detectOpenHandles` from the package script.
 For coverage use `node node_modules/jest/bin/jest.js --runInBand --coverage`.
 Tests never load `.env`, pin `Africa/Johannesburg`, refuse outbound network, and start their own in-memory MongoDB.
 `MONGOMS_RUNTIME_DOWNLOAD=false` prevents an incidental MongoDB binary download when using a pre-cached binary.
