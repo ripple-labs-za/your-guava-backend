@@ -13,7 +13,7 @@ const globalLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: limitsOff,
-  message: { success: false, message: 'Too many requests, please slow down' },
+  message: { success: false, code: 'RATE_LIMITED', message: 'Too many requests, please slow down' },
 });
 
 // One bucket per auth action (identity-14): staff sharing one address can mistype a password without locking out resets and
@@ -71,7 +71,7 @@ const refreshLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: limitsOff,
-  message: { success: false, message: 'Too many refresh attempts, please try again later' },
+  message: { success: false, code: 'REFRESH_RATE_LIMITED', message: 'Too many refresh attempts, please try again later' },
 });
 
 // Public invitation tokens are high entropy, but preview/accept remain bounded
@@ -82,7 +82,7 @@ const inviteLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: limitsOff,
-  message: { success: false, message: 'Too many invitation attempts, please try again later' },
+  message: { success: false, code: 'INVITE_RATE_LIMITED', message: 'Too many invitation attempts, please try again later' },
 });
 
 // Per-user limiter for authenticated write actions (e.g. logging tickets),
@@ -97,7 +97,7 @@ const writeLimiter = rateLimit({
   // fallback is a safety net only, hence the IP-fallback validation is disabled.
   keyGenerator: (req) => req.user?.id || req.ip,
   validate: { keyGeneratorIpFallback: false },
-  message: { success: false, message: 'You are doing that too quickly. Please slow down.' },
+  message: { success: false, code: 'WRITE_RATE_LIMITED', message: 'You are doing that too quickly. Please slow down.' },
 });
 
 const AI_LIMIT = 20;

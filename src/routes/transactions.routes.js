@@ -9,6 +9,7 @@ const { requireActiveCafe } = require('../middleware/requireCafe.middleware');
 const { uploadLimiter } = require('../middleware/rateLimit.middleware');
 const { apiCache } = require('../middleware/cache.middleware');
 const r2 = require('../services/r2.service');
+const { uploadTooLargeBody } = require('../utils/uploadLimits');
 const {
   upload,
   getTransactions,
@@ -100,11 +101,10 @@ const handleMulterUpload = (req, res, next) => {
         message: 'This upload carried more form data than a file upload needs. Choose the file again and upload only the file.',
       });
     }
+    // Too large is a 413 with its own code and the limit in words (BE-13-T02); it used to be a 400 the portal could not tell apart.
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json(uploadTooLargeBody(uploadMaxBytes()));
     const statusCode = err.statusCode || (isMulterError ? 400 : 500);
-    const message =
-      err.code === 'LIMIT_FILE_SIZE'
-        ? `File exceeds ${uploadMaxBytes()} bytes`
-        : err.message || 'File upload failed';
+    const message = err.message || 'File upload failed';
 
     if (statusCode < 500) return res.status(statusCode).json({ success: false, message });
     const storageError = new Error(

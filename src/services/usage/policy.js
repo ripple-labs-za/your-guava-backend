@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const UsageLedger = require('../../models/UsageLedger.model');
 const { addBillingCycle } = require('../billingPlans.service');
 
+const AI_CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 const DEFAULT_TRIAL_DAYS = 14;
 const DEFAULT_TRIAL_MS = DEFAULT_TRIAL_DAYS * 24 * 60 * 60 * 1000;
 
@@ -146,6 +147,8 @@ const aiPolicyError = (code, message, details) => {
   error.statusCode = 429;
   error.code = code;
   error.details = { code, ...details };
+  // A running request finishes in seconds; the daily budgets have no honest short wait, so they send none (BE-13-T02).
+  if (code.endsWith('_CONCURRENCY_LIMIT')) error.retryAfterSeconds = AI_CONCURRENCY_RETRY_AFTER_SECONDS;
   return error;
 };
 

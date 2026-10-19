@@ -144,7 +144,9 @@ const normalizeCreditAmount = (amount) => Math.max(0, Math.ceil(Number(amount) |
 const insufficientCreditsError = (credits, amount) => {
   const err = new Error('Guava credit limit reached for this billing period');
   err.statusCode = 402;
-  err.details = { ...credits, required: amount };
+  // Its own code: a bare 402 read as BILLING_REQUIRED, and a lapsed owner was told to buy credits (BE-13-T02).
+  err.code = 'INSUFFICIENT_CREDITS';
+  err.details = { code: 'INSUFFICIENT_CREDITS', ...credits, required: amount };
   return err;
 };
 

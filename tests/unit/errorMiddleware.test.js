@@ -6,8 +6,10 @@ const createResponse = () => {
     headersSent: false,
     status: jest.fn(),
     json: jest.fn(),
+    set: jest.fn(), // Retry-After (BE-13-T02)
   };
   response.status.mockReturnValue(response);
+  response.set.mockReturnValue(response);
   return response;
 };
 
@@ -213,12 +215,15 @@ it('keeps an opted-in AI error code and retry hint in production', () => {
     jest.fn()
   );
 
+  // BE-13-T02: the registered code is also lifted to the top level, and the retry hint becomes a Retry-After header.
   expect(response.json).toHaveBeenCalledWith({
     success: false,
     message: friendly,
+    code: 'AI_PROVIDER_BUSY',
     requestId: 'request-11',
     details: { code: 'AI_PROVIDER_BUSY', retryable: true, retryAfterSeconds: 30 },
   });
+  expect(response.set).toHaveBeenCalledWith('Retry-After', '30');
 });
 
 });

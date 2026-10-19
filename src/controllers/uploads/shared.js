@@ -99,6 +99,7 @@ const assertImportableResult = (result) => {
   if (result.imported === 0 && result.duplicateRows >= result.approvedRows) {
     const err = new Error('No new transactions were imported; every valid row already exists');
     err.statusCode = 409;
+    err.code = 'UPLOAD_NO_NEW_ROWS'; // the portal used to recognise this by its wording (BE-13-T02)
     throw err;
   }
 

@@ -46,12 +46,14 @@ const recoverStaleParsingUpload = async (upload, cafeId) => {
   if (upload.errorMessage === ABANDONED_CLEANUP_CLAIM) {
     const err = new Error('This unconfirmed upload expired and is being removed.');
     err.statusCode = 410;
+    err.code = 'UPLOAD_EXPIRED';
     throw err;
   }
   const staleBefore = new Date(Date.now() - parsingLeaseMs());
   if (upload.updatedAt > staleBefore) {
     const err = new Error('Upload is already being parsed. Please retry after it finishes.');
     err.statusCode = 409;
+    err.code = 'UPLOAD_BUSY';
     throw err;
   }
 

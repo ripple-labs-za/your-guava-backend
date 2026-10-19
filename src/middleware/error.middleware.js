@@ -1,9 +1,7 @@
 const logger = require('../utils/logger');
 const { isHardenedEnvironment } = require('../config/posture');
+const { codeOf } = require('../utils/errorCodes');
 
-// A code the product wrote for the client to branch on (SEVERE_PARTIAL_IMPORT, LEGACY_XLS, ...). err.code alone is
-// never exposed: it is also where Node, Mongo and libraries put theirs (ENOENT, 11000). Same rule as BE-09-T02.
-const PUBLIC_CODE_RE = /^[A-Z][A-Z0-9_]{2,63}$/;
 const isHttpStatus = (value) => Number.isInteger(value) && value >= 400 && value <= 599;
 
 // Provider authentication is not the caller's session expiring.
@@ -83,12 +81,19 @@ const errorMiddleware = (err, req, res, next) => {
   }
 
   const exposeDetails = details && (err?.exposeDetails === true || !(statusCode >= 500 && isHardenedEnvironment()));
-  const publicCode = typeof err?.publicCode === 'string' && PUBLIC_CODE_RE.test(err?.publicCode) ? err?.publicCode : null;
+  // Only a registered code is sent (BE-13-T02), from publicCode, code or details.code, on every status: err.code is also where
+  // Node, Mongo and libraries put theirs (ENOENT, 11000, LIMIT_FILE_SIZE), and those never leave the server. The code is a
+  // registered name, never the text the 5xx redaction above hid.
+  const code = err?.type === 'entity.too.large' ? 'PAYLOAD_TOO_LARGE' : codeOf(err);
+  const retryAfter = err?.retryAfterSeconds ?? err?.details?.retryAfterSeconds;
+  if ((statusCode === 429 || statusCode === 503) && Number.isFinite(retryAfter) && retryAfter > 0) {
+    res.set('Retry-After', String(Math.ceil(retryAfter)));
+  }
 
   return res.status(statusCode).json({
     success: false,
     message,
-    ...(publicCode ? { code: publicCode } : {}),
+    ...(code ? { code } : {}),
     ...(requestId ? { requestId } : {}),
     ...(exposeDetails ? { details } : {}),
   });

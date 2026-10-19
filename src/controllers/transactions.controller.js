@@ -20,7 +20,8 @@ const storedContentType = (buffer, ext) => (ext === 'xlsx' && buffer.length >= 4
   ? XLSX_CONTENT_TYPE
   : 'text/csv; charset=utf-8');
 // A code the product wrote for the client (LEGACY_XLS), carried on the upload's own 400 bodies (BE-03-T12).
-const publicCodeOf = (err) => (err?.publicCode ? { code: err.publicCode } : {});
+const { codeOf } = require('../utils/errorCodes');
+const { uploadTooLargeBody } = require('../utils/uploadLimits');
 const { DEMAND_LINE_MATCH } = require('../utils/demand');
 const { canSpendCredits } = require('../middleware/rbac.middleware');
 const { activeCafeId } = require('../utils/tenancy');
@@ -100,7 +101,7 @@ const upload = async (req, res, next) => {
       : 10 * 1024 * 1024;
     if (buffer.length > maxBytes) {
       await cleanupLocalFile(filePath);
-      return res.status(400).json({ success: false, message: `File exceeds ${maxBytes} bytes` });
+      return res.status(413).json(uploadTooLargeBody(maxBytes));
     }
 
     // Preview headers + sample rows. previewBuffer validates the file first (empty, legacy .xls, archive safety), and
@@ -111,9 +112,10 @@ const upload = async (req, res, next) => {
     } catch (err) {
       await cleanupLocalFile(filePath);
       const parseStatus = [400, 413, 499, 503].includes(err.statusCode) ? err.statusCode : 400;
+      const code = codeOf(err); // the parser queue's 503 has set its own Retry-After (parser/runInWorker.js)
       return res.status(parseStatus).json({
         success: false,
-        ...publicCodeOf(err),
+        ...(code ? { code } : {}), // LEGACY_XLS, XLSX_UNREADABLE, CSV_ROW_TOO_LONG, UPLOAD_PARSE_BUSY... (BE-13-T02)
         message: [400, 413, 499, 503].includes(err.statusCode)
           ? err.message
           : 'Could not read this file. Please upload a valid CSV or XLSX export.',

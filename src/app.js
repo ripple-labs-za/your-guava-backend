@@ -59,7 +59,9 @@ app.use(
     // Evaluated per request; with CLIENT_URL unset no origin is allowed (validateEnv refuses that outside tests anyway).
     origin: (requestOrigin, callback) => callback(null, process.env.CLIENT_URL || false),
     credentials: true,
-    exposedHeaders: ['Retry-After'],
+    // The portal is on another origin: without these, fetch and axios read null for the rate-limit wait and the request id
+    // (BE-13-T02), and Ask Guava's countdown is always its 60-second guess.
+    exposedHeaders: ['Retry-After', 'X-Request-Id', 'RateLimit', 'RateLimit-Policy'],
   })
 );
 
