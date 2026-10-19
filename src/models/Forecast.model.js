@@ -5,6 +5,8 @@ const factorSchema = new mongoose.Schema(
     key: { type: String },
     label: { type: String },
     active: { type: Boolean, default: false },
+    measuredPct: { type: Number },
+    sampleSize: { type: Number },
     adjustmentPct: { type: Number },
     multiplier: { type: Number },
     effect: { type: String },
@@ -20,6 +22,8 @@ const calibrationEntrySchema = new mongoose.Schema(
     itemName: { type: String },
     multiplier: { type: Number },
     sampleSize: { type: Number },
+    observedUnits: { type: Number },
+    shrink: { type: Number },
     averageRatio: { type: Number },
   },
   { _id: false }
@@ -65,7 +69,6 @@ const forecastSchema = new mongoose.Schema(
     dateKey: {
       type: String,
       match: /^\d{4}-\d{2}-\d{2}$/,
-      index: true,
     },
     generatedAt: {
       type: Date,
@@ -75,7 +78,6 @@ const forecastSchema = new mongoose.Schema(
       type: String,
       enum: ['live', 'backfill', 'manual'],
       default: 'live',
-      index: true,
     },
     inputsVersion: { type: Number, default: 0 },
     calibrationExcluded: { type: Boolean },

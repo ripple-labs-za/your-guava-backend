@@ -1,50 +1,7 @@
-// Suggested stock from predicted quantities (computeSuggestedStock is dead code BE-11-T06 deletes).
+// Suggested stock from predicted quantities.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
 const Forecast = require('../../models/Forecast.model');
 const { zonedDayStart, addZonedDays } = require('../../utils/timezone');
-
-/**
- * Computes a suggested stock quantity for a given item based on historical forecast bias.
- * Uses the 30 days before the target date where actualQty was recorded.
- *
- * @param {string|ObjectId} cafeId
- * @param {string} itemName
- * @param {number} predictedQty
- * @returns {Promise<number>}
- */
-const computeSuggestedStock = async (
-  cafeId,
-  itemName,
-  predictedQty,
-  settings,
-  targetDate = new Date(),
-  timezone = 'Africa/Johannesburg'
-) => {
-  const target = zonedDayStart(targetDate, timezone);
-  const thirtyDaysAgo = addZonedDays(target, -30, timezone);
-
-  const pastForecasts = await Forecast.find({
-    calibrationExcluded: { $ne: true },
-    cafeId,
-    date: { $gte: thirtyDaysAgo, $lt: target },
-    'items.itemName': itemName,
-    'items.actualQty': { $gt: 0 },
-  })
-    .select('items')
-    .lean();
-
-  // Extract matched item pairs (predicted vs actual)
-  const pairs = [];
-  for (const doc of pastForecasts) {
-    for (const item of doc.items || []) {
-      if (item.itemName === itemName && item.actualQty > 0 && item.predictedQty != null) {
-        pairs.push({ predicted: item.predictedQty, actual: item.actualQty });
-      }
-    }
-  }
-
-  return computeSuggestedStockFromPairs(predictedQty, pairs, settings);
-};
 
 const computeSuggestedStockFromPairs = (predictedQty, pairs, settings) => {
   const safetyMargin = 1 + settings.stock.safetyMarginPct / 100;

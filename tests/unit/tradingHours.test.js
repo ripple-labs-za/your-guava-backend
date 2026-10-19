@@ -1,7 +1,6 @@
 const {
   defaultTradingHours,
   normalizeTradingHours,
-  getOpenWindowForDate,
   isWeekdayHourOpen,
 } = require('../../src/utils/tradingHours');
 
@@ -39,45 +38,6 @@ describe('tradingHours utility', () => {
       ]);
       expect(result.find((d) => d.dayOfWeek === 1)).toMatchObject({ openTime: '06:30', closeTime: '20:00' });
       expect(result.find((d) => d.dayOfWeek === 6)).toMatchObject({ openTime: '08:00', closeTime: '15:00' });
-    });
-  });
-
-  describe('getOpenWindowForDate', () => {
-    const cafe = { tradingHours: defaultTradingHours() };
-
-    it('returns closed for a closed weekday', () => {
-      // Pick a Sunday (default is closed). 2026-01-04 is a Sunday.
-      const result = getOpenWindowForDate(new Date('2026-01-04T10:00:00Z'), cafe);
-      expect(result.isOpen).toBe(false);
-    });
-
-    it('returns open window for an open weekday', () => {
-      // 2026-01-05 is a Monday.
-      const result = getOpenWindowForDate(new Date('2026-01-05T10:00:00Z'), cafe);
-      expect(result.isOpen).toBe(true);
-      expect(result.openMinutes).toBe(7 * 60);
-      expect(result.closeMinutes).toBe(17 * 60);
-    });
-
-    it('returns closed when a full-day closure event applies', () => {
-      const result = getOpenWindowForDate(
-        new Date('2026-01-05T10:00:00Z'),
-        cafe,
-        [{ type: 'closure', name: 'Public Holiday' }]
-      );
-      expect(result.isOpen).toBe(false);
-    });
-
-    it('trims the window to the larger contiguous span on partial_closure', () => {
-      // Closure window 12:00-14:00 inside 07:00-17:00. Evening span is 3h, morning is 5h. Morning wins.
-      const result = getOpenWindowForDate(
-        new Date('2026-01-05T10:00:00Z'),
-        cafe,
-        [{ type: 'partial_closure', closureWindow: { startTime: '12:00', endTime: '14:00' } }]
-      );
-      expect(result.isOpen).toBe(true);
-      expect(result.openMinutes).toBe(7 * 60);
-      expect(result.closeMinutes).toBe(12 * 60);
     });
   });
 

@@ -52,57 +52,6 @@ const getCafeTradingHours = (cafe) => {
   return defaultTradingHours();
 };
 
-const findClosureEvent = (events) => {
-  if (!Array.isArray(events)) return null;
-  return events.find((event) => event && event.type === 'closure') || null;
-};
-
-const findPartialClosure = (events) => {
-  if (!Array.isArray(events)) return null;
-  return events.find((event) => event && event.type === 'partial_closure' && event.closureWindow) || null;
-};
-
-const getOpenWindowForDate = (date, cafe, eventsForDate = []) => {
-  const dayOfWeek = date instanceof Date ? date.getDay() : new Date(date).getDay();
-  const schedule = getCafeTradingHours(cafe).find((row) => row.dayOfWeek === dayOfWeek);
-
-  if (!schedule || !schedule.isOpen) {
-    return { isOpen: false, openMinutes: null, closeMinutes: null };
-  }
-
-  if (findClosureEvent(eventsForDate)) {
-    return { isOpen: false, openMinutes: null, closeMinutes: null };
-  }
-
-  let openMinutes = parseTime(schedule.openTime);
-  let closeMinutes = parseTime(schedule.closeTime);
-
-  const partial = findPartialClosure(eventsForDate);
-  if (partial && partial.closureWindow) {
-    const closureStart = parseTime(partial.closureWindow.startTime);
-    const closureEnd = parseTime(partial.closureWindow.endTime);
-    if (closureStart != null && closureEnd != null && closureEnd > closureStart) {
-      // Trim trading window to the largest contiguous piece outside the closure.
-      const morningSpan = closureStart - openMinutes;
-      const eveningSpan = closeMinutes - closureEnd;
-      if (morningSpan <= 0 && eveningSpan <= 0) {
-        return { isOpen: false, openMinutes: null, closeMinutes: null };
-      }
-      if (eveningSpan > morningSpan) {
-        openMinutes = closureEnd;
-      } else {
-        closeMinutes = closureStart;
-      }
-    }
-  }
-
-  if (closeMinutes <= openMinutes) {
-    return { isOpen: false, openMinutes: null, closeMinutes: null };
-  }
-
-  return { isOpen: true, openMinutes, closeMinutes };
-};
-
 const isHourOpen = (hour, openWindow) => {
   if (!openWindow || !openWindow.isOpen) return false;
   const hourStart = hour * 60;
@@ -166,8 +115,6 @@ module.exports = {
   tradingHoursInputError,
   normalizeTradingHours,
   getCafeTradingHours,
-  getOpenWindowForDate,
-  isHourOpen,
   isWeekdayHourOpen,
   parseTime,
 };
