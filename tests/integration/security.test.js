@@ -124,14 +124,14 @@ describe('Refresh token rotation', () => {
     expect(defaultView.password).toBeUndefined();
     expect(defaultView.refreshTokens).toBeUndefined();
 
-    const persisted = await User.findById(user.id).select('+password +refreshTokens').lean();
+    const persisted = await User.findById(user.id).select('+password').lean();
     const session = await AuthSession.findOne({ userId: user.id })
       .select('+currentTokenHash')
       .lean();
 
     expect(rawToken).toBeDefined();
     expect(persisted.password).toMatch(/^\$2[aby]\$/);
-    expect(persisted.refreshTokens).toHaveLength(0);
+    expect(persisted.refreshTokens).toBeUndefined();
     expect(session.currentTokenHash).toMatch(/^[a-f0-9]{64}$/);
     expect(session.currentTokenHash).not.toBe(rawToken);
 

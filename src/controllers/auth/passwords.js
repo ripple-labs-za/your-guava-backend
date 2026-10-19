@@ -89,7 +89,7 @@ const resetPassword = async (req, res, next) => {
         error.statusCode = 404;
         throw error;
       }
-      const user = await User.findById(reset.userId).select('+password +refreshTokens').session(session);
+      const user = await User.findById(reset.userId).select('+password').session(session);
       if (user) holder = { email: user.email, name: user.name };
       if (!user) {
         const error = new Error('This reset link is invalid or has expired');
@@ -102,7 +102,6 @@ const resetPassword = async (req, res, next) => {
         throw error;
       }
       user.password = newPassword;
-      user.refreshTokens = [];
       user.tokenVersion = Number(user.tokenVersion || 0) + 1;
       await user.save({ session });
       await AuthSession.updateMany(
@@ -162,7 +161,7 @@ const changePassword = async (req, res, next) => {
     let holder;
     session = await mongoose.startSession();
     await session.withTransaction(async () => {
-      const user = await User.findById(req.user.id).select('+password +refreshTokens').session(session);
+      const user = await User.findById(req.user.id).select('+password').session(session);
       if (user) holder = { email: user.email, name: user.name };
       if (!user) {
         const error = new Error('User not found');
@@ -185,7 +184,6 @@ const changePassword = async (req, res, next) => {
       }
 
       user.password = newPassword;
-      user.refreshTokens = [];
       user.tokenVersion = Number(user.tokenVersion || 0) + 1;
       await user.save({ session });
       await AuthSession.updateMany(

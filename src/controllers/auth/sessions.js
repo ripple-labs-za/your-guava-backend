@@ -194,30 +194,8 @@ const refresh = async (req, res, next) => {
         return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
       }
     } else {
-      // One-time migration path for refresh tokens issued before session
-      // families were introduced.
-      user = await User.findOneAndUpdate(
-        {
-          _id: decoded.id,
-          $or: [
-            { 'refreshTokens.tokenHash': tokenHash },
-            { 'refreshTokens.token': token },
-          ],
-        },
-        {
-          $pull: {
-            refreshTokens: {
-              $or: [{ tokenHash }, { token }],
-            },
-          },
-        },
-        { new: true }
-      );
-      if (!user) {
-        return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
-      }
-      const issued = await issueSession(user, { cafeId: requestedCafeId });
-      newRefreshToken = issued.refreshToken;
+      // Tokens without a family predate AuthSession and expired in August 2026.
+      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
     }
 
     // Identity-2: the tab says which cafe it is showing; the user record only supplies the default for a tab that has none.
@@ -250,23 +228,6 @@ const logout = async (req, res, next) => {
           { userId: decoded.id, familyId: decoded.sid, revokedAt: null },
           { $set: { revokedAt: new Date(), revokeReason: 'logout' } }
         );
-      } else {
-        const tokenHash = sha256Hex(token);
-        await User.updateOne(
-          {
-            $or: [
-              { 'refreshTokens.tokenHash': tokenHash },
-              { 'refreshTokens.token': token },
-            ],
-          },
-          {
-            $pull: {
-              refreshTokens: {
-                $or: [{ tokenHash }, { token }],
-              },
-            },
-          }
-        );
       }
     }
 
@@ -280,7 +241,7 @@ const logout = async (req, res, next) => {
 
 const me = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id).select('-password -refreshTokens');
+    const user = await User.findById(req.user.id).select('-password');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }

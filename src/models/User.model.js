@@ -60,21 +60,6 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Cafe',
     },
-    refreshTokens: {
-      type: [
-        {
-        // `token` is retained temporarily so a token issued before the
-        // production hardening release can be consumed once and rotated.
-        // New sessions only persist a SHA-256 digest.
-          token: { type: String },
-          tokenHash: { type: String },
-          expiresAt: { type: Date },
-          createdAt: { type: Date, default: Date.now },
-        },
-      ],
-      default: [],
-      select: false,
-    },
     tokenVersion: {
       type: Number,
       default: 0,
@@ -84,8 +69,6 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ orgId: 1 });
-userSchema.index({ 'refreshTokens.tokenHash': 1 }, { sparse: true });
-userSchema.index({ 'refreshTokens.token': 1 }, { sparse: true });
 
 userSchema.pre('save', async function hashChangedPassword(next) {
   if (!this.isModified('password')) return next();
