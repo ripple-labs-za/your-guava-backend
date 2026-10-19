@@ -5,6 +5,7 @@ node_modules/
 uploads/
 backups/
 *.log
+coverage/
 
 # BE-11-T03: the uploads controller modules are source, not uploaded files
 !src/controllers/uploads/

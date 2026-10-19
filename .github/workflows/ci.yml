@@ -10,41 +10,73 @@ permissions:
 
 concurrency:
   group: backend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on pull requests only: every commit on main gets its own verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every check step is a plain command that runs the same way locally (BE-12-T04). The syntax check and the raw
+# control-character check live in scripts/static-checks.mjs (`syntax`, `controlCharacters`).
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
-      - run: npm audit
-      - run: npm test -- --runInBand
-      - name: Validate JavaScript syntax
-        run: find src -name '*.js' -print0 | xargs -0 -n1 node --check
-      - name: Reject raw control characters in source
-        # A regex escape that passes through a JSON-decoding layer can collapse
-        # into the control character it names: backslash-b becomes a literal
-        # U+0008 BACKSPACE. The result is still valid JavaScript, so `node
-        # --check` above passes, and JSON.stringify and every editor render it
-        # back as an innocent-looking escape. Only the raw bytes give it away.
-        # This happened once already -- see itemCategory.js WORD_MATCH, commit
-        # 4376b43 -- and tests/unit/sourceHygiene.test.js guards src/ the same
-        # way. Everything below 0x20 except tab, LF and CR is rejected.
-        env:
-          LC_ALL: C.UTF-8
+      - name: Install from the lockfile
+        run: npm ci
+      - name: Tests with the coverage gate
+        run: node node_modules/jest/bin/jest.js --runInBand --coverage
+      - name: Static checks, including the per-file coverage floor
+        run: node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json
+      - name: Whitespace
+        run: git diff --check
+      - name: Audit what ships (after the tests, so an advisory never hides a test result)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Audit dev dependencies (reported, not blocking; they are not in the image)
+        run: npm audit --audit-level=high || echo "::warning::dev-dependency advisories above; they do not ship in the image"
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Build the production image
+        run: docker build --pull -t your-guava-api:ci .
+      - name: Start a single-node replica set
         run: |
-          matches=$(git ls-files -z -- '*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.json' '*.css' '*.md' '*.yml' '*.yaml' '*.html' \
-            | xargs -0 -r grep -lP '[\x00-\x08\x0b\x0c\x0e-\x1f]' -- || true)
-          if [ -n "$matches" ]; then
-            echo "::error::Raw control characters found in: $matches"
-            echo "A regex or string escape was probably collapsed into a literal control character."
-            exit 1
-          fi
-      - run: git diff --check
+          docker network create guava-ci
+          docker run -d --name mongo --network guava-ci mongo:8.0 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            if docker exec mongo mongosh --quiet --eval "let ok=0; try { ok=rs.status().ok } catch (e) { ok=rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok } quit(ok ? 0 : 1)"; then break; fi
+            sleep 2
+          done
+      - name: Run the image as it ships and wait for its own HEALTHCHECK
+        # NODE_ENV=development: production validateEnv needs the owner's live credentials, which CI must not hold. The build,
+        # the --omit=dev install, the non-root user, the start command and the HEALTHCHECK are exactly what ships.
+        run: |
+          docker run -d --name api --network guava-ci -p 5000:5000 \
+            -e NODE_ENV=development \
+            -e CLIENT_URL=http://localhost:5185 \
+            -e MONGODB_URI='mongodb://mongo:27017/guava-ci?replicaSet=rs0' \
+            -e JWT_SECRET="$(openssl rand -hex 32)" \
+            -e JWT_REFRESH_SECRET="$(openssl rand -hex 32)" \
+            -e TOKEN_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+            -e DOWNLOAD_SIGNING_SECRET="$(openssl rand -hex 32)" \
+            -e EMAIL_CONSOLE_LINKS=true \
+            your-guava-api:ci
+          for i in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' api)
+            if [ "$status" = healthy ] || [ "$status" = unhealthy ]; then break; fi
+            sleep 3
+          done
+          docker logs api 2>&1 | tail -40
+          curl -fsS http://localhost:5000/api/health
+          test "$(docker inspect -f '{{.State.Health.Status}}' api)" = healthy
+          test "$(docker exec api id -u)" != 0

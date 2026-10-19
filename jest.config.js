@@ -9,4 +9,13 @@ module.exports = {
   globalSetup: '<rootDir>/tests/globalSetup.js',
   setupFiles: ['<rootDir>/tests/env.js'],
   setupFilesAfterEnv: ['<rootDir>/tests/hermetic.js'],
+  // Coverage (BE-12-T04). Computed only with --coverage, so a single-file TDD run is never gated.
+  collectCoverageFrom: ['src/**/*.js'],
+  coverageProvider: 'v8',
+  coverageReporters: ['text-summary', 'json-summary'],
+  coverageThreshold: {
+    // Totals only. The 70% per-file floor is checked by scripts/static-checks.mjs from coverage/coverage-summary.json,
+    // because a Jest glob threshold takes the files it matches out of this global total.
+    global: { lines: 85, branches: 75 },
+  },
 };
