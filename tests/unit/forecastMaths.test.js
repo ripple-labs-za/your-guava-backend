@@ -43,7 +43,9 @@ const stubModels = ({
   jest.spyOn(Event, 'find').mockReturnValue(query(events));
   jest.spyOn(Item, 'find').mockReturnValue(query(items));
   jest.spyOn(Forecast, 'find').mockImplementation((filter = {}) => {
-    if (filter.actualsUpdatedAt) return query(calibrationDocs); // computeForecastCalibration
+    // The batch loader reads all outcomes once, then applies the scored/live
+    // filter per target day. Model fixtures must carry the persisted score time.
+    if (filter.calibrationExcluded) return query(calibrationDocs.map((doc) => ({ actualsUpdatedAt: doc.date, ...doc })));
     if (filter.dateKey) return query(storedSignals); // loadStoredSignalsByDateKey
     return query([]); // computeSuggestedStockMap
   });
