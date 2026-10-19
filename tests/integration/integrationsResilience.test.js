@@ -420,6 +420,96 @@ describe('refresh compare-and-set remains safe during disconnect and deploy over
 });
 
 describe('review regressions for connection ownership and lifecycle', () => {
+  it.each(['SECRET_KEY_UNAVAILABLE', 'SECRET_MALFORMED'])(
+    'reconnect succeeds and keeps the new grant when the replaced token has %s', async (code) => {
+      const { token, cafeId } = await ownerWithCafe();
+      const state = await authState(token);
+      let unreadable = 'enc:v2:malformed';
+      if (code === 'SECRET_KEY_UNAVAILABLE') {
+        const key = process.env.TOKEN_ENCRYPTION_KEY;
+        process.env.TOKEN_ENCRYPTION_KEY = '19'.repeat(32);
+        unreadable = encryptSecret('old-refresh');
+        process.env.TOKEN_ENCRYPTION_KEY = key;
+      }
+      expect(() => decryptSecret(unreadable)).toThrow(expect.objectContaining({ code }));
+      await connectXero(cafeId, { 'accountingIntegrations.xero.refreshToken': unreadable });
+      jest.spyOn(xeroService, 'exchangeCodeForTokens').mockResolvedValue({
+        accessToken: 'new-access', refreshToken: 'new-refresh', expiresIn: 1800, tenantId: 'tenant-2',
+      });
+      const revoke = jest.spyOn(xeroService, 'revokeToken').mockResolvedValue();
+      const res = await request.post('/api/integrations/xero/callback').set('Authorization', `Bearer ${token}`)
+        .send({ code: 'new-grant', state });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      const current = await xeroSecrets(cafeId);
+      expect(current.connected).toBe(true);
+      expect(current.tenantId).toBe('tenant-2');
+      expect(decryptSecret(current.accessToken)).toBe('new-access');
+      expect(decryptSecret(current.refreshToken)).toBe('new-refresh');
+      expect(revoke).not.toHaveBeenCalled();
+    }
+  );
+
+  it('reconnect with the same refresh token keeps the grant without revoking it', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    await connectXero(cafeId);
+    const state = await authState(token);
+    jest.spyOn(xeroService, 'exchangeCodeForTokens').mockResolvedValue({
+      accessToken: 'new-access', refreshToken: 'refresh-1', expiresIn: 1800, tenantId: 'tenant-1',
+    });
+    const revoke = jest.spyOn(xeroService, 'revokeToken').mockResolvedValue();
+    const res = await request.post('/api/integrations/xero/callback').set('Authorization', `Bearer ${token}`)
+      .send({ code: 'same-grant', state });
+    expect(res.status).toBe(200);
+    expect(revoke).not.toHaveBeenCalled();
+    const current = await xeroSecrets(cafeId);
+    expect(current.connected).toBe(true);
+    expect(decryptSecret(current.accessToken)).toBe('new-access');
+    expect(decryptSecret(current.refreshToken)).toBe('refresh-1');
+  });
+
+  it('reconnect queues on the active refresh flight and revokes its rotated token', async () => {
+    const { token, cafeId } = await ownerWithCafe();
+    await connectXero(cafeId);
+    const state = await authState(token);
+    const stored = await xeroSecrets(cafeId);
+    const started = deferred();
+    const release = deferred();
+    const service = { refreshAccessToken: jest.fn(() => { started.resolve(); return release.promise; }) };
+    const refreshing = refreshIntegrationAccessToken({ cafeId, provider: 'xero', service, storedRefreshToken: stored.refreshToken });
+    await started.promise;
+    const exchanged = deferred();
+    jest.spyOn(xeroService, 'exchangeCodeForTokens').mockImplementation(async () => {
+      exchanged.resolve();
+      return { accessToken: 'new-access', refreshToken: 'new-refresh', expiresIn: 1800, tenantId: 'tenant-2' };
+    });
+    const findById = Cafe.findById;
+    let callbackRead = false;
+    jest.spyOn(Cafe, 'findById').mockImplementation(function (...args) {
+      const query = findById.apply(this, args);
+      const select = query.select;
+      query.select = function (selection, ...rest) {
+        if (selection === '+accountingIntegrations.xero.refreshToken') callbackRead = true;
+        return select.call(this, selection, ...rest);
+      };
+      return query;
+    });
+    const revoke = jest.spyOn(xeroService, 'revokeToken').mockResolvedValue();
+    const reconnecting = request.post('/api/integrations/xero/callback').set('Authorization', `Bearer ${token}`)
+      .send({ code: 'racing-grant', state }).then((res) => res);
+    await exchanged.promise;
+    await new Promise(setImmediate);
+    const readBeforeRelease = callbackRead;
+    release.resolve({ accessToken: 'rotated-access', refreshToken: 'rotated-refresh', expiresIn: 1800 });
+    expect(await refreshing).toBe('rotated-access');
+    expect((await reconnecting).status).toBe(200);
+    expect(readBeforeRelease).toBe(false);
+    expect(revoke.mock.calls).toEqual([['rotated-refresh']]);
+    const current = await xeroSecrets(cafeId);
+    expect(current.tenantId).toBe('tenant-2');
+    expect(decryptSecret(current.refreshToken)).toBe('new-refresh');
+  });
+
   const deferred = () => {
     let resolve;
     const promise = new Promise((yes) => { resolve = yes; });

@@ -54,6 +54,27 @@ describe('closed local day windows', () => {
 });
 
 describe('single flight lifecycle', () => {
+  it('a finishing exclusive flight keeps the queued refresh entry for a third caller', async () => {
+    let finishExclusive;
+    let finishRefresh;
+    const exclusive = singleFlight('exclusive-entry-identity', () => new Promise((resolve) => {
+      finishExclusive = resolve;
+    }), { exclusive: true });
+    await Promise.resolve();
+    const run = jest.fn(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    const refresh = singleFlight('exclusive-entry-identity', run);
+    finishExclusive('revoked');
+    await exclusive;
+    const duplicate = jest.fn(() => 'wrong-token');
+    const third = singleFlight('exclusive-entry-identity', duplicate);
+    while (!finishRefresh) await Promise.resolve();
+    finishRefresh('new-access');
+    expect(await Promise.all([refresh, third])).toEqual(['new-access', 'new-access']);
+    expect(third).toBe(refresh);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(duplicate).not.toHaveBeenCalled();
+  });
+
   it('queues exclusive work after a failed refresh and keeps later refreshes separate', async () => {
     let rejectFirst;
     let finishExclusive;

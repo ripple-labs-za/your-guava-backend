@@ -183,8 +183,8 @@ const callback = async (req, res, _next) => {
         },
       });
       const oldRefresh = previous?.accountingIntegrations?.[provider]?.refreshToken;
-      if (oldRefresh && decryptSecret(oldRefresh) !== tokens.refreshToken) {
-        await revokeQuietly(provider, service, oldRefresh);
+      if (oldRefresh) {
+        await revokeQuietly(provider, service, oldRefresh, tokens.refreshToken);
       }
     }, { exclusive: true });
     return res.status(200).json({ success: true });
@@ -262,10 +262,12 @@ const sync = async (req, res, next) => {
  * POST /api/integrations/:provider/disconnect
  * Clears stored tokens and marks the provider as disconnected.
  */
-const revokeQuietly = async (provider, service, storedRefreshToken) => {
+const revokeQuietly = async (provider, service, storedRefreshToken, replacementRefreshToken) => {
   if (!storedRefreshToken) return 'not_needed';
   try {
-    await service.revokeToken(decryptSecret(storedRefreshToken));
+    const refreshToken = decryptSecret(storedRefreshToken);
+    if (refreshToken === replacementRefreshToken) return 'not_needed';
+    await service.revokeToken(refreshToken);
     return 'revoked';
   } catch (error) {
     const outcome = isConfigError(error) ? 'skipped' : 'failed';
