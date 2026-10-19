@@ -4,7 +4,7 @@
  * jest.mock(...), and a direct require of ./ai/* would bypass the mock.
  */
 const insights = require('./ai/insights');
-const { buildSummaryStats } = require('./ai/prompts');
+const { buildSummaryStats, fencedJson, contextBlockJson, COMPACT_MIN_CHARS, CACHEABLE_MIN_CHARS } = require('./ai/prompts');
 const { buildBusinessContext, invalidateBusinessContext, _resetBusinessContextCache } = require('./ai/context');
 const { prepareChatConversation, assertCafeInScope, generateBusinessChatResponse } = require('./ai/chat');
 const { streamBusinessChatResponse } = require('./ai/stream');
@@ -16,6 +16,7 @@ module.exports = {
   providerDiagnostics,
   _resetInsightsCache: insights._resetInsightsCache,
   buildSummaryStats,
+  fencedJson, contextBlockJson, COMPACT_MIN_CHARS, CACHEABLE_MIN_CHARS,
   _resetMappingCache,
   buildBusinessContext,
   invalidateBusinessContext,

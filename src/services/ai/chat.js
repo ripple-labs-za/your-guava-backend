@@ -3,7 +3,7 @@
 const { withUsageDiagnostics } = require('../usage.service');
 const { createAnthropicClient, withAnthropicErrors, responseText } = require('../anthropicClient.service');
 const {
-  fencedJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
+  contextBlockJson, missingChatKeyResponse, TRUNCATED_ANSWER_MARKER, CHAT_SYSTEM_PROMPT,
 } = require('./prompts');
 const { providerDiagnostics } = require('./json');
 const { requestSettings } = require('../../config/ai');
@@ -137,7 +137,7 @@ const buildBusinessChatRequest = async ({ cafeId, orgId, authorizedCafeIds, mess
       content: [
         {
           type: 'text',
-          text: `<untrusted_business_context>\n${fencedJson(context)}\n</untrusted_business_context>`,
+          text: `<untrusted_business_context>\n${contextBlockJson(context)}\n</untrusted_business_context>`,
           cache_control: { type: 'ephemeral' },
         },
       ],
