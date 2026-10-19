@@ -110,11 +110,11 @@ const upload = async (req, res, next) => {
       preview = await parser.withRequestAbort(req, res, (signal) => ingestion.previewBuffer(buffer, ext, { isolate: true, signal }));
     } catch (err) {
       await cleanupLocalFile(filePath);
-      const parseStatus = [400, 413, 499].includes(err.statusCode) ? err.statusCode : 400;
+      const parseStatus = [400, 413, 499, 503].includes(err.statusCode) ? err.statusCode : 400;
       return res.status(parseStatus).json({
         success: false,
         ...publicCodeOf(err),
-        message: [400, 413, 499].includes(err.statusCode)
+        message: [400, 413, 499, 503].includes(err.statusCode)
           ? err.message
           : 'Could not read this file. Please upload a valid CSV or XLSX export.',
       });
