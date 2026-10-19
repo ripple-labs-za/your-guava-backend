@@ -255,10 +255,8 @@ const MATRIX = {
   'DELETE /api/team/:userId': { make: 'member', owner: true, control: 'success',
     send: (c, t) => c.delete(`/api/team/${t.id}`), snap: byId(User) },
   'PATCH /api/team/:userId': { make: 'member', owner: true, control: 'success',
-    send: (c, t) => c.patch(`/api/team/${t.id}`).send({ name: 'Renamed Member' }), snap: byId(User) },
-  'PUT /api/team/:userId/cafes': { make: 'member', owner: true, control: 'success',
-    send: (c, t, role) => c.put(`/api/team/${t.id}/cafes`)
-      .send({ cafeIds: role === 'victim' ? [world.cafeA1, world.cafeA2] : [world.attackerCafe] }),
+    send: (c, t, role) => c.patch(`/api/team/${t.id}`)
+      .send({ name: 'Renamed Member', cafeIds: role === 'victim' ? [world.cafeA1, world.cafeA2] : [world.attackerCafe] }),
     snap: byId(User) },
   'GET /api/uploads/:id': { make: 'upload', control: 'success',
     send: (c, t) => c.get(`/api/uploads/${t.id}`), snap: byId(Upload) },
@@ -381,12 +379,12 @@ describe('ids in request bodies refuse other tenants', () => {
     expect(await User.findById(world.manager.user.id).select('activeCafeId cafeIds').lean()).toEqual(before);
   });
 
-  it('PUT /api/team/:userId/cafes refuses to assign the attacker\'s own manager to another organisation\'s cafe', async () => {
+  it('PATCH /api/team/:userId refuses to assign the attacker\'s own manager to another organisation\'s cafe', async () => {
     const member = await User.create({
       name: 'Attacker Member', email: `${unique('attacker-member')}@yourguava.com`, password: 'password123',
       role: 'manager', orgId: world.attacker.user.orgId, cafeIds: [world.attackerCafe], activeCafeId: world.attackerCafe,
     });
-    const res = await client('attacker').put(`/api/team/${member._id}/cafes`).send({ cafeIds: [world.cafeA1] });
+    const res = await client('attacker').patch(`/api/team/${member._id}`).send({ cafeIds: [world.cafeA1] });
     expect(REFUSED_BODY).toContain(res.status);
     expect((await User.findById(member._id).lean()).cafeIds.map(String)).toEqual([world.attackerCafe]);
   });

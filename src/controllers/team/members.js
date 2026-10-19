@@ -151,10 +151,6 @@ const removeMember = async (req, res, next) => {
   }
 };
 
-// PUT /api/team/:userId/cafes - Owner updates a manager's cafe access.
-const updateMemberCafes = async (req, res, next) => {
-  return updateMember(req, res, next);
-};
 
 // PATCH /api/team/:userId - Owner updates member profile and cafe access.
 const updateMember = async (req, res, next) => {
@@ -268,5 +264,5 @@ const updateMember = async (req, res, next) => {
 
 module.exports = {
   normalizeCafeIds, memberPermissions, expirePendingInvitations, buildSeatSummary, validateCafeAccess, listTeam,
-  removeMember, updateMemberCafes, updateMember,
+  removeMember, updateMember,
 };

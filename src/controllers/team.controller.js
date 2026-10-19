@@ -5,7 +5,7 @@
 const {
   inviteManager, previewInvitation, acceptInvitation, resendInvitation, revokeInvitation,
 } = require('./team/invitations');
-const { listTeam, removeMember, updateMemberCafes, updateMember } = require('./team/members');
+const { listTeam, removeMember, updateMember } = require('./team/members');
 const { listAccessAudit } = require('./team/audit');
 const { transferOwnership } = require('./team/ownership');
 const { switchCafe, addCafe, archiveCafe, restoreCafe } = require('./team/cafes');
@@ -19,7 +19,6 @@ module.exports = {
   resendInvitation,
   revokeInvitation,
   removeMember,
-  updateMemberCafes,
   updateMember,
   transferOwnership,
   switchCafe,

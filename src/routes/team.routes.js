@@ -13,7 +13,6 @@ const {
   listTeam,
   listAccessAudit,
   removeMember,
-  updateMemberCafes,
   updateMember,
   transferOwnership,
   switchCafe,
@@ -39,7 +38,6 @@ router.post('/invitations/:invitationId/resend', ownerOnly, writeLimiter, resend
 router.delete('/invitations/:invitationId', ownerOnly, writeLimiter, revokeInvitation);
 router.delete('/:userId', ownerOnly, removeMember);
 router.patch('/:userId', ownerOnly, updateMember);
-router.put('/:userId/cafes', ownerOnly, updateMemberCafes);
 router.post('/transfer-ownership', ownerOnly, writeLimiter, transferOwnership);
 router.post('/add-cafe', ownerOnly, addCafe);
 // Archive keeps the data and frees the quota (identity-8); restore needs room on the plan.

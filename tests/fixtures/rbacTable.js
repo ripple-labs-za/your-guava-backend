@@ -57,7 +57,6 @@ const RBAC_TABLE = [
   ['DELETE', '/api/team/invitations/:invitationId', 'owner', 'team administration'],
   ['DELETE', '/api/team/:userId', 'owner', 'team administration'],
   ['PATCH', '/api/team/:userId', 'owner', 'team administration'],
-  ['PUT', '/api/team/:userId/cafes', 'owner', 'team administration'],
   ['POST', '/api/team/transfer-ownership', 'owner', 'team administration'],
   ['POST', '/api/team/add-cafe', 'owner', 'locations are billed'],
   ['POST', '/api/team/cafes/:cafeId/archive', 'owner', 'locations are billed; data is kept (identity-8)'],
