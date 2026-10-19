@@ -31,6 +31,11 @@ const loadStockPairs = async (cafeId, target, timezone, itemNames) => {
     'items.actualQty': { $exists: true, $ne: null },
     calibrationExcluded: { $ne: true },
   }).select('items.itemName items.predictedQty items.actualQty').lean();
+  return stockPairsFromForecasts(docs, itemNames);
+};
+
+const stockPairsFromForecasts = (docs, itemNames) => {
+  const pairsByItem = new Map(itemNames.map((name) => [name, []]));
   for (const doc of docs) {
     for (const item of doc.items || []) {
       if (pairsByItem.has(item.itemName) && item.actualQty != null && item.predictedQty != null) {
@@ -67,5 +72,5 @@ const computeSuggestedStockMap = async (
 };
 
 module.exports = {
-  loadStockPairs, computeSuggestedStockFromPairs, computeSuggestedStockMap,
+  stockPairsFromForecasts, loadStockPairs, computeSuggestedStockFromPairs, computeSuggestedStockMap,
 };

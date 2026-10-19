@@ -5,9 +5,7 @@ const logger = require('../../utils/logger');
 const { backgroundJobsInline } = require('../../config/flags');
 const readmission = require('../../services/readmission.service');
 const Upload = require('../../models/Upload.model');
-const Forecast = require('../../models/Forecast.model');
-const { zonedDayEnd, zonedDayStart } = require('../../utils/timezone');
-const { updateForecastActuals, generateWeekForecast, invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
+const { updateForecastActualsForRange, generateWeekForecast, invalidatePlanningForecasts: invalidateForecastInputs } = require('../../services/forecast.service');
 const { invalidateDerivedViews } = require('../../services/postImport.service');
 const { boundedInteger, getCafeTimezone } = require('./shared');
 const { parsingLeaseMs, MAX_PARSING_LEASE_MS } = require('./lease');
@@ -45,22 +43,9 @@ const invalidatePlanningForecasts = async (cafeId, timezone) => {
 const fillActualsForRange = async (cafeId, dateRange, timezone) => {
   if (!dateRange?.firstDate || !dateRange?.lastDate) return;
   const resolvedTimezone = timezone || await getCafeTimezone(cafeId);
-  const start = zonedDayStart(dateRange.firstDate, resolvedTimezone);
-  const end = zonedDayEnd(dateRange.lastDate, resolvedTimezone);
-  const forecasts = await Forecast.find({ cafeId, date: { $gte: start, $lte: end } })
-    .select('date')
-    .sort({ date: -1 })
-    .limit(MAX_ACTUALS_REFRESH_FORECASTS + 1)
-    .lean();
-  if (forecasts.length > MAX_ACTUALS_REFRESH_FORECASTS) {
+  const result = await updateForecastActualsForRange(cafeId, dateRange.firstDate, dateRange.lastDate, { timezone: resolvedTimezone });
+  if (result.capped) {
     logger.warn('actuals_refresh_capped', { cafeId: String(cafeId), cap: MAX_ACTUALS_REFRESH_FORECASTS });
-  }
-  for (const forecast of forecasts.slice(0, MAX_ACTUALS_REFRESH_FORECASTS)) {
-    try {
-      await updateForecastActuals(cafeId, forecast.date, { timezone: resolvedTimezone });
-    } catch (err) {
-      logger.error('forecast_actuals_update_failed', { cafeId: String(cafeId), date: forecast.date, ...logger.errorFields(err) });
-    }
   }
 };
 

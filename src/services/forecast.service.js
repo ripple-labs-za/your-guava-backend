@@ -25,10 +25,13 @@ module.exports = {
   invalidatePlanningForecasts: generate.invalidatePlanningForecasts,
   SIGNAL_RETRY_AFTER_MS: generate.SIGNAL_RETRY_AFTER_MS,
   generateWeekForecast: generate.generateWeekForecast,
+  scoreForecastDay: actuals.scoreForecastDay,
+  updateForecastActualsForRange: actuals.updateForecastActualsForRange,
   updateForecastActuals: actuals.updateForecastActuals,
   refreshForecastsAfterMenuChange: actuals.refreshForecastsAfterMenuChange,
   scheduleForecastRefreshAfterMenuChange: actuals.scheduleForecastRefreshAfterMenuChange,
   _test: {
+    inFlightGenerations: generate.inFlightGenerations,
     runCoalescedMenuRefresh: actuals.runCoalescedMenuRefresh,
     waitForMenuRefresh: actuals.waitForMenuRefresh,
     itemWape: actuals.itemWape,

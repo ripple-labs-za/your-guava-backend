@@ -1,7 +1,7 @@
 // The history window: required weeks, confidence, weekly grouping, weights, averages and historical prices.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
 const {
-  zonedDayOrdinal, zonedDayStart, addZonedDays, zonedDateKey, processLocalCalendarDate, storedDayKey,
+  zonedDayOrdinal, zonedDayStart, zonedDateKey, processLocalCalendarDate, storedDayKey,
 } = require('../../utils/timezone');
 const Event = require('../../models/Event.model');
 const Forecast = require('../../models/Forecast.model');
@@ -68,8 +68,9 @@ const groupByWeekAndItem = (transactions, targetDate, timezone, maxWeeks) => {
   const targetOrdinal = zonedDayOrdinal(targetDate, timezone);
 
   // Bucket index: 0 = this week, 1 = last week, etc.
-  const getBucket = (txDate) => {
-    const diffDays = targetOrdinal - zonedDayOrdinal(txDate, timezone);
+  const getBucket = (tx) => {
+    const ordinal = tx.dateKey ? Math.floor(Date.parse(`${tx.dateKey}T00:00:00Z`) / 86_400_000) : zonedDayOrdinal(tx.date, timezone);
+    const diffDays = targetOrdinal - ordinal;
     if (diffDays <= 0) return -1;
     return Math.floor((diffDays - 1) / 7);
   };
@@ -79,7 +80,7 @@ const groupByWeekAndItem = (transactions, targetDate, timezone, maxWeeks) => {
 
   for (const tx of transactions) {
     if (!tx.items || tx.items.length === 0) continue;
-    const bucket = getBucket(tx.date);
+    const bucket = getBucket(tx);
     if (bucket < 0 || bucket >= maxWeeks) continue;
     // The cafe traded that day even if every line was ignored; only demand lines are item history (BE-03-T11).
     observedBuckets.add(bucket);
@@ -154,9 +155,13 @@ const OUTLIER_WINSOR_MULTIPLE = 1.5;
 const OUTLIER_MIN_OBSERVED_WEEKS = 4;
 const OUTLIER_MIN_MEDIAN_QTY = 3;
 
-const bucketDateKeys = (target, maxWeeks, timezone) =>
-  Array.from({ length: maxWeeks }, (_, bucket) =>
-    zonedDateKey(addZonedDays(target, -7 * (bucket + 1), timezone), timezone));
+const bucketDateKeys = (target, maxWeeks, timezone) => {
+  // These are calendar keys, so subtract calendar days without converting every
+  // bucket through an instant and back across the timezone (including DST).
+  const calendarDay = Date.parse(`${zonedDateKey(target, timezone)}T00:00:00Z`);
+  return Array.from({ length: maxWeeks }, (_, bucket) =>
+    new Date(calendarDay - 7 * (bucket + 1) * 86_400_000).toISOString().slice(0, 10));
+};
 
 const eventDateKey = (event, timezone) => event?.dateKey || storedDayKey(event?.date, timezone);
 

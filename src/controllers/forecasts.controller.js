@@ -7,8 +7,10 @@ const {
   FORECAST_MODEL_VERSION,
   generateForecast,
   generateForecastsForDates,
+  loadForecastContext,
+  loadForecastInputs,
   invalidatePlanningForecasts,
-  updateForecastActuals,
+  updateForecastActualsForRange,
   BACKTEST_BASIS_NOTE,
 } = require('../services/forecast.service');
 const { meterGuavaCredits, historyBackfillCreditsPerDay } = require('../services/usage.service');
@@ -222,13 +224,12 @@ const buildHistoryRow = (forecast, actual = {}, timezone) => {
   };
 };
 
-const ensureHistoryForecast = async (cafeId, date) => {
-  let forecast = await Forecast.findOne({ cafeId, date });
-  if (!forecast || ((forecast.origin || 'live') === 'backfill' && needsHistoryForecastRefresh(forecast))) {
-    forecast = await generateForecast(cafeId, date, { origin: 'backfill' });
-  }
-  const updated = await updateForecastActuals(cafeId, date);
-  return updated || forecast;
+const generatePlanningDay = async (cafeId, day, timezone, inputsVersion) => {
+  const { forecasts, failures } = await generateForecastsForDates(cafeId, [day], {
+    origin: 'live', reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }),
+  });
+  if (failures.length) throw new Error(failures[0].message);
+  return forecasts[0];
 };
 
 const getToday = async (req, res, next) => {
@@ -240,7 +241,7 @@ const getToday = async (req, res, next) => {
     let forecast = await Forecast.findOne({ cafeId, date: today });
 
     if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
-      forecast = await generateForecast(cafeId, today, { origin: 'live' });
+      forecast = await generatePlanningDay(cafeId, today, timezone, inputsVersion);
     }
 
     return res.status(200).json({ success: true, forecast: forecastForApi(forecast, timezone) });
@@ -272,7 +273,8 @@ const getWeek = async (req, res, next) => {
       existingByDate.get(zonedDateKey(date, timezone)), timezone, { inputsVersion }
     ));
     const { forecasts: rebuilt, failures } = stale.length > 0
-      ? await generateForecastsForDates(cafeId, stale, { origin: 'live' })
+      ? await generateForecastsForDates(cafeId, stale, { origin: 'live',
+        reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }) })
       : { forecasts: [], failures: [] };
     const staleKeys = new Set(stale.map((date) => zonedDateKey(date, timezone)));
     const byDate = new Map(existing.filter((forecast) => !staleKeys.has(zonedDateKey(forecast.date, timezone)))
@@ -554,49 +556,66 @@ const getHistory = async (req, res, next) => {
     if (syncBackfillLimit > 0 && missingDateKeys.length > 0) {
       const syncDates = missingDateKeys.slice(-syncBackfillLimit).reverse();
 
-      for (const dateKey of syncDates) {
-        await serializeHistoryBackfill(`${cafeId}:${dateKey}`, async () => {
-          const current = await Forecast.findOne({ cafeId, date: zonedDayStart(dateKey, timezone) }).lean();
-          if (current && !needsHistoryForecastRefresh(current)) {
-            forecastByDate.set(dateKey, current);
-            return;
+      // Serialize the whole cafe batch so its one fresh read also protects the
+      // cross-user no-double-charge rule; metering remains one reservation per day.
+      await serializeHistoryBackfill(String(cafeId), async () => {
+        const targets = syncDates.map((key) => zonedDayStart(key, timezone)).sort((a, b) => a - b);
+        const currentRows = await Forecast.find({ cafeId, date: { $in: targets } }).lean();
+        const currentByKey = new Map(currentRows.map((row) => [zonedDateKey(row.date, timezone), row]));
+        const context = await loadForecastContext(cafeId);
+        const inputs = await loadForecastInputs(cafeId, targets, context);
+        const builtKeys = [];
+        try {
+          for (const dateKey of syncDates) {
+            const current = currentByKey.get(dateKey);
+            if (current && !needsHistoryForecastRefresh(current)) {
+              forecastByDate.set(dateKey, current);
+              continue;
+            }
+            let built = null;
+            const attempt = current?.generatedAt ? new Date(current.generatedAt).getTime() : 'missing';
+            const { result, replayed } = await meterGuavaCredits({
+              orgId: req.user.orgId,
+              cafeId,
+              userId: req.user.id,
+              featureKey: 'history_backfill_day',
+              credits: creditsPerDay,
+              relatedEntity: { kind: 'forecast_day', id: dateKey },
+              idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}:${attempt}:${creditsPerDay}`,
+              run: async () => {
+                built = await generateForecast(cafeId, zonedDayStart(dateKey, timezone), { origin: 'backfill', context, inputs });
+                if (historyWeatherIsPending(built)) {
+                  const error = new Error('Historical weather is temporarily unavailable; this day remains pending');
+                  error.code = 'HISTORY_WEATHER_PENDING';
+                  throw error;
+                }
+                return { forecastId: built ? String(built._id) : null, dateKey };
+              },
+            }).catch((error) => {
+              if (error.code !== 'HISTORY_WEATHER_PENDING'
+                || (creditsPerDay > 0 && error.guavaCharge?.status !== 'refunded')) throw error;
+              clearApiCache({ cafeId });
+              return { result: null, replayed: false };
+            });
+            if (result?.forecastId) {
+              builtKeys.push(dateKey);
+              if (!replayed) creditsUsed += creditsPerDay;
+            }
           }
-          let built = null;
-          const attempt = current?.generatedAt ? new Date(current.generatedAt).getTime() : 'missing';
-          const { result, replayed } = await meterGuavaCredits({
-            orgId: req.user.orgId,
-            cafeId,
-            userId: req.user.id,
-            featureKey: 'history_backfill_day',
-            credits: creditsPerDay,
-            relatedEntity: { kind: 'forecast_day', id: dateKey },
-            idempotencyKey: `hbd:${cafeId}:${dateKey}:${req.user.id}:${attempt}:${creditsPerDay}`,
-            run: async () => {
-              built = await ensureHistoryForecast(cafeId, zonedDayStart(dateKey, timezone));
-              if (historyWeatherIsPending(built)) {
-                const error = new Error('Historical weather is temporarily unavailable; this day remains pending');
-                error.code = 'HISTORY_WEATHER_PENDING';
-                throw error; // The meter refunds before the day can be counted as built.
-              }
-              return { forecastId: built ? String(built._id) : null, dateKey };
-            },
-          }).catch((error) => {
-            if (error.code !== 'HISTORY_WEATHER_PENDING'
-              || (creditsPerDay > 0 && error.guavaCharge?.status !== 'refunded')) throw error;
-            clearApiCache({ cafeId });
-            return { result: null, replayed: false };
-          });
-          const forecast = built || (result?.forecastId ? await Forecast.findOne({ _id: result.forecastId, cafeId }).lean() : null);
-          if (forecast && !needsHistoryForecastRefresh(forecast)) {
-            forecastByDate.set(dateKey, typeof forecast.toObject === 'function' ? forecast.toObject() : forecast);
-            generated += 1;
-            if (!replayed) creditsUsed += creditsPerDay;
-            // A later day can exhaust credits or fail. Publish each saved day's
-            // history immediately even when the overall batch returns an error.
+        } finally {
+          // A later 402 or provider failure still leaves every earlier paid day
+          // scored and visible, just as the former per-day loop did.
+          if (builtKeys.length) {
+            const keys = [...builtKeys].sort();
+            await updateForecastActualsForRange(cafeId, keys[0], keys.at(-1), { timezone });
+            const scored = await Forecast.find({ cafeId, date: { $in: builtKeys.map((key) => zonedDayStart(key, timezone)) } })
+              .select(HISTORY_ROW_PROJECTION).lean();
+            for (const forecast of scored) forecastByDate.set(zonedDateKey(forecast.date, timezone), forecast);
+            generated = scored.filter((forecast) => !needsHistoryForecastRefresh(forecast)).length;
             clearApiCache({ cafeId });
           }
-        });
-      }
+        }
+      });
 
       missingDateKeys = dateKeys.filter((dateKey) => needsHistoryForecastRefresh(forecastByDate.get(dateKey)));
     }
@@ -691,7 +710,7 @@ const getTomorrow = async (req, res, next) => {
     let forecast = await Forecast.findOne({ cafeId, date: tomorrow });
 
     if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
-      forecast = await generateForecast(cafeId, tomorrow, { origin: 'live' });
+      forecast = await generatePlanningDay(cafeId, tomorrow, timezone, inputsVersion);
     }
 
     return res.status(200).json({ success: true, forecast: forecastForApi(forecast, timezone) });

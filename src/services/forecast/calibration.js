@@ -103,6 +103,10 @@ const computeForecastCalibration = async (cafeId, targetDate, timezone) => {
     .select('date items')
     .lean();
 
+  return calibrationFromForecasts(pastForecasts);
+};
+
+const calibrationFromForecasts = (pastForecasts) => {
   const overall = newBucket();
   const factorBuckets = new Map();
   const itemBuckets = new Map();
@@ -247,5 +251,5 @@ const calibrationMultiplierForItem = (calibration, itemName, factors) => {
 
 module.exports = {
   appliedLearningMultiplier, rawPredictedQty, OVERALL_SHRINK_PRIOR_DAYS,
-  CALIBRATION_LOOKBACK_DAYS, clamp, buildLearningFactor, computeForecastCalibration, calibrationMultiplierForItem,
+  CALIBRATION_LOOKBACK_DAYS, clamp, buildLearningFactor, calibrationFromForecasts, computeForecastCalibration, calibrationMultiplierForItem,
 };

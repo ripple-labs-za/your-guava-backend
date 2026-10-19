@@ -2,13 +2,14 @@ const { trackBackground } = require('../../utils/lifecycle');
 const logger = require('../../utils/logger');
 // Actuals scoring and the refresh a menu change triggers.
 // Moved from forecast.service.js by BE-11-T04; behaviour unchanged.
+const mongoose = require('mongoose');
 const Transaction = require('../../models/Transaction.model');
 const Forecast = require('../../models/Forecast.model');
 const Cafe = require('../../models/Cafe.model');
 const Item = require('../../models/Item.model');
 const { invalidatePlanningForecasts } = require('./generate');
 const { backgroundJobsInline } = require('../../config/flags');
-const { safeTimezone, zonedDayStart, addZonedDays } = require('../../utils/timezone');
+const { safeTimezone, zonedDayStart, addZonedDays, zonedDateKey } = require('../../utils/timezone');
 const { isDemandLine } = require('../../utils/demand');
 
 const BACKTEST_BASIS_NOTE =
@@ -124,6 +125,16 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
     date: { $gte: target, $lt: nextDay },
   }).lean();
 
+  const lineIds = transactions.flatMap((tx) => (tx.items || []).map((line) => line.salesItemId)).filter(Boolean);
+  const itemIndex = options.itemIndex || (transactions.length
+    ? await loadItemIndex(cafeId, [...forecast.items.map((fi) => fi.salesItemId), ...lineIds]) : new Map());
+  scoreForecastDay(forecast, transactions, { itemIndex });
+  await forecast.save();
+  return forecast;
+};
+
+// Both the single-day and range paths apply exactly the same scoring rules.
+const scoreForecastDay = (forecast, transactions, { itemIndex }) => {
   if (transactions.length === 0) {
     for (const fi of forecast.items) {
       fi.actualQty = undefined;
@@ -134,8 +145,7 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
     forecast.actualTransactionCount = undefined;
     forecast.actualsUpdatedAt = undefined;
     forecast.markModified('items');
-    await forecast.save();
-    return forecast;
+    return 'cleared';
   }
 
   // Sum actual quantities per item. A forecast made before the owner ignored a line predicted it, and is scored
@@ -145,8 +155,6 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
     ...(forecast.forecastCoverage?.predictedItemNames || []),
     ...(forecast.items || []).map((item) => item.itemName),
   ]);
-  const lineIds = transactions.flatMap((tx) => (tx.items || []).map((line) => line.salesItemId)).filter(Boolean);
-  const itemIndex = options.itemIndex || await loadItemIndex(cafeId, [...forecast.items.map((fi) => fi.salesItemId), ...lineIds]);
   const predictedIds = new Set(forecast.items.map((fi) => canonicalItemId(itemIndex, fi.salesItemId)).filter(Boolean));
   const actualMap = new Map();
   const actualById = new Map();
@@ -218,9 +226,50 @@ const updateForecastActuals = async (cafeId, date, options = {}) => {
   forecast.actualRevenue = parseFloat(actualRevenue.toFixed(2));
   forecast.actualTransactionCount = transactions.length;
   forecast.actualsUpdatedAt = new Date();
-  await forecast.save();
+  return 'scored';
+};
 
-  return forecast;
+const MAX_RANGE_FORECASTS = 366;
+const ACTUALS_PROJECTION_FIELDS = {
+  date: 1, total: 1, 'items.name': 1, 'items.quantity': 1, 'items.salesItemId': 1, 'items.menuItemStatus': 1,
+};
+const updateForecastActualsForRange = async (cafeId, firstDay, lastDay, { timezone, itemIndex } = {}) => {
+  const zone = safeTimezone(timezone || (await Cafe.findById(cafeId).select('timezone').lean())?.timezone);
+  const start = zonedDayStart(firstDay, zone);
+  const last = zonedDayStart(lastDay, zone);
+  const today = zonedDayStart(new Date(), zone);
+  if (!start || !last) return { scored: 0, cleared: 0 };
+  const end = new Date(Math.min(addZonedDays(last, 1, zone).getTime(), today.getTime()));
+  if (start >= end) return { scored: 0, cleared: 0 };
+  const found = await Forecast.find({ cafeId, date: { $gte: start, $lt: end } })
+    .select('+forecastCoverage.predictedItemNames').sort({ date: -1 }).limit(MAX_RANGE_FORECASTS + 1);
+  const capped = found.length > MAX_RANGE_FORECASTS;
+  const forecasts = found.slice(0, MAX_RANGE_FORECASTS).reverse();
+  if (!forecasts.length) return { scored: 0, cleared: 0 };
+  const index = itemIndex || await loadItemIndex(cafeId, (await Item.find({ cafeId }).select('_id').lean()).map((doc) => doc._id));
+  let scored = 0;
+  let cleared = 0;
+  for (let position = 0; position < forecasts.length;) {
+    const sliceStart = zonedDayStart(forecasts[position].date, zone);
+    const sliceEnd = new Date(Math.min(addZonedDays(sliceStart, 31, zone).getTime(), end.getTime()));
+    const slice = [];
+    while (position < forecasts.length && forecasts[position].date < sliceEnd) slice.push(forecasts[position++]);
+    const sales = await Transaction.aggregate([
+      { $match: { cafeId: new mongoose.Types.ObjectId(String(cafeId)), status: 'approved', date: { $gte: sliceStart, $lt: sliceEnd } } },
+      { $project: { ...ACTUALS_PROJECTION_FIELDS, dateKey: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone: zone } } } },
+    ]);
+    const byDay = new Map();
+    for (const sale of sales) {
+      if (!byDay.has(sale.dateKey)) byDay.set(sale.dateKey, []);
+      byDay.get(sale.dateKey).push(sale);
+    }
+    for (const forecast of slice) {
+      if (scoreForecastDay(forecast, byDay.get(zonedDateKey(forecast.date, zone)) || [], { itemIndex: index }) === 'scored') scored += 1;
+      else cleared += 1;
+    }
+    await Forecast.bulkSave(slice);
+  }
+  return capped ? { scored, cleared, capped: true } : { scored, cleared };
 };
 
 const refreshHistoricalActualsAfterMenuChange = async (cafeId, timezone) => {
@@ -235,8 +284,8 @@ const refreshHistoricalActualsAfterMenuChange = async (cafeId, timezone) => {
     .sort({ date: -1 })
     .limit(366)
     .lean();
-  for (const forecast of historical) {
-    await updateForecastActuals(cafeId, forecast.date, { timezone, itemIndex });
+  if (historical.length) {
+    await updateForecastActualsForRange(cafeId, historical.at(-1).date, historical[0].date, { timezone, itemIndex });
   }
 };
 
@@ -269,5 +318,5 @@ const scheduleForecastRefreshAfterMenuChange = async (cafeId) => {
 module.exports = {
   runCoalescedMenuRefresh, waitForMenuRefresh,
   BACKTEST_BASIS_NOTE, itemWape,
-  updateForecastActuals, refreshForecastsAfterMenuChange, scheduleForecastRefreshAfterMenuChange,
+  scoreForecastDay, updateForecastActualsForRange, updateForecastActuals, refreshForecastsAfterMenuChange, scheduleForecastRefreshAfterMenuChange,
 };
