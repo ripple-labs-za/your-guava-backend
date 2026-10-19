@@ -1,4 +1,5 @@
 // FB-010: an owner can discard a staged file without deleting another tab's completed import.
+const { ERROR_CODES } = require('../../src/utils/errorCodes');
 const mockFiles = new Map();
 jest.mock('../../src/services/r2.service', () => ({
   uploadFile: async (bytes, key) => { mockFiles.set(key, Buffer.from(bytes)); },
@@ -44,6 +45,7 @@ describe('pending-only upload discard', () => {
     expect(rows).toHaveLength(4);
     const response = await discard(owner.token, staged.uploadId);
     expect(response.status).toBe(409); expect(response.body.code).toBe('UPLOAD_NOT_STAGED');
+    expect(ERROR_CODES[response.body.code]).toMatchObject({ status: response.status, client: true });
     expect((await Upload.findById(staged.uploadId).lean()).status).toBe('completed');
     expect((await Transaction.find({ uploadId: staged.uploadId }).lean()).map((row) => [String(row._id), row.total]))
       .toEqual(rows.map((row) => [String(row._id), row.total]));

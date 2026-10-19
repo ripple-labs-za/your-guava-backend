@@ -128,6 +128,7 @@ const ERROR_CODES = Object.freeze({
   UPLOAD_EXPIRED: { status: 410, client: true, meaning: 'An unconfirmed upload expired and is being removed' },
   UPLOAD_FORM_TOO_LARGE: { status: 413, client: true, meaning: 'The multipart upload carried more parts or fields than a file upload needs' },
   UPLOAD_NO_NEW_ROWS: { status: 409, client: true, meaning: 'Every valid row in the file is already imported' },
+  UPLOAD_NOT_STAGED: { status: 409, client: true, meaning: 'The upload is no longer waiting for mapping and cannot be discarded as staged' },
   UPLOAD_PARSE_BUSY: { status: 503, client: true, meaning: 'Too many uploads are being parsed; the upload can be retried shortly' },
   UPLOAD_PARSE_RESOURCE_LIMIT: { status: 413, client: true, meaning: 'Parsing this file needed more memory than a parse may use; export a smaller file' },
   UPLOAD_PARSE_TIMEOUT: { status: 413, client: true, meaning: 'Parsing this file took longer than a parse may run; export a smaller file' },
