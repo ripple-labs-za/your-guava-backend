@@ -34,11 +34,59 @@ const TEXT_NAMES = new Set(['Dockerfile', '.gitignore', '.dockerignore', '.nvmrc
 // BE-12-T03 round 1: an expect() guarded on its own line. `expect(` needs the paren, so matchers like `expect.any(` never count.
 const ONE_LINE_GUARDS = [
   /\bif\s*\(.*\)\s*expect\(/,
+  /\bif\s*\(.*\)\s*\{.*expect\(/, // a same-line block: if (x) { expect(...) }
   /\belse\s+expect\(/,
   /(&&|\|\|)\s*expect\(/,
   /\?\s*expect\(/,
   /\?[^?]*:\s*expect\(/,
 ];
+
+// Source with its comments blanked, so a name mentioned only in a comment does not count as used. Strings, template literals and
+// regex literals are copied whole: a `//` inside 'https://…' or /\/\// is not a comment. A `/` starts a regex after an operator,
+// an opening bracket or a keyword such as return; otherwise it is division.
+const REGEX_AFTER = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
+const REGEX_AFTER_WORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'delete', 'void', 'throw', 'new', 'yield', 'await']);
+const stripComments = (source) => {
+  let out = '';
+  let last = '';
+  let i = 0;
+  const copyUntil = (close, start) => {
+    let j = start + 1;
+    let inClass = false;
+    while (j < source.length) {
+      const ch = source[j];
+      if (ch === '\\') { j += 2; continue; }
+      if (close === '/' && ch === '[') inClass = true;
+      else if (close === '/' && ch === ']') inClass = false;
+      else if (ch === close && !inClass) break;
+      else if (close !== '`' && ch === '\n') break;
+      j += 1;
+    }
+    out += source.slice(start, j + 1);
+    last = close;
+    return j + 1;
+  };
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i += 1;
+    } else if (c === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      out += ' ';
+      i = end === -1 ? source.length : end + 2;
+    } else if (c === '"' || c === "'" || c === '`') {
+      i = copyUntil(c, i);
+    } else if (c === '/' && (REGEX_AFTER.has(last) || REGEX_AFTER_WORDS.has((out.slice(-12).match(/(\w+)\s*$/) || [])[1]))) {
+      i = copyUntil('/', i);
+    } else {
+      out += c;
+      if (!/\s/.test(c)) last = c;
+      i += 1;
+    }
+  }
+  return out;
+};
 
 const walk = (dir) => {
   if (!existsSync(dir)) return [];
@@ -88,7 +136,8 @@ const checks = {
 
   focusedTests() {
     const files = testFiles();
-    return { checked: files.length, failures: eachLine(files, (line) => /\b(describe|it|test)\.only\s*\(|\bf(it|describe)\s*\(/.test(line)) };
+    // Any `.only` in a chain (it.only.each, describe.only.each, test.concurrent.only) and Jasmine's fit/fdescribe/ftest.
+    return { checked: files.length, failures: eachLine(files, (line) => /\b(describe|it|test)(\.\w+)*\.only\b|\bf(it|describe|test)\b\s*[(.]/.test(line)) };
   },
 
   nodeEnvTestBranches() {
@@ -129,7 +178,7 @@ const checks = {
           ? [match[1]]
           : match[2].split(',').map((part) => part.trim()).filter((part) => part && !part.startsWith('...'))
             .map((part) => part.split(':').pop().trim());
-        const rest = source.slice(0, match.index) + ' '.repeat(match[0].length) + source.slice(match.index + match[0].length);
+        const rest = stripComments(source.slice(0, match.index) + ' '.repeat(match[0].length) + source.slice(match.index + match[0].length));
         for (const name of names) {
           const used = new RegExp(`(^|[^\\w$.]|\\.\\.\\.)${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(rest);
           if (!used) found.push(`${rel(file)}: "${name}" is required but never used`);

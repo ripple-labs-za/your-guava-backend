@@ -98,6 +98,15 @@ describe('docs/launch-checklist.md matches the code', () => {
   it('keeps the single-instance section BE-10-T01 wrote', () => {
     expect(checklist).toContain('## Single instance (D-005)');
   });
+
+  it('names every one-line command the CI workflow runs, and no gate as still pending (BE-12-T04)', () => {
+    // A `run: |` block is a shell script (the image job's replica set and container), described by job instead.
+    const commands = [...read('.github/workflows/ci.yml').matchAll(/^\s*run: (?!\|)(.+)$/gm)].map((m) => m[1].split(' || ')[0].trim());
+    expect(commands.length).toBeGreaterThanOrEqual(6);
+    expect(commands.filter((command) => !checklist.includes(`\`${command}\``))).toEqual([]);
+    expect(checklist).toMatch(/CI job `image`/);
+    expect(checklist).not.toMatch(/pending BE-12-T04/);
+  });
 });
 
 describe('docs/integrations.md matches the code', () => {
@@ -145,6 +154,16 @@ describe('README.md', () => {
     const referenced = [...readme.matchAll(/node ((?:src|scripts)\/[\w./-]+\.m?js)/g)].map((m) => m[1]);
     expect(referenced.length).toBeGreaterThan(0);
     expect([...new Set(referenced)].filter((file) => !exists(file))).toEqual([]);
+  });
+
+  it('describes the CI gates as they run, not as pending (BE-12-T04)', () => {
+    for (const command of [
+      'node node_modules/jest/bin/jest.js --runInBand --coverage',
+      'node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json',
+      'npm audit --omit=dev --audit-level=high',
+    ]) expect(readme).toContain(`\`${command}\``);
+    expect(readme).toMatch(/`image` job/);
+    expect(readme).not.toMatch(/pending BE-12-T04|CI runs `npm test/);
   });
 
   it('uses the same local ports as .env.example, and a CLIENT_URL the portal actually serves', () => {

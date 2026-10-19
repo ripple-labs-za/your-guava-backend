@@ -6,16 +6,17 @@ Verified against: `0896312` on 19 October 2026. Use this before each production 
 
 | Check | Command | Where |
 |---|---|---|
-| Backend tests | `node node_modules/jest/bin/jest.js --runInBand` | CI job `verify`, locally |
-| Coverage report | `node node_modules/jest/bin/jest.js --runInBand --coverage` | locally; CI coverage gate pending BE-12-T04 |
-| Syntax | `node --check <file.js>` (CI checks every JavaScript file under src) | CI job `verify`, locally |
-| Whitespace | `git diff --check` | CI job `verify`, locally |
-| Dependency audit | `npm audit` (clean CI host only; no npm on incident workstation) | CI job `verify` |
-| Raw control characters | tracked-source scan in `.github/workflows/ci.yml` | CI job `verify` |
+| Install from the lockfile | `npm ci` (clean CI host only; no npm on the incident workstation) | CI job `verify` |
+| Backend tests with the coverage gate (85% lines, 75% branches) | `node node_modules/jest/bin/jest.js --runInBand --coverage` | CI job `verify`, locally |
+| Static checks: syntax, raw control characters, focused tests, test-only branches, production requires, unused requires, test guards, 70% per-file line floor | `node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json` | CI job `verify`, locally |
+| Whitespace in the change | `git diff --check HEAD^ HEAD` | CI job `verify`, locally |
+| Audit of what ships, after the tests | `npm audit --omit=dev --audit-level=high` | CI job `verify` |
+| Audit of dev dependencies (warns, never fails) | `npm audit --audit-level=high` | CI job `verify` |
+| Production image builds, runs as a non-root user and passes its own HEALTHCHECK | `docker build --pull -t your-guava-api:ci .`, then the run steps in `.github/workflows/ci.yml` | CI job `image` |
 | Portal tests, typecheck and build | portal's own CI commands | portal CI |
 
-The current workflow has only `verify`. The coverage/static-check gates and non-root image HEALTHCHECK verification planned in
-BE-12-T04 are pending; do not infer that they already run. There is no `scripts/static-checks.mjs` yet.
+Both jobs must be green on the backend pull request before merging (GATE-03). npm and the image build never run on the incident
+workstation; their first run is that pull request.
 
 ## Backend production environment
 

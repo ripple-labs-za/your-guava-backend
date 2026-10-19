@@ -80,15 +80,17 @@ Log in with the seeded owner and open `/today`: expect menu items including Flat
 
 ## Tests and checks
 
-CI runs `npm test -- --runInBand`; the direct equivalent is
-`node node_modules/jest/bin/jest.js --detectOpenHandles --runInBand`.
-`npm test` alone runs without `--runInBand` (parallel workers), with `--detectOpenHandles` from the package script.
-For coverage use `node node_modules/jest/bin/jest.js --runInBand --coverage`.
+CI (`.github/workflows/ci.yml`) has two jobs. The `verify` job installs with `npm ci`, then runs, in this order:
+`node node_modules/jest/bin/jest.js --runInBand --coverage` (fails below 85% lines or 75% branches over `src`),
+`node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json` (syntax, raw control characters, focused tests,
+test-only branches in `src`, requires of packages the image does not install, unused requires, test guards, and a 70% line floor per
+`src` file), `git diff --check HEAD^ HEAD` (whitespace in the change), and only then `npm audit --omit=dev --audit-level=high`; the audit
+of dev dependencies only warns. The `image` job builds the production image, starts it against a MongoDB replica set, and passes only
+when the container reports its own HEALTHCHECK healthy and runs as a non-root user.
+Every check step runs the same way locally. For a quick run use `node node_modules/jest/bin/jest.js --detectOpenHandles --runInBand`
+(the package script's flags; `npm test` alone runs parallel workers), and `node scripts/static-checks.mjs` without a summary (no floor).
 Tests never load `.env`, pin `Africa/Johannesburg`, refuse outbound network, and start their own in-memory MongoDB.
 `MONGOMS_RUNTIME_DOWNLOAD=false` prevents an incidental MongoDB binary download when using a pre-cached binary.
-Run `git diff --check` for whitespace and `node --check <file.js>` for changed JavaScript files.
-CI currently runs the `verify` job with tests, dependency audit, JavaScript syntax, raw-control-character checks and whitespace.
-Coverage/static-check and image jobs are pending BE-12-T04; there is currently no `scripts/static-checks.mjs` command to run.
 
 ## Troubleshooting
 

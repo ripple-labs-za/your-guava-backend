@@ -30,6 +30,20 @@ describe('backend CI workflow', () => {
     for (const line of audits) expect(line).toMatch(/--omit=dev --audit-level=high$|\|\| echo "::warning::/);
   });
 
+  it('never lets a gating step pass by skipping or swallowing its failure', () => {
+    // The dev-dependency audit reports without failing through `|| echo "::warning::`; nothing else may.
+    expect(lines.filter((line) => /^\s*(continue-on-error|if):/.test(line))).toEqual([]);
+  });
+
+  it('checks whitespace over the pushed commit or the pull request, not an empty working tree', () => {
+    // Bare `git diff --check` compares the working tree with the index, which is always clean on a runner. With two commits
+    // fetched, HEAD^ is the parent on a push and the base branch's tip on a pull request's merge commit.
+    expect(workflow).toMatch(/run: git diff --check HEAD\^ HEAD$/m);
+    expect(workflow).not.toMatch(/run: git diff --check$/m);
+    const verify = workflow.split(/^\s{2}image:/m)[0];
+    expect(verify).toMatch(/uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+fetch-depth: 2\n/);
+  });
+
   it('cancels superseded runs on pull requests only, so every main commit gets a verdict', () => {
     expect(workflow).toMatch(/cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
   });

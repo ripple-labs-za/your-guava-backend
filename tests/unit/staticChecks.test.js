@@ -49,13 +49,18 @@ describe('scripts/static-checks.mjs', () => {
     ['unusedRequires', 'src/unused.js', "const fs = require('fs');\nmodule.exports = 1;\n"],
     ['unusedRequires', 'src/destructured.js', "const {\n  join,\n  resolve,\n} = require('path');\nmodule.exports = join;\n"],
     ['focusedTests', 'tests/focused.test.js', "it.only('x', () => {\n  expect(1).toBe(1);\n});\n"], // static-checks: allow planted fixture
-    ['testGuards', 'tests/guarded.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 0) {\n    expect(v).toBe(1);\n  }\n});\n"],
-    ['testGuards', 'tests/elseif.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 1) {\n    v;\n  } else if (v > 0) {\n    expect(v).toBe(1);\n  }\n});\n"],
+    ['focusedTests', 'tests/only-each.test.js', "it.only.each([1])('x %i', (v) => {\n  expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
+    ['focusedTests', 'tests/describe-only-each.test.js', "describe.only.each([1])('x %i', (v) => {\n  it('y', () => {\n    expect(v).toBe(1);\n  });\n});\n"], // static-checks: allow planted fixture
+    ['focusedTests', 'tests/concurrent-only.test.js', "test.concurrent.only('x', async () => {\n  expect(1).toBe(1);\n});\n"], // static-checks: allow planted fixture
+    ['unusedRequires', 'src/comment-only.js', "const fs = require('fs');\n// fs.readFileSync is not called here\n/* nor fs.writeFileSync */\nmodule.exports = 1;\n"],
+    ['testGuards', 'tests/guarded.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 0) {\n    expect(v).toBe(1);\n  }\n});\n"], // static-checks: allow planted fixture
+    ['testGuards', 'tests/elseif.test.js', "it('x', () => {\n  const v = 1;\n  if (v > 1) {\n    v;\n  } else if (v > 0) {\n    expect(v).toBe(1);\n  }\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/early.test.js', "it('y', () => {\n  if (!process.env.X) return;\n  expect(1).toBe(1);\n});\n"],
     ['testGuards', 'tests/oneline-if.test.js', "it('x', () => {\n  const v = 1;\n  if (v) expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/oneline-else.test.js', "it('x', () => {\n  const v = 1;\n  if (v) {\n    v;\n  } else expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/oneline-and.test.js', "it('x', () => {\n  const v = 1;\n  v && expect(v).toBe(1);\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/oneline-or.test.js', "it('x', () => {\n  const v = 0;\n  v || expect(v).toBe(0);\n});\n"], // static-checks: allow planted fixture
+    ['testGuards', 'tests/same-line-block.test.js', "it('x', () => {\n  const v = 1;\n  if (v) { expect(v).toBe(1); }\n});\n"], // static-checks: allow planted fixture
     ['testGuards', 'tests/ternary.test.js', "it('x', () => {\n  const v = 1;\n  v ? expect(v).toBe(1) : null;\n});\n"], // static-checks: allow planted fixture
   ])('fails %s on %s', (check, file, content) => {
     const result = run(tree({ ...CLEAN, [file]: content }), ['--only', check]);
@@ -70,6 +75,11 @@ describe('scripts/static-checks.mjs', () => {
     const sideEffect = "const model = require('./model'); // static-checks: allow side-effect\nmodule.exports = 1;\n";
     expect(run(tree({ ...CLEAN, 'tests/marked.test.js': marked }), ['--only', 'testGuards']).status).toBe(0);
     expect(run(tree({ ...CLEAN, 'src/register.js': sideEffect }), ['--only', 'unusedRequires']).status).toBe(0);
+  });
+
+  it('reads a use after a URL string as a use: only real comments are stripped', () => {
+    const source = "const http = require('http');\nmodule.exports = ['https://example.test/a', http.globalAgent, `//${'x'}`, /\\/\\//];\n";
+    expect(run(tree({ ...CLEAN, 'src/url.js': source }), ['--only', 'unusedRequires']).status).toBe(0);
   });
 
   it('leaves a helper that returns early alone outside a test file', () => {
