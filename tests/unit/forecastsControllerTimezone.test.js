@@ -23,6 +23,9 @@ jest.mock('../../src/models/Transaction.model', () => ({
 }));
 jest.mock('../../src/services/forecast.service', () => ({
   invalidatePlanningForecasts: jest.fn(),
+  loadForecastContext: async () => ({ timezone: 'America/New_York', inputsVersion: 0 }),
+  loadForecastInputs: async () => ({}),
+  updateForecastActualsForRange: async () => ({ scored: 1, cleared: 0 }),
   BACKTEST_BASIS_NOTE: 'note',
   FORECAST_MODEL_VERSION: 'test-model',
   generateForecast: (...args) => mockGenerateForecast(...args),
