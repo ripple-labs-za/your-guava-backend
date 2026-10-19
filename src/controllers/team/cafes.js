@@ -10,6 +10,7 @@ const { getPlanCapacity } = require('../../services/planCapacity.service');
 const { recordAccessAudit } = require('./audit');
 const { generateAccessToken } = require('../../utils/authPrimitives');
 const { clearApiCache } = require('../../middleware/cache.middleware');
+const { refusalBody } = require('../../utils/errorCodes');
 
 // POST /api/team/switch-cafe - Switch active cafe.
 const switchCafe = async (req, res, next) => {
@@ -222,12 +223,7 @@ const archiveCafe = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.statusCode && error.statusCode < 500) {
-      return res.status(error.statusCode).json({
-        success: false,
-        message: error.message,
-        ...(error.code ? { code: error.code } : {}),
-        ...(error.members ? { members: error.members } : {}),
-      });
+      return res.status(error.statusCode).json(refusalBody(error, error.members ? { members: error.members } : {}));
     }
     return next(error);
   } finally {

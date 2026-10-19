@@ -1,32 +1,42 @@
 // BE-13-T02: every machine-readable code the API sends is registered, and the error middleware always sends a registered code
 // at the top level (never a system, database or library code), with Retry-After when it knows the wait.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const errorMiddleware = require('../../src/middleware/error.middleware');
-const { ERROR_CODES, isRegisteredCode, codeOf } = require('../../src/utils/errorCodes');
+const { ERROR_CODES, isRegisteredCode, codeOf, refusalBody } = require('../../src/utils/errorCodes');
 
 const SRC = path.resolve(__dirname, '../../src');
-const CODE = '[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+';
-const LITERAL = new RegExp(`'(${CODE})'`, 'g');
-// Same rule as backend-90/tools/contract-map.mjs: CONSTANT_CASE literals in a `code:`/`code =`/`publicCode:` span, or in the
-// arguments of an error factory (`*Error(…)`, `refuse*(…)`).
-const SPANS = [/\b(?:code|publicCode)\s*(?::|=(?!=))[^\n;]*/g, new RegExp(`\\b(?:\\w*Error|refuse\\w*)\\([^;]*?'${CODE}'`, 'g')];
-
+// Same rule as backend-90/tools/contract-map.mjs (BE-13-T02 round 2): every quoted CONSTANT_CASE literal in src (one word of
+// three or more capitals, or words joined by underscores) is an error code unless tests/fixtures/notErrorCodes.json names it
+// (environment variables, library codes, HTTP methods, plain values). No span rule, so a code thrown through a helper of any
+// name (`refusal(400, 'X', …)`) is still found.
+const LITERAL = /['"`]([A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)*|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)['"`]/g;
+const NOT_CODES_FILE = path.resolve(__dirname, '../fixtures/notErrorCodes.json');
+const notCodes = () => {
+  const { _comment, ...groups } = JSON.parse(fs.readFileSync(NOT_CODES_FILE, 'utf8'));
+  return new Set(Object.values(groups).flat());
+};
 const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
   const full = path.join(dir, entry.name);
   if (entry.isDirectory()) return walk(full);
-  return entry.name.endsWith('.js') && !entry.name.startsWith('seed') && entry.name !== 'errorCodes.js' ? [full] : [];
+  return entry.name.endsWith('.js') && entry.name !== 'errorCodes.js' ? [full] : [];
 });
 
-const emitted = () => {
+// Every quoted CONSTANT_CASE literal under `dir`, with the first file it appears in.
+const literals = (dir) => {
   const found = new Map();
-  for (const file of walk(SRC)) {
-    const text = fs.readFileSync(file, 'utf8');
-    for (const re of SPANS) for (const span of text.matchAll(re)) for (const lit of span[0].matchAll(LITERAL)) {
-      if (!found.has(lit[1])) found.set(lit[1], path.relative(SRC, file));
+  for (const file of walk(dir)) {
+    for (const lit of fs.readFileSync(file, 'utf8').matchAll(LITERAL)) {
+      if (!found.has(lit[1])) found.set(lit[1], path.relative(dir, file));
     }
   }
   return found;
+};
+
+const emitted = (dir = SRC) => {
+  const skip = notCodes();
+  return new Map([...literals(dir)].filter(([name]) => !skip.has(name)));
 };
 
 const createResponse = () => {
@@ -42,6 +52,38 @@ describe('error code registry', () => {
   it('registers every code the source emits', () => {
     const unregistered = [...emitted()].filter(([code]) => !isRegisteredCode(code)).map(([code, file]) => `${code} (${file})`);
     expect(unregistered).toEqual([]);
+  });
+
+  it('finds a code thrown through a helper of any name', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'error-codes-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'planted.js'), "const refusal = (s, c, m) => Object.assign(new Error(m), { statusCode: s });\n"
+        + "module.exports = (one) => { throw one ? refusal(400, 'PLANTED', 'no') : refusal(409, 'PLANTED_REFUSAL', 'no'); };\n");
+      expect([...emitted(dir).keys()].sort()).toEqual(['PLANTED', 'PLANTED_REFUSAL']);
+      expect(isRegisteredCode('PLANTED')).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the not-a-code list exact: every name is still in src and none is a registered code', () => {
+    const inSource = literals(SRC);
+    const listed = [...notCodes()];
+    expect(listed.filter((name) => !inSource.has(name))).toEqual([]);
+    expect(listed.filter((name) => isRegisteredCode(name))).toEqual([]);
+  });
+
+  it('reads the parser and menu refusals that BE-13-T02 round 2 registered', () => {
+    for (const code of ['UPLOAD_PARSE_TIMEOUT', 'UPLOAD_PARSE_RESOURCE_LIMIT', 'UPLOAD_ABORTED']) expect(codeOf({ code })).toBe(code);
+    for (const code of ['MAP_TO_SELF', 'MAP_TO_INACTIVE_TARGET', 'ITEM_NAME_TAKEN']) expect(codeOf({ code, publicCode: code })).toBe(code);
+    expect(ERROR_CODES.UPLOAD_ABORTED.client).toBe(false);
+  });
+
+  it('answers a refusal a controller sends itself with the registered code only', () => {
+    expect(refusalBody(Object.assign(new Error('A menu item cannot be linked to itself.'), { publicCode: 'MAP_TO_SELF' })))
+      .toEqual({ success: false, code: 'MAP_TO_SELF', message: 'A menu item cannot be linked to itself.' });
+    expect(refusalBody(Object.assign(new Error('Busy'), { code: 'ENOENT' }), { members: [1] }))
+      .toEqual({ success: false, message: 'Busy', members: [1] });
   });
 
   it('holds no code that nothing emits', () => {

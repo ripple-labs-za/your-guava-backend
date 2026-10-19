@@ -19,6 +19,7 @@ const { scheduleForecastRefreshAfterMenuChange } = require('../services/forecast
 const { clearApiCache } = require('../middleware/cache.middleware');
 const { creditSnapshot } = require('../services/usage.service');
 const { activeCafeId } = require('../utils/tenancy');
+const { refusalBody } = require('../utils/errorCodes');
 const { boundedInteger } = require('../services/parser.service');
 
 const VALID_REVIEW_STATUSES = new Set(['matched', 'needs_review', 'ignored', 'merged']);
@@ -85,7 +86,7 @@ const reconciliationFilter = (cafeId) => ({
 // with its code; anything else goes to the error middleware.
 const answerRefusal = (error, res, next) => {
   if (error.publicCode && error.statusCode >= 400 && error.statusCode < 500) {
-    return res.status(error.statusCode).json({ success: false, code: error.publicCode, message: error.message });
+    return res.status(error.statusCode).json(refusalBody(error));
   }
   return next(error);
 };

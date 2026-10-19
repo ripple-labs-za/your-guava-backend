@@ -77,6 +77,7 @@ const ERROR_CODES = Object.freeze({
   INVITE_NOT_POSSIBLE: { status: 409, client: true, meaning: 'This email cannot be invited to this organisation' },
   INVITE_RATE_LIMITED: { status: 429, client: true, meaning: 'Too many invitation preview or accept attempts' },
   ITEM_COUNT_CHANGED: { status: 409, client: true, meaning: 'The number of items waiting for review changed before a bulk confirm (BE-13-T06)' },
+  ITEM_NAME_TAKEN: { status: 409, client: true, meaning: 'A menu item edit would take a name another item in this cafe already has' },
   LAST_LOCATION: { status: 409, client: true, meaning: 'The organisation would be left without an active location' },
   LEAVE_BALANCE_NOT_FOUND: { status: 404, client: true, meaning: 'The staff member has no leave balance for this cycle' },
   LEAVE_CROSSES_CYCLE: { status: 400, client: true, meaning: 'The leave request crosses into the next leave cycle' },
@@ -91,6 +92,8 @@ const ERROR_CODES = Object.freeze({
   LOCATION_HAS_MEMBERS: { status: 409, client: true, meaning: 'Team members are still assigned to the location being closed' },
   LOGIN_THROTTLED: { status: 429, client: true, meaning: 'Sign-in for this account is paused after repeated failed attempts' },
   MAPPING_ALREADY_COMMITTED: { status: 409, client: true, meaning: 'The upload was already imported with a different column mapping' },
+  MAP_TO_INACTIVE_TARGET: { status: 400, client: true, meaning: 'A menu item was linked to a merged or ignored item; link to the active item instead' },
+  MAP_TO_SELF: { status: 400, client: true, meaning: 'A menu item was linked to itself' },
   OAUTH_CALLBACK_FAILED: { status: 502, client: true, meaning: 'The accounting provider refused or failed the sign-in callback' },
   OBJECT_TOO_LARGE: { status: 413, client: false, meaning: 'Internal: a stored object is over the storage size limit' },
   PARSE_RATE_LIMITED: { status: 429, client: true, meaning: 'More files were read in a minute than the parse budget allows' },
@@ -119,12 +122,15 @@ const ERROR_CODES = Object.freeze({
   STAFF_START_DATE_LOCKED: { status: 409, client: true, meaning: 'A start date cannot move once leave is recorded against it' },
   TIMEZONE_LOCKED: { status: 409, client: true, meaning: 'The location timezone cannot change once sales are recorded' },
   TOO_MANY_ITEMS: { status: 400, client: true, meaning: 'More items are waiting than one bulk confirm may take (BE-13-T06)' },
+  UPLOAD_ABORTED: { status: 499, client: false, meaning: 'Internal: the browser cancelled the upload while it was parsing; no response reaches it' },
   UPLOAD_BUSY: { status: 409, client: true, meaning: 'The upload is already being parsed by another request' },
   UPLOAD_CHANGED: { status: 409, client: true, meaning: 'The upload changed state while the request was being handled' },
   UPLOAD_EXPIRED: { status: 410, client: true, meaning: 'An unconfirmed upload expired and is being removed' },
   UPLOAD_FORM_TOO_LARGE: { status: 413, client: true, meaning: 'The multipart upload carried more parts or fields than a file upload needs' },
   UPLOAD_NO_NEW_ROWS: { status: 409, client: true, meaning: 'Every valid row in the file is already imported' },
   UPLOAD_PARSE_BUSY: { status: 503, client: true, meaning: 'Too many uploads are being parsed; the upload can be retried shortly' },
+  UPLOAD_PARSE_RESOURCE_LIMIT: { status: 413, client: true, meaning: 'Parsing this file needed more memory than a parse may use; export a smaller file' },
+  UPLOAD_PARSE_TIMEOUT: { status: 413, client: true, meaning: 'Parsing this file took longer than a parse may run; export a smaller file' },
   UPLOAD_RATE_LIMITED: { status: 429, client: true, meaning: 'More uploads in a minute than the upload budget allows' },
   UPLOAD_TOO_LARGE: { status: 413, client: true, meaning: 'The uploaded file is over the size limit' },
   UPSTREAM_AUTH_FAILED: { status: 502, client: true, meaning: 'An integration provider refused the stored credentials' },
@@ -147,4 +153,11 @@ const isRegisteredCode = (code) => typeof code === 'string' && Object.prototype.
 // publicCode first: it is set when err.code is an internal or library code (ETIMEDOUT beside UPSTREAM_TIMEOUT).
 const codeOf = (err) => [err?.publicCode, err?.code, err?.details?.code].find(isRegisteredCode) ?? null;
 
-module.exports = { ERROR_CODES, isRegisteredCode, codeOf };
+// The body of a refusal a controller answers itself (a worded 4xx, not the error middleware): the same registered code the
+// middleware would send, never an unregistered one, then any extra fields the refusal carries.
+const refusalBody = (err, extra = {}) => {
+  const code = codeOf(err);
+  return { success: false, ...(code ? { code } : {}), message: err.message, ...extra };
+};
+
+module.exports = { ERROR_CODES, isRegisteredCode, codeOf, refusalBody };

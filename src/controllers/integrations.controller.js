@@ -11,6 +11,7 @@ const quickbooksService = require('../services/integrations/quickbooks.service')
 const sageService = require('../services/integrations/sage.service');
 const { activeCafeId } = require('../utils/tenancy');
 const { singleFlight } = require('../utils/singleFlight');
+const { refusalBody } = require('../utils/errorCodes');
 const { refreshIntegrationAccessToken } = require('../services/integrations/tokens');
 const { syncWindow, buildSalesSummary } = require('../services/integrations/salesSummary');
 const { PROVIDER_LABELS, ACCOUNT_ID_FIELD, isValidAccountId } = require('../services/integrations/common');
@@ -193,7 +194,7 @@ const callback = async (req, res, _next) => {
       return res.status(503).json({ success: false, code: 'INTEGRATION_NOT_CONFIGURED', message: error.message });
     }
     if (error?.publicCode && isHttpStatus(error.statusCode)) {
-      return res.status(error.statusCode).json({ success: false, code: error.publicCode, message: error.message });
+      return res.status(error.statusCode).json(refusalBody(error));
     }
     logger.error('integration_oauth_callback_failed', { provider, ...logger.errorFields(error) });
     return res.status(502).json({

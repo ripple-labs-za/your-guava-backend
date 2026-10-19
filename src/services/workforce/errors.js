@@ -1,3 +1,5 @@
+const { refusalBody } = require('../../utils/errorCodes');
+
 /**
  * A refusal the workforce API words deliberately for the client: an HTTP
  * status, a stable code the portal can branch on, and a sentence it shows
@@ -15,7 +17,7 @@ class WorkforceError extends Error {
 
 const sendWorkforceError = (res, error) => {
   if (!(error instanceof WorkforceError)) return false;
-  res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, ...error.extra });
+  res.status(error.statusCode).json(refusalBody(error, error.extra));
   return true;
 };
 

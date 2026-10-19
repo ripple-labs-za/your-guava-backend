@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const UsageLedger = require('../../models/UsageLedger.model');
 const { addBillingCycle } = require('../billingPlans.service');
 
+// An estimate, not a measured wait: nothing tracks when the running AI request will end, and most finish within a few
+// seconds, so Retry-After tells the client when a retry is reasonable rather than when a slot is guaranteed (BE-13-T02).
 const AI_CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 const DEFAULT_TRIAL_DAYS = 14;
 const DEFAULT_TRIAL_MS = DEFAULT_TRIAL_DAYS * 24 * 60 * 60 * 1000;
