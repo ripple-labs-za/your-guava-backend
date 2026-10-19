@@ -90,7 +90,7 @@ describe('AI tools cost', () => {
   });
 });
 
-const RULE_IS_THRESHOLD = false; // step 6's decision: true for 'threshold', false for 'compact'
+const RULE_IS_THRESHOLD = true; // first-weeks F01 cafes lose caching under unconditional compact
 
 it('C2b: the context block is compact except where only the pretty form keeps the prompt cache', () => {
   // ~58 compact / ~90 pretty characters a row: 30 rows is small, 250 lands between the two thresholds, 3,000 is large
@@ -117,4 +117,27 @@ it('C2c: both JSON forms preserve every value and escape fence delimiters', () =
     expect(JSON.parse(sent)).toEqual(context);
   }
   expect(JSON.parse(ai.contextBlockJson(context))).toEqual(context);
+});
+
+it('C2d: the system prompt and fence can make a pretty prefix cacheable near the boundary', () => {
+  const { CHAT_SYSTEM_PROMPT } = require('../../src/services/ai/prompts');
+  const prefixChars = CHAT_SYSTEM_PROMPT.length + '<untrusted_business_context>\n\n</untrusted_business_context>'.length + 1;
+  const context = { x: 'a'.repeat(ai.CACHEABLE_MIN_CHARS - prefixChars - 12) };
+  const compact = ai.fencedJson(context);
+  const pretty = ai.fencedJson(context, { pretty: true });
+  expect(Math.ceil((compact.length + prefixChars) / 4)).toBeLessThan(4096);
+  expect(Math.ceil((pretty.length + prefixChars) / 4)).toBeGreaterThanOrEqual(4096);
+  expect(ai.contextBlockJson(context)).toBe(pretty);
+});
+
+it('loads app with an unknown AI_MODEL_CHAT so validation can report the bad model', () => {
+  const { spawnSync } = require('node:child_process');
+  const path = require('node:path');
+  const child = spawnSync(process.execPath, ['-e',
+    "require('./tests/env'); process.env.AI_MODEL_CHAT='unknown-review-model'; require('./src/app'); console.log('APP LOADED'); process.exit(0)"],
+  { cwd: path.join(__dirname, '../..'), encoding: 'utf8', timeout: 15_000 });
+  expect(child.error).toBeUndefined();
+  expect(child.stderr).not.toContain('TypeError');
+  expect(child.status).toBe(0);
+  expect(child.stdout).toContain('APP LOADED');
 });

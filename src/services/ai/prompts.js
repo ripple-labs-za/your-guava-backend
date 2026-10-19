@@ -31,13 +31,22 @@ const fencedJson = (value, { pretty = false } = {}) =>
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
 
-// BE-14-T03: both measured cafes keep their cached prefix when compacted,
-// and compact costs less for one- and three-question sessions. Preserve every
-// JSON value and the unforgeable fence; only whitespace changes.
-const MIN_CACHE_TOKENS = MODELS[modelFor('chat')].minCacheableTokens;
+// Preserve the cache for first-weeks cafes too: compact may cross below the
+// model's cache minimum even when the original pretty prefix still caches.
+// Unknown configuration is diagnosed by validateEnv, not by module loading.
+const selectedModel = modelFor('chat');
+const MIN_CACHE_TOKENS = (Object.hasOwn(MODELS, selectedModel) ? MODELS[selectedModel] : MODELS[DEFAULT_MODEL]).minCacheableTokens;
 const CACHEABLE_MIN_CHARS = MIN_CACHE_TOKENS * 4;
 const COMPACT_MIN_CHARS = Math.ceil(CACHEABLE_MIN_CHARS * 1.25);
-const contextBlockJson = (context) => fencedJson(context);
+const contextBlockJson = (context) => {
+  const compact = fencedJson(context);
+  if (compact.length >= COMPACT_MIN_CHARS) return compact;
+  const pretty = fencedJson(context, { pretty: true });
+  // The cached prefix includes the system prompt, fence and block separator.
+  // Count them at the same 4-char estimator used by the local cost evidence.
+  const prefixChars = CHAT_SYSTEM_PROMPT.length + '<untrusted_business_context>\n\n</untrusted_business_context>'.length + 1;
+  return Math.ceil((pretty.length + prefixChars) / 4) >= MIN_CACHE_TOKENS ? pretty : compact;
+};
 
 const missingInsightsKeyResponse = () => ({
   insights: ['AI insights require an Anthropic API key. Add ANTHROPIC_API_KEY to your environment variables.'],
