@@ -38,8 +38,7 @@ const settleWithin = (promise, ms) => Promise.race([
 ]);
 // A stalled provider that honours the abort signal it was given. No signal: it stays pending.
 const stallUntilAborted = (signal) => new Promise((_resolve, reject) => {
-  if (!signal) return;
-  signal.addEventListener('abort', () => {
+  signal?.addEventListener('abort', () => {
     reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
   }, { once: true });
 });

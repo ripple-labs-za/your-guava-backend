@@ -25,15 +25,15 @@ const declaredRoutes = () => {
   const rows = [];
   for (const { mount, file } of mounts) {
     const router = require(path.join(SRC, 'routes', file));
-    router.stack.forEach((layer, index) => {
-      if (!layer.route) return;
+    for (const [index, layer] of router.stack.entries()) {
+      if (!layer.route) continue; // router-level middleware, not a route
       const routerLevel = router.stack.slice(0, index).filter((entry) => !entry.route).map((entry) => entry.handle);
       const chain = [...routerLevel, ...layer.route.stack.map((entry) => entry.handle)];
       const fullPath = layer.route.path === '/' ? mount : `${mount}${layer.route.path}`;
       for (const method of Object.keys(layer.route.methods)) {
         rows.push(`${method.toUpperCase()} ${fullPath} ${accessOf(chain)}`);
       }
-    });
+    }
   }
   return rows.sort();
 };

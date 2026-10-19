@@ -47,10 +47,10 @@ const abortableWait = (held, signal) => new Promise((resolve, reject) => {
   };
   if (signal?.aborted) {
     onAbort();
-    return;
+  } else {
+    signal?.addEventListener('abort', onAbort, { once: true });
+    held.promise.then(resolve);
   }
-  signal?.addEventListener('abort', onAbort, { once: true });
-  held.promise.then(resolve);
 });
 
 const messageStart = {

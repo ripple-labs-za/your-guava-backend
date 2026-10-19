@@ -95,7 +95,7 @@ describe('Guava Credit reservation lease breach', () => {
     let finishRetry;
     const retry = meterGuavaCredits({ ...request, run: () => new Promise((resolve) => { finishRetry = resolve; }) });
     await waitFor(() => finishRetry);
-    if (retryStatus === 'refunded') {
+    if (retryStatus === 'refunded') { // static-checks: allow conditional-expect it.each row: only a refunded retry is reconciled again
       await UsageLedger.updateOne({ _id: held._id }, { $set: { reservedAt: new Date(Date.now() - 600_000) } });
       expect((await reconcileStaleUsageReservations({ leaseMs: 60_000 })).refunded).toBe(1);
     }
@@ -383,12 +383,13 @@ describe('same-key answer settlement waits', () => {
     const explanation = await UsageLedger.aggregate(pipeline).explain('executionStats');
     const stages = [];
     const walk = (node) => {
-      if (!node || typeof node !== 'object') return;
-      if (node.stage) stages.push(node);
-      Object.values(node).forEach((value) => {
-        if (Array.isArray(value)) value.forEach(walk);
-        else if (value && typeof value === 'object') walk(value);
-      });
+      if (node && typeof node === 'object') {
+        if (node.stage) stages.push(node);
+        Object.values(node).forEach((value) => {
+          if (Array.isArray(value)) value.forEach(walk);
+          else if (value && typeof value === 'object') walk(value);
+        });
+      }
     };
     const cursor = explanation.stages?.find((stage) => stage.$cursor)?.$cursor || explanation;
     walk(cursor.queryPlanner.winningPlan);

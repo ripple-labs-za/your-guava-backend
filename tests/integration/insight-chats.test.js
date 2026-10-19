@@ -53,14 +53,15 @@ describe('Insight Chats API', () => {
     expect(total).toBe(MAX_CHATS_PER_USER - 1 + created.length);
     expect(total).toBeLessThanOrEqual(MAX_CHATS_PER_USER);
 
-    // Below the cap, a single create is never refused.
-    if (total === MAX_CHATS_PER_USER - 1) {
-      const single = await request
-        .post('/api/insight-chats')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ title: 'After the race' });
-      expect(single.status).toBe(201);
-    }
+    // Below the cap, a single create is never refused: remove the racer that won, if one did, so the user is
+    // exactly one under the cap whatever the race decided, then create.
+    await InsightChat.deleteMany({ _id: { $in: created.map((response) => response.body.chat._id) } });
+    expect(await InsightChat.countDocuments({ userId, cafeId })).toBe(MAX_CHATS_PER_USER - 1);
+    const single = await request
+      .post('/api/insight-chats')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'After the race' });
+    expect(single.status).toBe(201);
   });
 
   it('accepts only server-shaped contextStats', async () => {

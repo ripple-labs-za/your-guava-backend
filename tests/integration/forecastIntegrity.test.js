@@ -270,7 +270,7 @@ describe('forecast generation integrity', () => {
     });
     let ownerId = flatId;
     let ownerName = 'Flat White';
-    if (action === 'rename') {
+    if (action === 'rename') { // static-checks: allow conditional-expect it.each row: rename and merge take different requests
       expect((await request.put(`/api/items/${flatId}`).set(auth).send({ name: ownerName })).status).toBe(200);
     } else {
       const target = await request.post('/api/items').set(auth).send({ name: 'White coffee', category: 'coffee' });

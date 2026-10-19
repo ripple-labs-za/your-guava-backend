@@ -398,12 +398,12 @@ describe('option A keeps both captured terms under concurrent changes', () => {
       expect(['paid', 'needs_attention']).toContain(session.status);
       expect(org.fulfilledPaymentReferences.includes(session.reference)).toBe(session.status === 'paid');
     }
-    if (org.pendingPlanChange) expect(org.pendingPlanChange.effectiveAt).toEqual(org.currentPeriodEnd);
+    expect(org.pendingPlanChange.effectiveAt).toEqual(org.currentPeriodEnd);
+    // The forced write order decides it: the upgrade is paid (and extends the period) only when it writes first.
     const paidUpgrade = stored.find((session) => session.reference === up.reference)?.status === 'paid';
-    if (paidUpgrade) {
-      expect(org.plan).toBe('pro');
-      expect(org.currentPeriodEnd.getTime()).toBeGreaterThan(before.currentPeriodEnd.getTime());
-    }
+    expect(paidUpgrade).toBe(first === 'upgrade');
+    expect({ plan: org.plan, extended: org.currentPeriodEnd.getTime() > before.currentPeriodEnd.getTime() })
+      .toEqual(first === 'upgrade' ? { plan: 'pro', extended: true } : { plan: before.plan, extended: false });
   });
 });
 
@@ -422,7 +422,7 @@ describe('bounded review credit windows, checkout guards and due boundary', () =
     });
     const org = await Organization.findById(owner.user.orgId).lean();
     expect(org.aiCredits.used).toBe(kind === 'upgrade' ? 0 : 1700);
-    if (kind === 'upgrade') {
+    if (kind === 'upgrade') { // static-checks: allow conditional-expect it.each row: an upgrade opens a new window, a renewal keeps it
       expect(org.aiCredits.included).toBe(6000);
       expect(org.aiCredits.resetAt).toEqual(addBillingCycle(org.currentPeriodStart, 'monthly'));
     } else expect(org.aiCredits.resetAt).toEqual(resetAt);

@@ -209,9 +209,9 @@ describe('D-019 plan change policy (planChangeForPayment)', () => {
       const change = planChangeForPayment(org, { plan: to, billingCycle: toCycle }, now);
       const unusedValue = ((end.getTime() - now.getTime()) / DAY) * perDay(from, fromCycle);
 
-      if (change.type === 'renewal') {
+      if (change.type === 'renewal') { // static-checks: allow conditional-expect it.each over every plan pair: each change type has its own rule
         expect(change.currentPeriodEnd).toEqual(addBillingCycle(end, toCycle));
-      } else if (change.type === 'upgrade') {
+      } else if (change.type === 'upgrade') { // static-checks: allow conditional-expect same table, the upgrade rule
         expect(planRank(to)).toBeGreaterThan(planRank(from));
         const credited = change.creditDays * perDay(to, toCycle);
         expect(credited).toBeLessThanOrEqual(unusedValue + 1e-6);
