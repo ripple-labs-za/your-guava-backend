@@ -19,6 +19,7 @@ const Forecast = require('../../src/models/Forecast.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
 const Organization = require('../../src/models/Organization.model');
 const GeneratedInsight = require('../../src/models/GeneratedInsight.model');
+const { addZonedDays, getCafeTimezone, zonedDateKey } = require('../../src/utils/timezone');
 const {
   _resetInsightsCache,
   streamBusinessChatResponse,
@@ -345,13 +346,12 @@ describe('Insight refresh data and privacy guards', () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     const owner = await createTestUser();
     await seedSales(owner.user.activeCafeId);
-    const tomorrow = new Date();
-    tomorrow.setUTCHours(0, 0, 0, 0);
-    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const timezone = await getCafeTimezone(owner.user.activeCafeId);
+    const tomorrow = addZonedDays(new Date(), 1, timezone);
     await Forecast.create({
       cafeId: owner.user.activeCafeId,
       date: tomorrow,
-      dateKey: tomorrow.toISOString().slice(0, 10),
+      dateKey: zonedDateKey(tomorrow, timezone),
       modelVersion: 'guava-forecast-v9-secret',
       trainingCutoff: tomorrow,
       totalPredictedRevenue: 4200,
