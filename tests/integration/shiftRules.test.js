@@ -4,6 +4,7 @@ const Shift = require('../../src/models/Shift.model');
 const LeaveRequest = require('../../src/models/LeaveRequest.model');
 const { deactivateStaff } = require('../../src/services/workforce/deactivation');
 const { splitWeekHours } = require('../../src/services/workforce/shiftHours');
+const { cafeClock } = require('../../src/services/workforce/cafeCalendar');
 
 const request = supertest(app);
 
@@ -213,6 +214,20 @@ describe('Shift rules (BE-08-T04)', () => {
 
     // Orchy ruling on round 1 (2): final pay for someone who has left needs their
     // started shifts marked completed; a shift that has not started cannot be.
+    // Round 2 follow-up: the clock is the cafe's, not UTC's. 22:30 UTC on the 20th
+    // is 00:30 on the 21st in Johannesburg, so the 20th's late shift has started.
+    it("reads today and the time from the cafe's zone when deactivating", async () => {
+      const now = new Date('2026-09-20T22:30:00Z');
+      expect(await cafeClock(owner.user.activeCafeId, now)).toEqual({ today: new Date('2026-09-21T00:00:00Z'), time: '00:30' });
+
+      const lateYesterday = await createShift({ date: '2026-09-20', startTime: '23:00', endTime: '23:59' });
+      const laterTonight = await createShift({ date: '2026-09-21', startTime: '01:00', endTime: '05:00' });
+      const result = await deactivateStaff({ cafeId: owner.user.activeCafeId, staffId, actorUserId: owner.user.id, now });
+      expect(result.cancelledShifts).toBe(1);
+      expect((await Shift.findById(lateYesterday.body.shift._id).lean()).status).toBe('scheduled');
+      expect((await Shift.findById(laterTonight.body.shift._id).lean()).status).toBe('cancelled');
+    });
+
     it("lets a deactivated person's started shift be marked completed, but not one that has not started", async () => {
       const today = cafeTodayKey();
       // 00:00 has always started by the time the test runs.
@@ -238,6 +253,9 @@ describe('Shift rules (BE-08-T04)', () => {
       await createShift({ date: '2026-11-03', startTime: '07:00', endTime: '15:00' }).expect(201);
       const fifth = await createShift({ date: '2026-11-05', startTime: '07:00', endTime: '15:00' });
       await createShift({ date: '2026-11-04', startTime: '07:00', endTime: '15:00', status: 'cancelled' }).expect(201);
+      // A colleague rostered on the same days never blocks this person's leave.
+      const colleague = await auth(request.post('/api/staff')).send({ name: 'Covering Barista', hourlyRate: 55, startDate: '2026-01-05' });
+      await auth(request.post('/api/shifts')).send({ staffId: colleague.body.staff._id, date: '2026-11-03', startTime: '07:00', endTime: '15:00' }).expect(201);
       const leave = await auth(request.post('/api/leave')).send({ staffId, type: 'annual', startDate: '2026-11-02', endDate: '2026-11-06' });
       expect(leave.status).toBe(201); // creating the request stays allowed
 
