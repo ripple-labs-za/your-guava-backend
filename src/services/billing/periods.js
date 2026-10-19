@@ -1,7 +1,7 @@
 // Plan-period maths for a payment, and the forecast invalidation a plan change triggers.
 // Moved from billingPayments.service.js by BE-11-T04; behaviour unchanged.
 const Cafe = require('../../models/Cafe.model');
-const { invalidatePlanningForecasts } = require('../forecast/generate');
+const { invalidatePlanningForecasts } = require('../forecast.service');
 const { getPlan, getPlans, addBillingCycle, addUtcMonthsClamped, planRank } = require('../billingPlans.service');
 const { DEFAULT_TIMEZONE } = require('../../utils/timezone');
 

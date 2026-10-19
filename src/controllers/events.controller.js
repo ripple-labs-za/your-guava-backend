@@ -1,9 +1,8 @@
 const Event = require('../models/Event.model');
-const { invalidatePlanningForecasts } = require('../services/forecast.service');
+const { invalidatePlanningForecasts, eventDateKey, isCalendarDateKey, loadEventsByDateKey } = require('../services/forecast.service');
 const Transaction = require('../models/Transaction.model');
 const Cafe = require('../models/Cafe.model');
 const Organization = require('../models/Organization.model');
-const { eventDateKey, isCalendarDateKey, loadEventsByDateKey } = require('../services/forecast/history');
 const { getForecastSettings, eventImpactPct, factorUnlocked } = require('../services/forecastFactors.service');
 const {
   DATE_ONLY_RE, TIME_OF_DAY_RE, safeTimezone, getCafeTimezone, zonedDayStart, cafeLocalToday, parseDateOnly,

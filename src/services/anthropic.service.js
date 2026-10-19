@@ -9,8 +9,11 @@ const { buildBusinessContext, invalidateBusinessContext, _resetBusinessContextCa
 const { prepareChatConversation, assertCafeInScope, generateBusinessChatResponse } = require('./ai/chat');
 const { streamBusinessChatResponse } = require('./ai/stream');
 const { proposeColumnMapping, _resetMappingCache } = require('./ai/columnMapping');
+const { extractJson, providerDiagnostics } = require('./ai/json');
 
 module.exports = {
+  extractJson,
+  providerDiagnostics,
   _resetInsightsCache: insights._resetInsightsCache,
   buildSummaryStats,
   _resetMappingCache,

@@ -4,7 +4,7 @@ const Item = require('../models/Item.model');
 const { inferItemCategory, isItemCategory } = require('../utils/itemCategory');
 const { meterGuavaCredits, withUsageDiagnostics } = require('./usage.service');
 const { createAnthropicClient, withAnthropicErrors, responseText } = require('./anthropicClient.service');
-const { extractJson, providerDiagnostics } = require('./ai/json');
+const { extractJson, providerDiagnostics } = require('./anthropic.service');
 
 const { requestSettings } = require('../config/ai');
 const MAX_AI_REVIEW_ITEMS = 10;
