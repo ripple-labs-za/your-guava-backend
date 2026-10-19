@@ -14,9 +14,11 @@ jest.setTimeout(180_000);
 const ENDPOINTS = ['revenue', 'items', 'heatmap', 'customers', 'combos'];
 const END = '2026-08-31'; // a fixed past day: windows, trends and snapshots do not depend on the clock
 const INDEXABLE = ['cafeId', 'status', 'date', 'dayOfWeek', 'hour'];
-// How many aggregations may read the whole request window. Heatmap's single scan holds only if the facet is not slower on the
-// Perf Cafe (step 6); otherwise its count is raised here with both p95s.
-const SCANS_ALLOWED = { revenue: 1, items: 1, heatmap: 1, customers: 1, combos: 1 };
+// How many aggregations may read the whole request window. Latency is the budget and total database work the tiebreak (step 6):
+// a $facet saves the repeated read but runs its branches in turn in one thread, so on the 300,000-sale Perf Cafe it was slower
+// (p95, 365 days: heatmap 673 ms as three concurrent scans, 1,533 ms as one facet; items 1,540 ms as two scans in turn, 1,559 ms
+// as one facet). Items and heatmap therefore read their window concurrently: 2 and 3 scans, at the same time, never in turn.
+const SCANS_ALLOWED = { revenue: 1, items: 2, heatmap: 3, customers: 1, combos: 1 };
 const shiftDay = (key, days) => new Date(Date.parse(`${key}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 const windowQuery = (days) => ({ startDate: shiftDay(END, -(days - 1)), endDate: END });
 const indexablePart = (match = {}) => Object.fromEntries(Object.entries(match).filter(([key]) => INDEXABLE.includes(key)));

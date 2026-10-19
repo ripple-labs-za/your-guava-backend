@@ -31,37 +31,34 @@ const getItems = async (req, res, next) => {
       date: dateMatch,
     };
 
-    // One read of the window (BE-14-T02): the presence per day (first and last day, open days) and the top items come from the
-    // same scan. avgPerDay needs the open-day count, which only the presence branch gives, so it is computed after, rounded as
-    // $round does (mongoRound).
-    const [scan] = await Transaction.aggregate([
-      { $match: matchStage },
-      {
-        $facet: {
-          presence: [
-            { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
-            { $sort: { _id: 1 } },
-          ],
-          top: [
-            { $unwind: '$items' },
-            { $match: DEMAND_LINE_MATCH },
-            {
-              $group: {
-                _id: '$items.name',
-                totalQty: { $sum: '$items.quantity' },
-                totalRevenue: {
-                  $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] },
-                },
-              },
+    // The presence per day (first and last day, open days) and the top items run at the same time (BE-14-T02). They used to run
+    // one after the other because the items pipeline divided by the open-day count; avgPerDay is now computed after both, rounded
+    // as $round does (mongoRound). Two concurrent scans, not one $facet: a facet runs its branches in turn in one thread, and on the
+    // Perf Cafe it was no faster (365 days: 1,540 ms before, 1,559 ms as a facet).
+    const [presence, topItems] = await Promise.all([
+      Transaction.aggregate([
+        { $match: matchStage },
+        { $group: { _id: dateToString('%Y-%m-%d', timezone), transactions: saleCount } },
+        { $sort: { _id: 1 } },
+      ], aggregateOptions()),
+      Transaction.aggregate([
+        { $match: matchStage },
+        { $unwind: '$items' },
+        { $match: DEMAND_LINE_MATCH },
+        {
+          $group: {
+            _id: '$items.name',
+            totalQty: { $sum: '$items.quantity' },
+            totalRevenue: {
+              $sum: { $multiply: ['$items.quantity', { $ifNull: ['$items.unitPrice', 0] }] },
             },
-            { $sort: { totalRevenue: -1 } },
-            { $limit: 20 },
-            { $project: { _id: 0, name: '$_id', totalQty: 1, totalRevenue: { $round: ['$totalRevenue', 2] } } },
-          ],
+          },
         },
-      },
-    ], aggregateOptions());
-    const presence = scan.presence;
+        { $sort: { totalRevenue: -1 } },
+        { $limit: 20 },
+        { $project: { _id: 0, name: '$_id', totalQty: 1, totalRevenue: { $round: ['$totalRevenue', 2] } } },
+      ], aggregateOptions()),
+    ]);
     if (presence.length === 0) {
       return res.status(200).json({
         success: true, items: [], data: [], risingItems: [], decliningItems: [],
@@ -78,7 +75,7 @@ const getItems = async (req, res, next) => {
     }).length;
 
     // Top 20 items overall
-    const items = scan.top.map((item) => ({ ...item, avgPerDay: openDays > 0 ? mongoRound(item.totalQty / openDays, 1) : 0 }));
+    const items = topItems.map((item) => ({ ...item, avgPerDay: openDays > 0 ? mongoRound(item.totalQty / openDays, 1) : 0 }));
 
     // Trend: latest 7 local trading days in the selected data vs previous 7 days.
     const trendEnd = zonedDayEnd(lastDay, timezone);
