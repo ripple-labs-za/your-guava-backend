@@ -96,8 +96,10 @@ const register = async (req, res, next) => {
     const suppliedCafeName = cafeName == null ? '' : String(cafeName).trim();
     const suppliedOrgName = orgName == null ? '' : String(orgName).trim();
     const normalizedCafeName = suppliedCafeName || 'My Cafe';
+    // The signup page promises "Leave this blank and we'll use your cafe name." (UAT-01-S01); the owner's name is
+    // the fallback only for a caller that sent no cafe name either.
     const normalizedOrgName =
-      suppliedOrgName || `${normalizedName}'s Organization`.slice(0, 120);
+      suppliedOrgName || suppliedCafeName || `${normalizedName}'s Organization`.slice(0, 120);
     if (!isValidEmail(normalizedEmail)) {
       return res.status(400).json({ success: false, message: 'Enter a valid email address' });
     }
