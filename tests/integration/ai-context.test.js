@@ -3,6 +3,7 @@ jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({ messa
 const { setup, teardown, clearDB, createTestUser, app } = require('../setup');
 const request = require('supertest')(app);
 const Cafe = require('../../src/models/Cafe.model');
+const User = require('../../src/models/User.model');
 const Transaction = require('../../src/models/Transaction.model');
 const Forecast = require('../../src/models/Forecast.model');
 const UsageLedger = require('../../src/models/UsageLedger.model');
@@ -48,6 +49,33 @@ const seedTwoLocations = async () => {
 };
 
 describe('Ask Guava business context', () => {
+  it('keeps the active cafe distinct when one owner switches between two warm locations in the same org', async () => {
+    const { owner, cafeId, london } = await seedTwoLocations();
+    const argsA = { cafeId, orgId: owner.user.orgId };
+    const argsB = { cafeId: london._id, orgId: owner.user.orgId };
+    const first = await buildBusinessContext(argsA);
+    const second = await buildBusinessContext(argsB);
+    expect(String(first.activeLocation.id)).toBe(String(cafeId));
+    expect(String(second.activeLocation.id)).toBe(String(london._id));
+    expect(second.activeLocation.name).toBe('London Branch');
+    expect(second).not.toBe(first);
+    expect(await buildBusinessContext(argsA)).toBe(first);
+    expect(await buildBusinessContext(argsB)).toBe(second);
+  });
+
+  it('keeps two org-less cafe owners distinct inside the context TTL', async () => {
+    const ownerA = await createTestUser({ email: 'context-no-org-a@example.com' });
+    const ownerB = await createTestUser({ email: 'context-no-org-b@example.com' });
+    await User.updateMany({ _id: { $in: [ownerA.user._id, ownerB.user._id] } }, { $unset: { orgId: 1 } });
+    await Cafe.updateMany({ _id: { $in: [ownerA.user.activeCafeId, ownerB.user.activeCafeId] } }, { $unset: { orgId: 1 } });
+    const first = await buildBusinessContext({ cafeId: ownerA.user.activeCafeId });
+    const second = await buildBusinessContext({ cafeId: ownerB.user.activeCafeId });
+    expect(String(first.activeLocation.id)).toBe(String(ownerA.user.activeCafeId));
+    expect(String(second.activeLocation.id)).toBe(String(ownerB.user.activeCafeId));
+    expect(second).not.toBe(first);
+    expect(second.locations).toHaveLength(1);
+  });
+
   it.each(['cafeId', 'orgId'])('keeps org A warm when an API clear targets org B by %s', async (scopeKey) => {
     const ownerA = await createTestUser({ email: 'context-a@example.com' });
     const ownerB = await createTestUser({ email: 'context-b@example.com' });
