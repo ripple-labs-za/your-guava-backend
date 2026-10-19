@@ -230,6 +230,7 @@ const generatePlanningDay = async (cafeId, day, timezone, inputsVersion) => {
     origin: 'live', reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }),
   });
   if (failures.length) throw new Error(failures[0].message);
+  clearApiCache({ cafeId });
   return forecasts[0];
 };
 
@@ -277,6 +278,7 @@ const getWeek = async (req, res, next) => {
       ? await generateForecastsForDates(cafeId, stale, { origin: 'live',
         reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }) })
       : { forecasts: [], failures: [] };
+    if (rebuilt.length > 0) clearApiCache({ cafeId });
     const staleKeys = new Set(stale.map((date) => zonedDateKey(date, timezone)));
     const byDate = new Map(existing.filter((forecast) => !staleKeys.has(zonedDateKey(forecast.date, timezone)))
       .map((forecast) => [zonedDateKey(forecast.date, timezone), forecast]));

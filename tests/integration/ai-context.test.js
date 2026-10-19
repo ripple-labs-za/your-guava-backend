@@ -49,6 +49,34 @@ const seedTwoLocations = async () => {
 };
 
 describe('Ask Guava business context', () => {
+  it.each([['week', 7], ['today', 1], ['tomorrow', 1]])(
+    'refreshes cached Ask Guava forecasts after Planning %s generates %i days', async (route, expected) => {
+      const owner = await createTestUser();
+      const other = await createTestUser({ email: 'forecast-context-other@example.com' });
+      const scope = { cafeId: owner.user.activeCafeId, orgId: owner.user.orgId };
+      const otherScope = { cafeId: other.user.activeCafeId, orgId: other.user.orgId };
+      const otherWarm = await buildBusinessContext(otherScope);
+      const before = await request.get('/api/forecasts/insights/context').set('Authorization', `Bearer ${owner.token}`);
+      expect(before.status).toBe(200);
+      expect(before.body.contextStats.forecasts).toBe(0);
+
+      const generated = await request.get(`/api/forecasts/${route}`).set('Authorization', `Bearer ${owner.token}`);
+      expect(generated.status).toBe(200);
+      expect(await Forecast.countDocuments({ cafeId: scope.cafeId })).toBe(expected);
+
+      const after = await request.get('/api/forecasts/insights/context').set('Authorization', `Bearer ${owner.token}`);
+      expect(after.status).toBe(200);
+      expect(after.body.contextStats.forecasts).toBe(expected);
+      expect((await buildBusinessContext(scope)).upcomingForecasts).toHaveLength(expected);
+      expect(await buildBusinessContext(otherScope)).toBe(otherWarm);
+
+      const warm = await buildBusinessContext(scope);
+      const unchanged = await request.get(`/api/forecasts/${route}`).set('Authorization', `Bearer ${owner.token}`);
+      expect(unchanged.status).toBe(200);
+      expect(await buildBusinessContext(scope)).toBe(warm);
+    }
+  );
+
   it('keeps the active cafe distinct when one owner switches between two warm locations in the same org', async () => {
     const { owner, cafeId, london } = await seedTwoLocations();
     const argsA = { cafeId, orgId: owner.user.orgId };
