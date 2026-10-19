@@ -213,10 +213,10 @@ Canonical fields (target keys):
 - quantity (optional, only for line-per-row mode): item quantity column
 
 <untrusted_pos_schema>
-Headers: ${fencedJson(headers.slice(0, 100))}
+Headers: ${fencedJson(headers.slice(0, 100), { pretty: true })}
 
 Redacted per-column sample summary:
-${fencedJson(sampleSummary)}
+${fencedJson(sampleSummary, { pretty: true })}
 </untrusted_pos_schema>
 
 Return ONLY valid JSON with this exact shape, no markdown, no preamble:
