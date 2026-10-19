@@ -31,6 +31,7 @@ describe('Workforce input validation (BE-08-T05)', () => {
   describe('staff', () => {
     it.each([
       ['a blank rate', { name: 'Thandi', hourlyRate: '' }, 'hourlyRate'],
+      ['a missing rate', { name: 'Thandi' }, 'hourlyRate'],
       ['a null rate', { name: 'Thandi', hourlyRate: null }, 'hourlyRate'],
       ['a non-numeric rate', { name: 'Thandi', hourlyRate: 'fifty' }, 'hourlyRate'],
       ['a null name', { name: null, hourlyRate: 55 }, 'name'],
@@ -77,9 +78,12 @@ describe('Workforce input validation (BE-08-T05)', () => {
       ['an operator object as staffId', { staffId: { $ne: null } }, 'staffId'],
       ['an array as staffId', { staffId: ['64b7f0c2a1b2c3d4e5f60718'] }, 'staffId'],
       ['a short staffId', { staffId: 'abc' }, 'staffId'],
+      ['a 24-hex staffId with trailing text', { staffId: '64b7f0c2a1b2c3d4e5f60718extra' }, 'staffId'],
+      ['a 25-character staffId', { staffId: '64b7f0c2a1b2c3d4e5f60718a' }, 'staffId'],
       ['a 501-character note', { notes: 'x'.repeat(501) }, 'notes'],
       ['a null note', { notes: null }, 'notes'],
       ['an unknown status', { status: 'done' }, 'status'],
+      ['an array as status', { status: ['completed'] }, 'status'],
     ])('refuses %s', async (_label, overrides, field) => {
       const body = { staffId, date: '2026-10-05', startTime: '07:00', endTime: '15:00', ...overrides };
       expect400(await auth(request.post('/api/shifts')).send(body), field);
@@ -91,6 +95,7 @@ describe('Workforce input validation (BE-08-T05)', () => {
     it.each([
       ['an operator object as staffId', { staffId: { $ne: null } }, 'staffId'],
       ['a 501-character reason', { reason: 'x'.repeat(501) }, 'reason'],
+      ['an array as type', { type: ['annual'] }, 'type'],
       ['an object as the reason', { reason: { $gt: '' } }, 'reason'],
     ])('refuses %s', async (_label, overrides, field) => {
       const body = { staffId, type: 'annual', startDate: '2026-11-02', endDate: '2026-11-06', ...overrides };

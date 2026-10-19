@@ -7,6 +7,9 @@ const {
   parseBoolean,
   optionalEmail,
   assertPlainBody,
+  parseEnum,
+  LEAVE_TYPES,
+  LEAVE_STATUSES,
 } = require('../../src/services/workforce/input');
 
 const outcome = (fn) => {
@@ -21,9 +24,15 @@ const outcome = (fn) => {
 describe('workforce input (BE-08-T05)', () => {
   it('accepts only 24-hex-character ids', () => {
     expect(objectIdString('64b7f0c2a1b2c3d4e5f60718', 'staffId')).toBe('64b7f0c2a1b2c3d4e5f60718');
-    for (const bad of [{ $ne: null }, ['64b7f0c2a1b2c3d4e5f60718'], 12, null, '', 'abc', '64b7f0c2a1b2c3d4e5f6071z']) {
+    for (const bad of [{ $ne: null }, ['64b7f0c2a1b2c3d4e5f60718'], 12, null, '', 'abc', '64b7f0c2a1b2c3d4e5f6071z',
+      '64b7f0c2a1b2c3d4e5f60718extra', '64b7f0c2a1b2c3d4e5f60718a']) {
       expect(outcome(() => objectIdString(bad, 'staffId'))).toBe('400 INVALID_WORKFORCE_INPUT staffId');
     }
+  });
+
+  it('refuses single-element leave type and status arrays without string coercion', () => {
+    expect(outcome(() => parseEnum(['annual'], LEAVE_TYPES, 'type'))).toBe('400 INVALID_WORKFORCE_INPUT type');
+    expect(outcome(() => parseEnum(['approved'], LEAVE_STATUSES, 'status'))).toBe('400 INVALID_WORKFORCE_INPUT status');
   });
 
   it('refuses a blank, null or non-numeric pay rate instead of making it R0', () => {
