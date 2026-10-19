@@ -1,6 +1,6 @@
-const logger = require('../utils/logger');
 const fs = require('fs');
 const path = require('path');
+const { sha256Hex } = require('../utils/authPrimitives');
 const Transaction = require('../models/Transaction.model');
 const {
   parseBuffer,
@@ -9,9 +9,8 @@ const {
   assertSupportedFileBuffer,
   MAX_ROW_ERRORS,
 } = require('./parser.service');
-const { zonedDateKey, safeTimezone } = require('../utils/timezone');
 const {
-  transactionIdentity, identityComparisonKey, resolveIdentities, tallyDuplicatesByUpload,
+  resolveIdentities, tallyDuplicatesByUpload,
 } = require('./transactionIdentity');
 const {
   normaliseTransactionStatus,
@@ -251,139 +250,10 @@ const persistParsedRowsBulk = async (
  * @param {string} opts.uploadId
  * @returns {Promise<{imported: number, skipped: number, errors: number, rowErrors: object[], totalRows: number, dateRange: object}>}
  */
-const persistParsedRows = async (
-  parsed,
-  {
-    cafeId,
-    uploadId,
-    session,
-    bulk = false,
-    itemsAlreadyReconciled = false,
-    rebuildItems = true,
-    failOnPersistenceError = false,
-    sourceFingerprint,
-    timezone,
-  }
-) => {
-  if (bulk) {
-    const result = await persistParsedRowsBulk(parsed, {
-      cafeId,
-      uploadId,
-      session,
-      itemsAlreadyReconciled,
-      failOnPersistenceError,
-      sourceFingerprint,
-      timezone,
-    });
-    if (rebuildItems) await rebuildItemsForCafe(cafeId, { session });
-    return result;
-  }
-
-  let imported = 0;
-  const skips = createSkipTally();
-  let errors = parsed.errors;
-  const rowErrors = cloneRowErrors(parsed.rowErrors);
-  let approvedRows = 0;
-  let declinedRows = 0;
-  let duplicateRows = 0;
-  const zone = safeTimezone(timezone);
-  // Identities already written by this call: a second sighting is a repeat inside the file, not an earlier upload.
-  const writtenHere = new Set();
-  skips.skip(SKIP_REASON_REFUND_NETTED, parsed.nettedRefundRows || 0);
-
-  for (const row of parsed.rows) {
-    try {
-      const { status, recognised } = normaliseTransactionStatus(row.status);
-      if (status !== 'approved') {
-        skips.skip(SKIP_REASON_STATUS);
-        declinedRows++;
-        if (!recognised) {
-          addPersistenceRowError(
-            rowErrors,
-            row,
-            `Status "${row.statusRaw || row.status}" is not a recognised sale status`
-          );
-        }
-        continue;
-      }
-      approvedRows++;
-
-      // Identity is the same rule on both paths. This loop used to filter on
-      // the receipt ID alone, with no trading day, which is the very defect the
-      // day scoping was added to fix: on a till that restarts its order numbers
-      // each morning, Wednesday's "#0001" was recognised as Tuesday's and
-      // dropped, so a month of history collapsed to one day's receipts.
-      const identity = transactionIdentity(row, sourceFingerprint, timezone);
-      const dedupKey = identity.type === 'dedupKey' ? identity.value : undefined;
-
-      let existingQuery = identity.type === 'receiptId'
-        ? Transaction.find({ cafeId, receiptId: identity.value }).select('date')
-        : Transaction.find({ cafeId, dedupKey: identity.value }).select('date');
-      if (session) existingQuery = existingQuery.session(session);
-      const matches = await existingQuery.lean();
-      // Stored rows keep only the instant, so the trading day is recomputed in
-      // the cafe's timezone rather than read off a UTC date.
-      const existing = identity.type === 'receiptId'
-        ? matches.some((match) => zonedDateKey(match.date, zone) === identity.dayKey)
-        : matches.length > 0;
-      if (existing) {
-        skips.skip(writtenHere.has(identityComparisonKey(identity)) ? SKIP_REASON_IN_FILE_DUPLICATE : SKIP_REASON_DUPLICATE);
-        duplicateRows++;
-        continue;
-      }
-
-      const reconciledItems = itemsAlreadyReconciled
-        ? row.items
-        : await reconcileTransactionItems(cafeId, row.items, { session });
-
-      const document = {
-        cafeId,
-        uploadId,
-        receiptId: row.receiptId,
-        dedupKey,
-        date: row.date,
-        hour: row.hour,
-        hourKnown: row.hourKnown !== false,
-        dayOfWeek: row.dayOfWeek,
-        status: 'approved',
-        paymentMethod: row.paymentMethod,
-        items: reconciledItems,
-        total: row.total,
-        tip: row.tip,
-        discount: row.discount,
-        source: 'csv',
-      };
-      if (session) await Transaction.create([document], { session });
-      else await Transaction.create(document);
-      writtenHere.add(identityComparisonKey(identity));
-      imported++;
-    } catch (err) {
-      if (err.code === 11000) {
-        skips.skip(SKIP_REASON_DUPLICATE);
-        duplicateRows++;
-      } else {
-        if (failOnPersistenceError) throw err;
-        logger.error('ingestion_row_failed', logger.errorFields(err));
-        errors++;
-        addPersistenceRowError(rowErrors, row, 'Could not save row');
-      }
-    }
-  }
-
-  if (rebuildItems) await rebuildItemsForCafe(cafeId, { session });
-
-  return {
-    imported,
-    skipped: skips.total(),
-    skippedByReason: skips.byReason,
-    errors,
-    rowErrors,
-    totalRows: parsed.totalRows,
-    approvedRows,
-    declinedRows,
-    duplicateRows,
-    dateRange: parsed.dateRange,
-  };
+const persistParsedRows = async (parsed, { rebuildItems = true, ...options }) => {
+  const result = await persistParsedRowsBulk(parsed, options);
+  if (rebuildItems) await rebuildItemsForCafe(options.cafeId, { session: options.session });
+  return result;
 };
 
 /**
@@ -415,19 +285,14 @@ const ingestParsedRows = async (
 };
 
 /**
- * Legacy file-path API. Reads a local file and ingests using the Yoco preset.
- * Preserved so the existing transactions.controller.upload tests still pass while
- * the new two-phase flow is being built up.
+ * Reads a local Yoco export through the same bulk persistence path as uploads.
  */
-const ingestFile = async (filePath, cafeId) => {
+const ingestFile = async (filePath, cafeId, { timezone } = {}) => {
   const buffer = fs.readFileSync(filePath);
   const ext = path.extname(filePath).toLowerCase().slice(1);
   const { mapping, itemsMode } = yocoMapping();
-  return ingestParsedRows(buffer, { cafeId, uploadId: null, columnMapping: mapping, itemsMode, fileExt: ext });
+  return ingestParsedRows(buffer, { cafeId, uploadId: null, columnMapping: mapping, itemsMode, fileExt: ext, timezone, sourceFingerprint: sha256Hex(buffer) });
 };
-
-// Backward-compat alias — unit tests written before the refactor still call this
-const parseYocoCSV = ingestFile;
 
 module.exports = {
   ingestFile,
@@ -438,5 +303,4 @@ module.exports = {
   yocoMapping,
   previewBuffer,
   rebuildItemsForCafe,
-  parseYocoCSV,
 };

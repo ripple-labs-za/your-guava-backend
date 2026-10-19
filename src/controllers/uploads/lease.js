@@ -182,7 +182,6 @@ const commitParsedUpload = async ({
         cafeId,
         uploadId: upload._id,
         session,
-        bulk: true,
         itemsAlreadyReconciled: true,
         rebuildItems: false,
         failOnPersistenceError: true,

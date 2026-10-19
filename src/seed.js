@@ -96,7 +96,7 @@ async function seed() {
   console.log(`Cafe created: ${cafe.name} (${cafe._id})`);
 
   console.log(`\nIngesting POS data from ${importFile}...`);
-  const stats = await ingestFile(importFile, cafe._id);
+  const stats = await ingestFile(importFile, cafe._id, { timezone: cafe.timezone });
   console.log(`Ingestion complete: ${stats.imported} imported, ${stats.skipped} skipped, ${stats.errors} errors`);
 
   // Mark cafe as having data

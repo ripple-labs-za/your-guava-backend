@@ -10,17 +10,17 @@ const Transaction = require('../../src/models/Transaction.model');
 const Item = require('../../src/models/Item.model');
 const {
   ingestParsedRows,
-  parseYocoCSV,
+  ingestFile,
   persistParsedRows,
 } = require('../../src/services/ingestion.service');
 const { parseBuffer } = require('../../src/services/parser.service');
 
 describe('ingestion service', () => {
-  describe('parseYocoCSV', () => {
+  describe('ingestFile', () => {
     it('parses a valid CSV file and imports approved transactions', async () => {
       const cafeId = new mongoose.Types.ObjectId();
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
-      const result = await parseYocoCSV(csvPath, cafeId);
+      const result = await ingestFile(csvPath, cafeId);
 
       // 5 rows: 4 approved, 1 declined
       expect(result.imported).toBe(4);
@@ -37,11 +37,11 @@ describe('ingestion service', () => {
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
 
       // First import
-      const first = await parseYocoCSV(csvPath, cafeId);
+      const first = await ingestFile(csvPath, cafeId);
       expect(first.imported).toBe(4);
 
       // Second import — all should be skipped
-      const second = await parseYocoCSV(csvPath, cafeId);
+      const second = await ingestFile(csvPath, cafeId);
       expect(second.imported).toBe(0);
       expect(second.skipped).toBe(5); // 4 already exist + 1 declined
 
@@ -54,9 +54,9 @@ describe('ingestion service', () => {
     it('gives every row skipped on re-import a reason', async () => {
       const cafeId = new mongoose.Types.ObjectId();
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
-      await parseYocoCSV(csvPath, cafeId);
+      await ingestFile(csvPath, cafeId);
 
-      const second = await parseYocoCSV(csvPath, cafeId);
+      const second = await ingestFile(csvPath, cafeId);
 
       expect(second.skippedByReason).toEqual({ duplicate: 4, status_not_approved: 1 });
       expect(second.skipped).toBe(5);
@@ -79,7 +79,7 @@ describe('ingestion service', () => {
       const cafeId = new mongoose.Types.ObjectId();
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
 
-      await parseYocoCSV(csvPath, cafeId);
+      await ingestFile(csvPath, cafeId);
 
       const items = await Item.find({ cafeId });
       const itemNames = items.map((i) => i.name).sort();
@@ -136,7 +136,7 @@ describe('ingestion service', () => {
       const cafeId = new mongoose.Types.ObjectId();
       const csvPath = path.join(__dirname, '..', 'fixtures', 'test-transactions.csv');
 
-      await parseYocoCSV(csvPath, cafeId);
+      await ingestFile(csvPath, cafeId);
 
       // Row 2: "2 x Long White (Blend)" in Items column
       const tx = await Transaction.findOne({ cafeId, receiptId: '2026/01/000002' });
