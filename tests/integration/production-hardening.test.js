@@ -556,7 +556,7 @@ describe('production hardening regressions', () => {
     // every upload on the AI budget meant an owner importing a backlog of monthly
     // exports was cut off after a handful, and told it was "too many AI requests".
     // The AI call is separately bounded by the daily-credit and concurrency policy in
-    // aiUsage.service, and it costs credits, which is its own natural brake.
+    // enforceAiUsagePolicy (services/usage/policy.js), and it costs credits, which is its own natural brake.
     expect(handlers).not.toContain(aiLimiter);
     // Members without credit permission must still upload preset formats: the
     // controller downgrades to a free mapping rather than rejecting with 403.
