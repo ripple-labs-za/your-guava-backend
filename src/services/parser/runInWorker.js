@@ -96,7 +96,20 @@ class ParserPool {
 }
 
 const pool = new ParserPool();
-const runParserTask = (task, buffer, options) => pool.run(task, buffer, options);
+const runParserTask = async (task, buffer, options = {}) => {
+  if (options.signal?.aborted) throw aborted();
+  if (options.fileExt === 'xlsx' && ['preview', 'parse'].includes(task)) {
+    try {
+      await require('./preflight').preflightXlsx(buffer);
+    } catch (error) {
+      if (options.signal?.aborted) throw aborted();
+      throw error;
+    }
+  }
+  // Cancellation may arrive while bounded ZIP decompression yields.
+  if (options.signal?.aborted) throw aborted();
+  return pool.run(task, buffer, options);
+};
 
 // A normal incoming-request close means the body was consumed; only abort or an unfinished response close cancels.
 const withRequestAbort = async (req, res, run) => {

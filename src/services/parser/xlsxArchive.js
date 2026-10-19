@@ -51,7 +51,7 @@ const assertSafeZipEntryName = (name) => {
   }
 };
 
-const assertSafeXlsxArchive = (buffer) => {
+const assertSafeXlsxArchive = (buffer, { onEntry } = {}) => {
   const limits = parserLimits();
   const endOffset = findZipEndRecord(buffer);
   if (endOffset == null) throw createClientInputError('XLSX ZIP directory is missing or malformed');
@@ -214,6 +214,7 @@ const assertSafeXlsxArchive = (buffer) => {
     if ((zlib.crc32(expanded) >>> 0) !== expectedCrc) {
       throw createClientInputError('XLSX ZIP entry CRC checksum is inconsistent');
     }
+    if (onEntry) onEntry(fileName, expanded);
     actualTotalUncompressed += expanded.length;
     if (actualTotalUncompressed > limits.xlsxMaxTotalUncompressedBytes) {
       throw createClientInputError(
@@ -241,6 +242,30 @@ const assertSafeXlsxArchive = (buffer) => {
   }
 };
 
+// An advisory gate, never a second ZIP validator: only a genuinely small archive
+// may be inspected on the main thread. Forged lengths still go through all of
+// assertSafeXlsxArchive's bounded decompression and CRC checks before use.
+const smallXlsxParts = (buffer, maxBytes = 2 * 1024 * 1024) => {
+  if (!Buffer.isBuffer(buffer) || buffer.length > maxBytes) return null;
+  const end = findZipEndRecord(buffer);
+  if (end === null) return null;
+  const count = buffer.readUInt16LE(end + 10);
+  let offset = buffer.readUInt32LE(end + 16);
+  let total = 0;
+  if (count > 1000) return null;
+  for (let i = 0; i < count; i += 1) {
+    if (offset + 46 > end || buffer.readUInt32LE(offset) !== ZIP_CENTRAL_HEADER) return null;
+    total += buffer.readUInt32LE(offset + 24);
+    if (total > maxBytes) return null;
+    offset += 46 + buffer.readUInt16LE(offset + 28) + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
+  }
+  if (offset !== end) return null;
+  const parts = new Map();
+  assertSafeXlsxArchive(buffer, { onEntry: (name, value) => parts.set(name, value) });
+  return parts;
+};
+
 module.exports = {
   assertSafeXlsxArchive,
+  smallXlsxParts,
 };
