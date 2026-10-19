@@ -82,6 +82,34 @@ describe('forecast generation cost', () => {
     expect(dataReads(fourteen.calls)).toBeLessThanOrEqual(24);
   });
 
+  it('F2: a failed flight releases every day so a later request can rebuild', async () => {
+    const owner = await createTestUser();
+    const day = zonedDayStart(new Date(), ZONE);
+    const write = jest.spyOn(Forecast, 'findOneAndUpdate').mockRejectedValueOnce(new Error('write unavailable'));
+    try {
+      const failed = await forecastService.generateForecastsForDates(owner.user.activeCafeId, [day]);
+      expect(failed.failures).toEqual([{ dateKey: expect.any(String), message: 'write unavailable' }]);
+      expect(forecastService._test.inFlightGenerations()).toBe(0);
+      const retry = await forecastService.generateForecastsForDates(owner.user.activeCafeId, [day]);
+      expect(retry.failures).toEqual([]);
+      expect(retry.forecasts).toHaveLength(1);
+      expect(forecastService._test.inFlightGenerations()).toBe(0);
+    } finally { write.mockRestore(); }
+  });
+
+  it('F2: a completed flight reuses the full stored document without writing again', async () => {
+    const owner = await createTestUser();
+    const day = zonedDayStart(new Date(), ZONE);
+    await seedTransactions(owner.user.activeCafeId, { days: 30, perDay: 10 });
+    const original = await forecastService.generateForecastsForDates(owner.user.activeCafeId, [day]);
+    const again = await countOperations(() => forecastService.generateForecastsForDates(owner.user.activeCafeId, [day], {
+      reuse: () => true,
+    }));
+    expect(forecastDayWrites(again.calls)).toBe(0);
+    expect(comparable(again.result.forecasts[0])).toEqual(comparable(original.forecasts[0]));
+    expect(again.result.forecasts[0].items.length).toBeGreaterThan(0);
+  });
+
   it('F4: fourteen past days generated from shared inputs are stored exactly as fourteen single-day generations', async () => {
     const owner = await createTestUser();
     const cafeId = owner.user.activeCafeId;
