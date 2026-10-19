@@ -325,6 +325,65 @@ describe('recategorise-items through the runner', () => {
 });
 
 
+// BE-12-T03: the legacy data repairs, through the registry and the runner (manual: only when named).
+describe('legacy repairs through the runner', () => {
+  const registry = require('../../src/migrations');
+  const entry = (name) => registry.find((migration) => migration.name === name);
+  const Cafe = require('../../src/models/Cafe.model');
+  const { decryptSecret, encryptSecret } = require('../../src/services/secrets.service');
+
+  it('rewrites the legacy free plan to Starter when named, leaves other plans, and is then done', async () => {
+    const organizations = mongoose.connection.db.collection('organizations');
+    const { insertedIds } = await organizations.insertMany([{ name: 'Legacy Free', plan: 'free' }, { name: 'Paying', plan: 'pro' }]);
+
+    await expect(entry('free-plan-to-starter').check()).resolves.toEqual({ pending: true, detail: JSON.stringify({ matched: 1 }) });
+    await runMigrations({ by: 'test' }); // startup never runs a manual repair
+    expect((await organizations.findOne({ _id: insertedIds[0] })).plan).toBe('free');
+
+    const result = await runMigrations({ names: ['free-plan-to-starter'], by: 'test' });
+    expect(result.applied).toEqual(['free-plan-to-starter']);
+    expect((await organizations.findOne({ _id: insertedIds[0] })).plan).toBe('starter');
+    expect((await organizations.findOne({ _id: insertedIds[1] })).plan).toBe('pro');
+    await expect(entry('free-plan-to-starter').check()).resolves.toMatchObject({ pending: false });
+    await expect(require('../../src/migrations/free-plan-to-starter').up(mongoose.connection.db))
+      .resolves.toEqual({ matched: 0, modified: 0 });
+  });
+
+  it('re-seals a plaintext provider token under the current key when named, and is then done', async () => {
+    const cafe = await Cafe.create({ name: 'Legacy Tokens', orgId: new mongoose.Types.ObjectId() });
+    await Cafe.collection.updateOne({ _id: cafe._id }, { $set: { 'accountingIntegrations.xero.accessToken': 'legacy-plain-token' } });
+
+    await expect(entry('reencrypt-secrets').check()).resolves.toEqual({
+      pending: true, detail: JSON.stringify({ upgrades: 1, unreadable: 0 }),
+    });
+    const result = await runMigrations({ names: ['reencrypt-secrets'], by: 'test' });
+    expect(result.applied).toEqual(['reencrypt-secrets']);
+
+    const stored = (await Cafe.collection.findOne({ _id: cafe._id })).accountingIntegrations.xero.accessToken;
+    expect(stored).not.toBe('legacy-plain-token');
+    expect(decryptSecret(stored)).toBe('legacy-plain-token');
+    await expect(entry('reencrypt-secrets').check()).resolves.toMatchObject({ pending: false });
+  });
+
+  it('refuses to re-seal while a stored token is unreadable, and changes nothing', async () => {
+    const cafe = await Cafe.create({ name: 'Broken Tokens', orgId: new mongoose.Types.ObjectId() });
+    const sealed = encryptSecret('still-readable');
+    await Cafe.collection.updateOne({ _id: cafe._id }, {
+      $set: { 'accountingIntegrations.xero.accessToken': 'enc:garbage', 'accountingIntegrations.sage.accessToken': 'plain-too' },
+    });
+
+    await expect(entry('reencrypt-secrets').check()).resolves.toEqual({
+      pending: true, detail: JSON.stringify({ upgrades: 1, unreadable: 1 }),
+    });
+    const result = await runMigrations({ names: ['reencrypt-secrets'], by: 'test' });
+    expect(result.failed).toEqual(['reencrypt-secrets']);
+    expect((await Migration.findById('reencrypt-secrets').lean()).lastError).toMatch(/Unreadable provider secrets/);
+    const after = (await Cafe.collection.findOne({ _id: cafe._id })).accountingIntegrations;
+    expect([after.xero.accessToken, after.sage.accessToken]).toEqual(['enc:garbage', 'plain-too']);
+    expect(decryptSecret(sealed)).toBe('still-readable');
+  });
+});
+
 describe('BE-11-T06 contract migrations', () => {
   const Forecast = require('../../src/models/Forecast.model');
   const users = () => mongoose.connection.db.collection('users');
