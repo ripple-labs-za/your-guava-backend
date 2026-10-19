@@ -1,12 +1,11 @@
 const Shift = require('../../models/Shift.model');
-const { cafeLocalToday } = require('../../utils/timezone');
+const { cafeLocalToday, TIME_OF_DAY_RE } = require('../../utils/timezone');
 const { WorkforceError } = require('./errors');
 const { DAY_MS, utcDateOnly } = require('./cafeCalendar');
 
 const WEEKLY_HOUR_THRESHOLD = 45; // BCEA: 45 ordinary hours in a week
 const MAX_SHIFT_HOURS = 16; // guards against an AM/PM slip becoming a 23-hour overnight shift
 const MINUTES_PER_DAY = 1440;
-const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 const toMinutes = (time) => {
   const [hours, minutes] = time.split(':').map(Number);
@@ -22,7 +21,7 @@ const toMinutes = (time) => {
 // Hours are wall-clock: a shift across a DST change would be off by an hour (ISSUES #90; SAST has no DST).
 const shiftSpan = (startTime, endTime) => {
   if (typeof startTime !== 'string' || typeof endTime !== 'string') return null;
-  if (!TIME_RE.test(startTime) || !TIME_RE.test(endTime)) return null;
+  if (!TIME_OF_DAY_RE.test(startTime) || !TIME_OF_DAY_RE.test(endTime)) return null;
   const start = toMinutes(startTime);
   const rawEnd = toMinutes(endTime);
   if (rawEnd === start) return null;
