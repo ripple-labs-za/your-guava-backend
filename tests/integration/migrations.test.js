@@ -365,6 +365,50 @@ describe('legacy repairs through the runner', () => {
     await expect(entry('reencrypt-secrets').check()).resolves.toMatchObject({ pending: false });
   });
 
+  it('the free-plan CLI reports the legacy organisations on a dry run and rewrites them only with --apply', async () => {
+    const { run } = require('../../src/migrations/free-plan-to-starter');
+    const organizations = mongoose.connection.db.collection('organizations');
+    const { insertedIds } = await organizations.insertMany([{ name: 'Legacy A', plan: 'free' }, { name: 'Legacy B', plan: 'free' }]);
+    const printed = [];
+    const print = (line) => printed.push(line);
+
+    await expect(run(mongoose.connection.db, { print })).resolves.toEqual({ applied: false, count: 2 });
+    expect(printed[0]).toBe('DRY RUN: 2 organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.');
+    expect(printed.slice(1).sort()).toEqual(Object.values(insertedIds).map(String).sort());
+    expect(await organizations.countDocuments({ plan: 'free' })).toBe(2);
+
+    printed.length = 0;
+    await expect(run(mongoose.connection.db, { apply: true, print })).resolves.toEqual({ applied: true, matched: 2, modified: 2 });
+    expect(printed).toEqual(['APPLIED: {"matched":2,"modified":2}']);
+    expect(await organizations.countDocuments({ plan: 'starter' })).toBe(2);
+  });
+
+  it('the secret-rotation CLI counts by reason and never prints a token, and re-seals only with --apply', async () => {
+    const { rotate } = require('../../src/migrations/reencrypt-secrets');
+    const cafe = await Cafe.create({ name: 'Rotation CLI', orgId: new mongoose.Types.ObjectId() });
+    await Cafe.collection.updateOne({ _id: cafe._id }, {
+      $set: { 'yocoTokens.accessToken': 'cli-plain-secret', 'accountingIntegrations.sage.refreshToken': 'enc:garbage' },
+    });
+    const printed = [];
+    const print = (line) => printed.push(line);
+
+    await expect(rotate({ print })).resolves.toEqual({ scanned: 1, upgrades: 1, unreadable: 1, modified: 0 });
+    expect(printed).toEqual([
+      'cafes scanned: 1',
+      'upgrades: 1 {"plaintext":1}',
+      'unreadable: 1',
+      `  ${cafe._id} accountingIntegrations.sage.refreshToken SECRET_MALFORMED`,
+      'Dry run. Re-run with --apply to write these changes.',
+    ]);
+    expect(printed.join('\n')).not.toContain('cli-plain-secret');
+    expect((await Cafe.collection.findOne({ _id: cafe._id })).yocoTokens.accessToken).toBe('cli-plain-secret');
+
+    printed.length = 0;
+    await expect(rotate({ apply: true, print })).resolves.toMatchObject({ upgrades: 1, modified: 1 });
+    expect(printed).toContain('modified: 1');
+    expect(decryptSecret((await Cafe.collection.findOne({ _id: cafe._id })).yocoTokens.accessToken)).toBe('cli-plain-secret');
+  });
+
   it('refuses to re-seal while a stored token is unreadable, and changes nothing', async () => {
     const cafe = await Cafe.create({ name: 'Broken Tokens', orgId: new mongoose.Types.ObjectId() });
     const sealed = encryptSecret('still-readable');

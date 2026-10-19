@@ -53,27 +53,35 @@ const applySecretUpgrades = async (upgrades) => {
   return modified;
 };
 
-async function main() {
-  require('dotenv').config();
-  const apply = process.argv.includes('--apply');
-  await mongoose.connect(process.env.MONGODB_URI);
+/** The CLI's work on the open connection: report counts (never a token), and write the upgrades with apply. */
+const rotate = async ({ apply = false, print = (line) => logger.printLine(line) } = {}) => {
   const paths = Cafe.secretPaths();
   const cafes = await Cafe.find({}).select(paths.map((path) => `+${path}`).join(' ')).lean();
   const { upgrades, failures } = planSecretUpgrades(cafes, paths);
   const byReason = upgrades.reduce((counts, { reason }) => ({ ...counts, [reason]: (counts[reason] || 0) + 1 }), {});
 
-  logger.printLine(`cafes scanned: ${cafes.length}`);
-  logger.printLine(`upgrades: ${upgrades.length} ${JSON.stringify(byReason)}`);
-  logger.printLine(`unreadable: ${failures.length}`);
-  for (const failure of failures.slice(0, 20)) logger.printLine(`  ${failure.cafeId} ${failure.path} ${failure.code}`);
+  print(`cafes scanned: ${cafes.length}`);
+  print(`upgrades: ${upgrades.length} ${JSON.stringify(byReason)}`);
+  print(`unreadable: ${failures.length}`);
+  for (const failure of failures.slice(0, 20)) print(`  ${failure.cafeId} ${failure.path} ${failure.code}`);
 
-  if (apply && upgrades.length > 0) logger.printLine(`modified: ${await applySecretUpgrades(upgrades)}`);
-  else if (!apply) logger.printLine('Dry run. Re-run with --apply to write these changes.');
+  let modified = 0;
+  if (apply && upgrades.length > 0) {
+    modified = await applySecretUpgrades(upgrades);
+    print(`modified: ${modified}`);
+  } else if (!apply) print('Dry run. Re-run with --apply to write these changes.');
+  return { scanned: cafes.length, upgrades: upgrades.length, unreadable: failures.length, modified };
+};
 
+async function main() {
+  require('dotenv').config();
+  const apply = process.argv.includes('--apply');
+  await mongoose.connect(process.env.MONGODB_URI);
+  await rotate({ apply });
   await mongoose.disconnect();
 }
 
-module.exports = { planSecretUpgrades, applySecretUpgrades };
+module.exports = { planSecretUpgrades, applySecretUpgrades, rotate };
 
 if (require.main === module) {
   main().then(() => process.exit(0)).catch((error) => {

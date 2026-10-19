@@ -14,19 +14,25 @@ const up = async (db) => {
   return { matched: result.matchedCount, modified: result.modifiedCount };
 };
 
+/** The CLI's work on an open db: a dry-run report (count and ids), or the rewrite with --apply. */
+const run = async (db, { apply = false, print = (line) => logger.printLine(line) } = {}) => {
+  if (!apply) {
+    const count = await db.collection('organizations').countDocuments({ plan: 'free' });
+    print(`DRY RUN: ${count} organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.`);
+    for await (const org of db.collection('organizations').find({ plan: 'free' }, { projection: { _id: 1 } })) {
+      print(String(org._id));
+    }
+    return { applied: false, count };
+  }
+  const result = await up(db);
+  print('APPLIED: ' + JSON.stringify(result));
+  return { applied: true, ...result };
+};
+
 async function main() {
   require('dotenv').config();
   await mongoose.connect(process.env.MONGODB_URI);
-  const db = mongoose.connection.db;
-  if (!process.argv.includes('--apply')) {
-    const count = await db.collection('organizations').countDocuments({ plan: 'free' });
-    logger.printLine(`DRY RUN: ${count} organisation(s) on the legacy free plan. Re-run with --apply to rewrite them.`);
-    for await (const org of db.collection('organizations').find({ plan: 'free' }, { projection: { _id: 1 } })) {
-      logger.printLine(String(org._id));
-    }
-  } else {
-    logger.printLine('APPLIED: ' + JSON.stringify(await up(db)));
-  }
+  await run(mongoose.connection.db, { apply: process.argv.includes('--apply') });
   await mongoose.disconnect();
 }
 
@@ -38,4 +44,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { up };
+module.exports = { up, run };
