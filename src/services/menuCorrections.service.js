@@ -4,7 +4,7 @@ const Item = require('../models/Item.model');
 const Transaction = require('../models/Transaction.model');
 const {
   normalizeItemName, uniqueStrings, buildAliasKeys, areSiblingVariants, updateTransactionMenuItemLinks, rebuildItemsForCafe,
-  runMenuMutation, transactionLinkOps, MAX_BULK_CONFIRM,
+  runMenuMutation, MAX_BULK_CONFIRM,
 } = require('./menuItems.service');
 
 const MANUAL_FIELDS = ['category', 'expectedPrice', 'aliases'];
@@ -189,6 +189,40 @@ const updateInSession = async (cafeId, itemId, payload, session) => {
 const bulkError = (statusCode, code, message, details) => Object.assign(new Error(message), {
   statusCode, code, publicCode: code, details: { code, ...details },
 });
+
+// Confirm identities in one scan. Linked ids always win; legacy unlinked names
+// and aliases retain the old first-item-wins order without N collection scans.
+const confirmationPipeline = (items) => {
+  const names = new Map();
+  items.forEach((item, index) => {
+    uniqueStrings([item.name, ...(item.aliases || [])]).forEach((name) => {
+      if (!names.has(name)) names.set(name, index);
+    });
+  });
+  const targets = items.map((item) => ({ salesItemId: item._id, name: item.name,
+    ...(item.expectedPrice !== undefined ? { expectedPrice: item.expectedPrice } : {}) }));
+  const ownerIndex = (index) => ({ $cond: [{ $gte: [index, 0] },
+    { $arrayElemAt: [{ $literal: [...names.values()] }, index] }, items.length] });
+  const pipeline = [{ $set: { items: { $map: { input: '$items', as: 'line', in: {
+    $let: { vars: {
+      idIndex: { $indexOfArray: [{ $literal: items.map((item) => item._id) }, '$$line.salesItemId'] },
+      nameIndex: { $indexOfArray: [{ $literal: [...names.keys()] }, '$$line.name'] },
+      rawIndex: { $indexOfArray: [{ $literal: [...names.keys()] }, '$$line.rawName'] },
+    }, in: { $let: { vars: { targetIndex: { $cond: [
+      { $gte: ['$$idIndex', 0] }, '$$idIndex',
+      { $cond: [{ $eq: [{ $ifNull: ['$$line.salesItemId', null] }, null] },
+        { $min: [ownerIndex('$$nameIndex'), ownerIndex('$$rawIndex')] }, items.length] },
+    ] } }, in: { $cond: [{ $lt: ['$$targetIndex', items.length] }, { $mergeObjects: [
+      { $cond: [{ $eq: ['$$line.menuItemStatus', 'price_mismatch'] }, '$$line',
+        { $arrayToObject: { $filter: { input: { $objectToArray: '$$line' }, as: 'field',
+          cond: { $ne: ['$$field.k', 'priceVariancePct'] } } } }] },
+      { $arrayElemAt: [{ $literal: targets }, '$$targetIndex'] },
+      { menuItemStatus: { $cond: [{ $eq: ['$$line.menuItemStatus', 'price_mismatch'] }, 'price_mismatch', 'matched'] } },
+    ] }, '$$line'] } } } },
+  } } } } }];
+  return { pipeline, names: [...names.keys()] };
+};
+
 const confirmAllNeedsReview = async (cafeId, { expectedCount }) => {
   const filter = { cafeId, reviewStatus: 'needs_review', isActive: { $ne: false } };
   const checkCount = (actual) => {
@@ -201,15 +235,19 @@ const confirmAllNeedsReview = async (cafeId, { expectedCount }) => {
   return runMenuMutation(cafeId, async (session) => {
     const items = await Item.find(filter).session(session);
     checkCount(items.length);
-    const operations = [];
     for (const item of items) {
       item.reviewStatus = 'matched';
       item.isActive = true;
       // Identity and name are unchanged, so the legacy forecast stamp is a no-op.
-      operations.push(...transactionLinkOps(cafeId, item));
     }
     await Item.bulkSave(items, { session });
-    if (operations.length) await Transaction.bulkWrite(operations, { session, ordered: true });
+    if (items.length) {
+      const { pipeline, names } = confirmationPipeline(items);
+      await Transaction.updateMany({ cafeId, $or: [
+        { 'items.salesItemId': { $in: items.map((item) => item._id) } },
+        { 'items.name': { $in: names } }, { 'items.rawName': { $in: names } },
+      ] }, pipeline, { session });
+    }
     await rebuildItemsForCafe(cafeId, { session });
     return { confirmed: items.length };
   });
