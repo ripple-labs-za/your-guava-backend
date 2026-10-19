@@ -88,6 +88,14 @@ const SOURCE_PATTERNS = [
   { rule: 'refresh cookie set by hand', re: /\.cookie\('refreshToken'/, allow: ['utils/authPrimitives.js'] },
   { rule: 'refresh cookie cleared by hand', re: /clearCookie\('refreshToken'/, allow: ['utils/authPrimitives.js'] },
   { rule: 'chunk helper copy (use chunksOf)', re: /const chunks = \(values/, allow: [] },
+  // BE-13-T02: a refusal body takes its code from refusalBody/codeOf (utils/errorCodes.js), never straight from the error, which
+  // would send an unregistered library code (ENOENT, 11000). A log field that falls back to a label (`?? null`, `|| error.name`)
+  // is a log, not a response, so it is not matched.
+  {
+    rule: 'response code forwarded from the error (use refusalBody)',
+    re: /\bcode:\s*(?:err|error)\??\.(?:code|publicCode)\b(?!\s*(?:\|\||\?\?))/,
+    deny: ['controllers/', 'middleware/', 'services/workforce/errors.js'],
+  },
 ];
 
 const BARREL_FOLDERS = {

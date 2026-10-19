@@ -11,6 +11,7 @@ const emailService = require('../../services/email.service');
 const { isValidEmail } = require('../../utils/email');
 const { passwordInputError } = require('../../utils/password');
 const { recordAccessAudit } = require('./audit');
+const { refusalBody } = require('../../utils/errorCodes');
 const { generateOpaqueToken, sha256Hex, normalizedOpaqueToken } = require('../../utils/authPrimitives');
 const { normalizeCafeIds, expirePendingInvitations, validateCafeAccess, buildSeatSummary } = require('./members');
 
@@ -241,7 +242,7 @@ const inviteManager = async (req, res, next) => {
       });
     }
     if (error?.code === 'INVITE_NOT_POSSIBLE') {
-      return res.status(409).json({ success: false, code: error.code, message: error.message });
+      return res.status(409).json(refusalBody(error));
     }
     if (error?.statusCode && error.statusCode < 500) {
       return res.status(error.statusCode).json({ success: false, message: error.message });

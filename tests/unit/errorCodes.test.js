@@ -39,6 +39,37 @@ const emitted = (dir = SRC) => {
   return new Map([...literals(dir)].filter(([name]) => !skip.has(name)));
 };
 
+// Where a code is emitted: a code field, a throw, an error factory or refusal helper, or a call that takes an HTTP status
+// as a whole argument (`refusal(409, 'X', …)`, `refusal('…', 413, 'X')`). A name from the not-a-code list must never sit
+// there, or it would leave the API uncoded (codeOf drops it) while the registry test stays green.
+const EMISSION_SPANS = [
+  /\b(?:code|publicCode)\s*(?::|=(?!=))[^\n;,})]*/g,
+  /\bthrow\b[^;]*/g,
+  /\b(?:\w*Error|\w*[Rr]efus\w*)\([^;]*/g,
+];
+const CALL = /\b\w+\(([^;()]*)\)/g;
+const STATUS_ARGUMENT = /(?:^|,)\s*[1-5]\d\d\s*(?:,|$)/;
+// A missing stored upload is signalled with Node's own code and caught three lines later; it is never sent.
+const LOCAL_SIGNALS = [['controllers/uploads/download.js', 'ENOENT']];
+
+const emissionSpans = (text) => [
+  ...EMISSION_SPANS.flatMap((re) => [...text.matchAll(re)].map((m) => m[0])),
+  ...[...text.matchAll(CALL)].filter((m) => STATUS_ARGUMENT.test(m[1])).map((m) => m[0]),
+];
+
+const misusedNames = (dir) => {
+  const skip = notCodes();
+  const found = new Set();
+  for (const file of walk(dir)) {
+    const relative = path.relative(dir, file).split(path.sep).join('/');
+    for (const span of emissionSpans(fs.readFileSync(file, 'utf8'))) for (const lit of span.matchAll(LITERAL)) {
+      if (!skip.has(lit[1]) || LOCAL_SIGNALS.some(([where, name]) => where === relative && name === lit[1])) continue;
+      found.add(`${lit[1]} (${relative})`);
+    }
+  }
+  return [...found];
+};
+
 const createResponse = () => {
   const response = { status: jest.fn(), json: jest.fn(), set: jest.fn() };
   response.status.mockReturnValue(response);
@@ -71,6 +102,24 @@ describe('error code registry', () => {
     const listed = [...notCodes()];
     expect(listed.filter((name) => !inSource.has(name))).toEqual([]);
     expect(listed.filter((name) => isRegisteredCode(name))).toEqual([]);
+  });
+
+  it('never emits a name from the not-a-code list as a code', () => {
+    expect(misusedNames(SRC)).toEqual([]);
+  });
+
+  it('catches a not-a-code name used as a code, wherever the refusal is written', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'error-codes-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'planted.js'), "const refusal = (s, c, m) => Object.assign(new Error(m), { statusCode: s });\n"
+        + "const a = () => refusal(409, 'PAYMENT_PROVIDER', 'reuses an environment name');\n"
+        + "const b = (e) => { e.code = 'JWT_SECRET'; return e; };\n"
+        + "const c = () => ({ maxTokens: 512, env: 'ANTHROPIC_MODEL' });\n"
+        + 'module.exports = { a, b, c };\n');
+      expect(misusedNames(dir).sort()).toEqual(['JWT_SECRET (planted.js)', 'PAYMENT_PROVIDER (planted.js)']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('reads the parser and menu refusals that BE-13-T02 round 2 registered', () => {

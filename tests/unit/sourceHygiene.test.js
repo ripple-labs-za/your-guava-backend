@@ -291,6 +291,7 @@ describe('source structure (BE-11-T07)', () => {
       "\\.cookie\\('refreshToken'",
       "clearCookie\\('refreshToken'",
       "const chunks = \\(values",
+      "\\bcode:\\s*(?:err|error)\\??\\.(?:code|publicCode)\\b(?!\\s*(?:\\|\\||\\?\\?))",
     ]);
     expect(BARREL_EXCEPTIONS).toEqual([['server.js', 'services/billing/reminders']]);
     expect(CONSOLE_LOG_ALLOWED).toEqual(['seed.js']);
@@ -307,6 +308,7 @@ describe('source structure (BE-11-T07)', () => {
       { allow: ['utils/authPrimitives.js'] },
       { allow: ['utils/authPrimitives.js'] },
       { allow: [] },
+      { deny: ['controllers/', 'middleware/', 'services/workforce/errors.js'] },
     ]);
     expect(Object.keys(BARREL_FOLDERS)).toHaveLength(9);
     expect(SOURCE_PATTERNS.map(({ rule }) => rule)).toEqual([
@@ -319,6 +321,7 @@ describe('source structure (BE-11-T07)', () => {
       'refresh cookie set by hand',
       'refresh cookie cleared by hand',
       'chunk helper copy (use chunksOf)',
+      'response code forwarded from the error (use refusalBody)',
     ]);
     expect(HELPER_HOMES).toMatchObject({
       isTestEnvironment: 'config/posture.js',

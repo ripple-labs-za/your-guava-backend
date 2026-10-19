@@ -36,6 +36,7 @@ const paystack = require('../services/paystack.service');
 const { assertPlanChangeCapacity } = require('../services/planCapacity.service');
 const { isValidEmail } = require('../utils/email');
 const { clearApiCache } = require('../middleware/cache.middleware');
+const { refusalBody } = require('../utils/errorCodes');
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 const normalizedProfileText = (value) =>
@@ -482,12 +483,7 @@ const checkout = async (req, res, next) => {
       if (fresh?.pendingPlanChange) return planChangeAlreadyScheduled(res, fresh.pendingPlanChange);
     }
     if (error?.code === 'PLAN_LIMIT_EXCEEDED') {
-      return res.status(409).json({
-        success: false,
-        code: error.code,
-        message: error.message,
-        capacity: error.details?.capacity,
-      });
+      return res.status(409).json(refusalBody(error, { capacity: error.details?.capacity }));
     }
     next(error);
   }
