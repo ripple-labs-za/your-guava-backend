@@ -10,6 +10,16 @@ const {
 } = require('../utils/timezone');
 const { activeCafeId } = require('../utils/tenancy');
 
+const assertEventStringFields = (body) => {
+  for (const field of ['name', 'date', 'impact', 'notes', 'type']) {
+    if (body[field] !== undefined && typeof body[field] !== 'string') {
+      const error = new Error(`${field} must be a string`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+};
+
 // The throwing, message-bearing wrapper events need over the shared parseDateOnly.
 const requireEventDate = (value, field = 'date') => {
   if (!DATE_ONLY_RE.test(String(value || ''))) {
@@ -77,13 +87,14 @@ const parseEventType = (type) => {
 
 const parseClosureWindow = (type, closureWindow) => {
   if (type !== 'partial_closure') return undefined;
-  if (!closureWindow || typeof closureWindow !== 'object') {
+  if (!closureWindow || typeof closureWindow !== 'object' || Array.isArray(closureWindow)) {
     const error = new Error('partial_closure requires closureWindow with startTime and endTime');
     error.statusCode = 400;
     throw error;
   }
   const { startTime, endTime } = closureWindow;
-  if (!TIME_OF_DAY_RE.test(startTime || '') || !TIME_OF_DAY_RE.test(endTime || '')) {
+  if (typeof startTime !== 'string' || typeof endTime !== 'string'
+    || !TIME_OF_DAY_RE.test(startTime) || !TIME_OF_DAY_RE.test(endTime)) {
     const error = new Error('closureWindow.startTime and closureWindow.endTime must be HH:mm');
     error.statusCode = 400;
     throw error;
@@ -332,6 +343,7 @@ const create = async (req, res, next) => {
     const cafeId = activeCafeId(req);
     const { name, date, impact, impactPct, notes, recurring, type, closureWindow } = req.body;
 
+    assertEventStringFields(req.body);
     if (!name || !date) {
       return res.status(400).json({ success: false, message: 'name and date are required' });
     }
@@ -342,7 +354,7 @@ const create = async (req, res, next) => {
 
     const event = await Event.create({
       cafeId,
-      name: String(name).trim(),
+      name: name.trim(),
       date: parsedDate,
       dateKey: String(date),
       type: parsedType,
@@ -371,9 +383,10 @@ const update = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
 
+    assertEventStringFields(req.body);
     const update = {};
     const unset = {};
-    if (name !== undefined) update.name = String(name).trim();
+    if (name !== undefined) update.name = name.trim();
     if (date !== undefined) { update.date = requireEventDate(date); update.dateKey = String(date); }
     if (impact !== undefined) update.impact = impact;
     if (notes !== undefined) update.notes = notes;
