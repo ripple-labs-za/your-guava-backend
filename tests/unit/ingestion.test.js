@@ -144,9 +144,7 @@ describe('ingestion service', () => {
       expect(tx.items.length).toBeGreaterThanOrEqual(1);
       // Verify the quantity was parsed correctly
       const longWhite = tx.items.find((i) => i.name === 'Long White (Blend)');
-      if (longWhite) {
-        expect(longWhite.quantity).toBe(2);
-      }
+      expect(longWhite).toEqual(expect.objectContaining({ quantity: 2 }));
       const brownie = tx.items.find((i) => i.name === 'Brownie');
       expect(brownie.quantity).toBe(1);
       expect(tx.total).toBe(143);

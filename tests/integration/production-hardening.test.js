@@ -5,6 +5,7 @@ jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
 })));
 
 const supertest = require('supertest');
+const { waitFor } = require('../helpers/waitFor');
 const {
   setup,
   teardown,
@@ -867,12 +868,10 @@ describe('production hardening regressions', () => {
     const lookup = jest.spyOn(oneGate, 'lookupGatewayTransaction')
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstLookup = resolve; }))
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondLookup = resolve; }));
-    const waitForLookup = async (count) => {
-      for (let attempt = 0; attempt < 100 && lookup.mock.calls.length < count; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(lookup).toHaveBeenCalledTimes(count);
-    };
+    // A 5 s deadline, not 100 x 5 ms: a loaded runner gets the same wall-clock budget.
+    const waitForLookup = (count) => waitFor(() => lookup.mock.calls.length >= count, {
+      timeoutMs: 5000, message: `lookup call ${count}`,
+    }).then(() => expect(lookup).toHaveBeenCalledTimes(count));
 
     const firstWorker = reconcileOneGatePayment(session.reference);
     await waitForLookup(1);
