@@ -143,6 +143,7 @@ const ERROR_CODES = Object.freeze({
   VERIFICATION_EMAIL_FAILED: { status: 502, client: true, meaning: 'The verification email could not be sent' },
   VERIFICATION_PASSWORD_MISMATCH: { status: 401, client: true, meaning: 'The password given at verification does not match the signup' },
   WRITE_RATE_LIMITED: { status: 429, client: true, meaning: 'Too many writes of one kind from one user in a minute' },
+  XLSX_DIMENSION_LIMIT: { status: 400, client: true, meaning: 'The spreadsheet dimensions are too large to read safely' },
   XLSX_PART_TOO_LARGE: { status: 400, client: true, meaning: 'A part of the spreadsheet is far larger than a spreadsheet should be' },
   XLSX_UNREADABLE: { status: 400, client: true, meaning: 'The spreadsheet could not be read' },
   YOCO_WEBHOOK_BUSINESS_REQUIRED: { status: 400, client: false, meaning: 'A Yoco webhook arrived without its business id; answered to Yoco' },

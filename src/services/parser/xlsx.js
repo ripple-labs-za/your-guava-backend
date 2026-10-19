@@ -79,10 +79,12 @@ const readFirstSheet = async (buffer, limits = parserLimits()) => {
     const { row, column } = dimensions[1];
     const cost = Math.max(row, 1) * (Math.max(column, 1) + 8);
     if (!(cost <= XLSX_MAX_SHEET_COST)) {
-      throw createClientInputError(
+      const error = createClientInputError(
         `This spreadsheet says it spans ${row} rows by ${column} columns, which is too large to read safely. `
         + 'Save it again from Excel, or export it as "CSV UTF-8", and upload that.'
       );
+      error.code = 'XLSX_DIMENSION_LIMIT';
+      throw error;
     }
   }
   return convertCellsToData2dArray(cells, dimensions);

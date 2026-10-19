@@ -35,12 +35,14 @@ describe('POST /api/transactions/upload refuses impossible spreadsheet sizes', (
   it.each([
     ['dos-dimension.xlsx', { dimension: 'A1:XFD1048576', deflate: true }],
     ['dos-last-cell.xlsx', { extraRowsXml: '<row r="1048576"><c r="XFD1048576" t="inlineStr"><is><t>x</t></is></c></row>', deflate: true }],
+    ['dos-spaced-last-cell.xlsx', { extraRowsXml: '<row r="1048576"><c r="XFD 1048576" t="inlineStr"><is><t>x</t></is></c></row>', deflate: true }],
   ])('%s is a 400 and the API stays up', async (name, options) => {
     const outcome = await measureBudget(() => request
       .post('/api/transactions/upload')
       .set('Authorization', `Bearer ${token}`)
       .attach('file', xlsxWith([HEADER], options), name));
     expect(outcome.result.status).toBe(400);
+    expect(outcome.result.body.code).toBe('XLSX_DIMENSION_LIMIT');
     expect(outcome.result.body.message).toMatch(/limit|rows|size/i);
     expect(outcome.elapsedMs).toBeLessThan(1000);
     expect(await Upload.countDocuments()).toBe(0);
