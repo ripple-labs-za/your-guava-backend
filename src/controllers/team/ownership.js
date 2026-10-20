@@ -23,8 +23,9 @@ const transferOwnership = async (req, res, next) => {
     if (typeof currentPassword !== 'string' || !currentPassword) {
       return res.status(400).json({ success: false, message: 'Current password is required' });
     }
+    // The code tells the portal this 401 is an answer, not an expired session it should refresh (FB-043).
     if (passwordTooLong(currentPassword)) {
-      return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+      return res.status(401).json({ success: false, code: 'CURRENT_PASSWORD_INCORRECT', message: 'Current password is incorrect' });
     }
 
     let target;
@@ -39,6 +40,7 @@ const transferOwnership = async (req, res, next) => {
       if (!currentOwner || !(await currentOwner.comparePassword(currentPassword))) {
         const error = new Error('Current password is incorrect');
         error.statusCode = 401;
+        error.code = 'CURRENT_PASSWORD_INCORRECT';
         throw error;
       }
       target = await User.findOne({
@@ -141,7 +143,7 @@ const transferOwnership = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.statusCode && error.statusCode < 500) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
+      return res.status(error.statusCode).json({ success: false, ...(error.code ? { code: error.code } : {}), message: error.message });
     }
     return next(error);
   } finally {

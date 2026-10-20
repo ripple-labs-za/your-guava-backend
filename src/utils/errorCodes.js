@@ -44,6 +44,7 @@ const ERROR_CODES = Object.freeze({
   CREDIT_RESERVATION_REJECTED: { status: 402, client: false, meaning: 'Internal: a credit reservation lost a race and is converted before it is sent' },
   CREDIT_SPEND_FORBIDDEN: { status: 403, client: true, meaning: 'The owner has not allowed this member to spend Guava Credits' },
   CSV_ROW_TOO_LONG: { status: 400, client: true, meaning: 'A CSV row is longer than the parser reads safely' },
+  CURRENT_PASSWORD_INCORRECT: { status: 401, client: true, meaning: 'The current password confirming a password change or ownership transfer is wrong (not an expired session)' },
   DEADLINE_EXCEEDED: { status: 500, client: false, meaning: 'Internal: a shutdown or background deadline elapsed' },
   DOWNLOAD_LINK_EXPIRED: { status: 410, client: false, meaning: 'A signed download link expired; answered to a browser navigation' },
   DOWNLOAD_SIGNING_NOT_CONFIGURED: { status: 503, client: true, meaning: 'Signed download links are not configured on this server' },
