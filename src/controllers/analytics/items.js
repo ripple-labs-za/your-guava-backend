@@ -3,11 +3,11 @@
 const mongoose = require('mongoose');
 const { aggregateOptions, isQueryTimeout, queryTimeoutError } = require('../../services/analytics/limits');
 const Cafe = require('../../models/Cafe.model');
-const { safeTimezone, zonedDayStart, zonedDayEnd } = require('../../utils/timezone');
-const { getCafeTradingHours } = require('../../utils/tradingHours');
+const { safeTimezone, zonedDayStart, zonedDayEnd, zonedDateKey } = require('../../utils/timezone');
+const { getCafeTradingHours, hasSavedTradingHours } = require('../../utils/tradingHours');
 const { rankMovers, itemTrend, MOVER_MIN_QTY_PER_WEEK } = require('../../services/analytics/movers');
 const { saleCount } = require('../../services/analytics/semantics');
-const { openDaysBetween, shiftDay, mongoRound } = require('../../services/analytics/windows');
+const { openDaysBetween, shiftDay, mongoRound, lastCompleteDay, trendWindows } = require('../../services/analytics/windows');
 const Transaction = require('../../models/Transaction.model');
 const { buildDateMatch, analyticsRangeMeta, dateToString } = require('./range');
 const { activeCafeId } = require('../../utils/tenancy');
@@ -77,10 +77,24 @@ const getItems = async (req, res, next) => {
     // Top 20 items overall
     const items = topItems.map((item) => ({ ...item, avgPerDay: openDays > 0 ? mongoRound(item.totalQty / openDays, 1) : 0 }));
 
-    // Trend: latest 7 local trading days in the selected data vs previous 7 days.
-    const trendEnd = zonedDayEnd(lastDay, timezone);
-    const currentStart = zonedDayStart(shiftDay(lastDay, -6), timezone);
-    const previousStart = zonedDayStart(shiftDay(lastDay, -13), timezone);
+    // Totals keep today's sales; movers compare complete local days, just as the revenue trend does.
+    // Historical windows retain their existing last-data-day anchor. Only the effective end is needed here:
+    // whether there is enough earlier history for a revenue comparison does not change the completed day.
+    const today = zonedDateKey(new Date(), timezone);
+    const requestedEnd = zonedDateKey(dateMatch.$lte, timezone);
+    let moverEnd = lastDay;
+    if (requestedEnd >= today) {
+      const completeEnd = lastCompleteDay({ endDate: requestedEnd, today });
+      const lastCompleted = presence.filter((row) => row._id <= completeEnd).at(-1)?._id || null;
+      moverEnd = trendWindows({
+        startDate: zonedDateKey(dateMatch.$gte, timezone), endDate: requestedEnd, today,
+        firstDataDate: null, lastDataDate: lastCompleted,
+        tradingHours: hasSavedTradingHours(cafe) ? cafe.tradingHours : [],
+      }).effective?.endDate || null;
+    }
+    const trendEnd = moverEnd ? zonedDayEnd(moverEnd, timezone) : null;
+    const currentStart = moverEnd ? zonedDayStart(shiftDay(moverEnd, -6), timezone) : null;
+    const previousStart = moverEnd ? zonedDayStart(shiftDay(moverEnd, -13), timezone) : null;
 
 
     const trendPipeline = [
@@ -106,7 +120,7 @@ const getItems = async (req, res, next) => {
       },
     ];
 
-    const trendData = await Transaction.aggregate(trendPipeline, aggregateOptions());
+    const trendData = moverEnd ? await Transaction.aggregate(trendPipeline, aggregateOptions()) : [];
 
     // Build trend lookup: itemName -> { current, previous }. A Map, because
     // item names come from POS files: on a plain object, trendMap['__proto__']
