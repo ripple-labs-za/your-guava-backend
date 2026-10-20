@@ -6,6 +6,27 @@ const root = path.join(__dirname, '..', '..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 
 describe('coverage instrumentation never judges resource budgets', () => {
+  it('accounts for every budget marker and refuses tags outside a supported test-name start', () => {
+    const { budgetFiles } = require('../../scripts/ci-budget-files.cjs');
+    const selected = new Set(budgetFiles(root));
+    const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const file = path.join(dir, entry.name);
+      return entry.isDirectory() ? walk(file) : file.endsWith('.test.js') ? [file] : [];
+    });
+    const registration = /^\s*(?:(?:it|test|describe)(?:\.each\([^\r\n]*\))?|\]\))\(\s*['"`]\[budget\] /;
+    const tagged = walk(path.join(root, 'tests')).filter((file) => file !== __filename
+      && fs.readFileSync(file, 'utf8').includes('[budget]'));
+    expect(tagged.length).toBeGreaterThan(0);
+    for (const file of tagged) {
+      expect({ file, discovered: selected.has(file.replaceAll('\\', '/')) }).toEqual({ file, discovered: true });
+      const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((line) => line.includes('[budget]'));
+      for (const line of lines) {
+        expect(line).toMatch(registration);
+        expect({ file, markers: line.split('[budget]').length - 1 }).toEqual({ file, markers: 1 });
+      }
+    }
+  });
+
   it('runs coverage and plain budgets in separate gating jobs', () => {
     expect(workflow).toMatch(/node node_modules\/jest\/bin\/jest\.js --config jest\.coverage\.config\.js --coverage/);
     const budgets = workflow.split(/^  budgets:/m)[1]?.split(/^  \w+:/m)[0];
