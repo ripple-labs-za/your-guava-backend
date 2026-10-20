@@ -132,7 +132,7 @@ const inviteManager = async (req, res, next) => {
       const plan = getPlan(org.plan);
       if (used >= plan.includedSeats) {
         const error = new Error(
-          `Seat limit reached on the ${plan.id} plan. Upgrade your plan or remove a member.`
+          `Seat limit reached on the ${plan.name} plan. Upgrade your plan or remove a member.`
         );
         error.statusCode = 402;
         error.seats = {
@@ -485,7 +485,7 @@ const resendInvitation = async (req, res, next) => {
       const used = activeSeats + pendingSeats;
       const plan = getPlan(org.plan);
       if (used >= plan.includedSeats) {
-        const error = new Error(`Seat limit reached on the ${plan.id} plan`);
+        const error = new Error(`Seat limit reached on the ${plan.name} plan. Upgrade your plan or remove a member.`);
         error.statusCode = 402;
         throw error;
       }

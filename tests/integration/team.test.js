@@ -256,7 +256,9 @@ describe('Team API', () => {
         });
 
       expect(res.status).toBe(402);
-      expect(res.body.message).toMatch(/seat limit/i);
+      expect(res.body.message).toBe('Seat limit reached on the Starter plan. Upgrade your plan or remove a member.');
+      expect(res.body.code).not.toBe('BILLING_REQUIRED');
+      expect(res.body.seats).toEqual(expect.objectContaining({ plan: 'starter', used: 2, included: 2, remaining: 0 }));
     });
 
     it('serializes concurrent invites so the seat limit cannot be exceeded', async () => {
@@ -503,6 +505,25 @@ describe('Team API', () => {
         action: 'member.updated',
         targetUserId: manager._id,
       })).toBe(1);
+    });
+
+    it('names the display plan consistently when an expired invitation cannot reclaim a full seat', async () => {
+      const inviteSpy = jest.spyOn(emailService, 'sendTeamInviteEmail').mockResolvedValue({ sent: true });
+      const invited = await request.post('/api/team/invite').set('Authorization', `Bearer ${ownerToken}`)
+        .send({ name: 'Expired', email: 'expired-full@yourguava.com', cafeIds: [ownerUser.activeCafeId] });
+      expect(invited.status).toBe(201);
+      await TeamInvitation.updateOne({ _id: invited.body.invitation.id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+      await createTestManager(ownerToken, [ownerUser.activeCafeId]);
+      const before = await TeamInvitation.findById(invited.body.invitation.id).select('+tokenHash').lean();
+      const resent = await request.post(`/api/team/invitations/${invited.body.invitation.id}/resend`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      expect(resent.status).toBe(402);
+      expect(resent.body.message).toBe('Seat limit reached on the Starter plan. Upgrade your plan or remove a member.');
+      expect(resent.body.code).not.toBe('BILLING_REQUIRED');
+      const after = await TeamInvitation.findById(invited.body.invitation.id).select('+tokenHash').lean();
+      expect(after.tokenHash).toBe(before.tokenHash);
+      expect(after.expiresAt).toEqual(before.expiresAt);
+      expect(inviteSpy).toHaveBeenCalledTimes(1);
     });
 
     it('shows expired invitations and lets the owner resend or revoke them', async () => {
