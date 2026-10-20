@@ -289,14 +289,14 @@ describe('BE-01 DoS regression suite', () => {
   });
 
   describe('the budgets bite', () => {
-    it('the legacy email pattern blows the 50 ms budget at 20,000 characters', () => {
+    it('[budget] the legacy email pattern blows the 50 ms budget at 20,000 characters', () => {
       const LEGACY_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       const { ms } = syncMs(() => LEGACY_EMAIL_RE.test(payloads.hostileEmail(20_000)));
       record('control: legacy email pattern 20k', syncOutcome(ms));
       expect(ms).toBeGreaterThan(50);
     });
 
-    it('the legacy packed-item pattern blows the 20 ms budget on the adversarial cell', () => {
+    it('[budget] the legacy packed-item pattern blows the 20 ms budget on the adversarial cell', () => {
       const QTY = String.raw`-?\d+(?:[.,]\d+)?`;
       const MARKER = String.raw`\s+[x×]\s+`;
       const legacy = new RegExp(`(${QTY})${MARKER}([^\\n]+?)(?:[,;\\n](?=\\s*${QTY}${MARKER})|$)`, 'gi');

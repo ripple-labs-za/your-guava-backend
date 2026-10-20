@@ -25,7 +25,7 @@ describe('coverage instrumentation never judges resource budgets', () => {
     expect(new RegExp(coverage.testNamePattern).test('[budget] 10 MB scan')).toBe(false);
     expect(new RegExp(budgets.testNamePattern).test('[budget] 10 MB scan')).toBe(true);
     expect(budgets.collectCoverage).toBe(false);
-    expect(coverage.maxWorkers).toBe(2);
+    expect(coverage.maxWorkers).toBe(4);
   });
 
   it('loads only tagged files and includes all originally failing budget families', () => {

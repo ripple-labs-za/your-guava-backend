@@ -7,7 +7,8 @@ Verified against: `3895b88` on 19 October 2026. Use this before each production 
 | Check | Command | Where |
 |---|---|---|
 | Install from the lockfile | `npm ci` (clean CI host only; no npm on the incident workstation) | CI job `verify` |
-| Backend tests with the coverage gate (85% lines, 75% branches) | `node node_modules/jest/bin/jest.js --runInBand --coverage` | CI job `verify`, locally |
+| Backend correctness coverage (85% lines, 75% branches; four workers) | `node node_modules/jest/bin/jest.js --config jest.coverage.config.js --coverage` | CI job `verify`, locally |
+| Original timing, heap and event-loop limits, without coverage instrumentation | `node node_modules/jest/bin/jest.js --config jest.budgets.config.js --runInBand` | CI job `budgets`, locally |
 | Static checks: syntax, raw control characters, focused tests, test-only branches, production requires, unused requires, test guards, 70% per-file line floor | `node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json` | CI job `verify`, locally |
 | Whitespace in the change | `git diff --check HEAD^ HEAD` | CI job `verify`, locally |
 | Audit of what ships, after the tests | `npm audit --omit=dev --audit-level=high` | CI job `verify` |
@@ -15,7 +16,8 @@ Verified against: `3895b88` on 19 October 2026. Use this before each production 
 | Production image builds, runs as a non-root user and passes its own HEALTHCHECK | `docker build --pull -t your-guava-api:ci .`, then the run steps in `.github/workflows/ci.yml` | CI job `image` |
 | Portal tests, typecheck and build | portal's own CI commands | portal CI |
 
-Both jobs must be green on the backend pull request before merging (GATE-03). npm and the image build never run on the incident
+All three jobs must be green on the backend pull request before merging (GATE-03). The two Jest jobs partition tests by the visible
+`[budget]` tag; no test is omitted overall. Both have a 30-minute timeout. npm and the image build never run on the incident
 workstation; their first run is that pull request.
 
 ## Backend production environment

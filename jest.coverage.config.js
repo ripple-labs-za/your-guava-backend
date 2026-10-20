@@ -2,6 +2,6 @@
 module.exports = {
   ...require('./jest.config'),
   testNamePattern: '^(?![\\s\\S]*\\[budget\\])',
-  // Each file owns its MongoMemoryReplSet; two workers bound both memory and wall time.
-  maxWorkers: 2,
+  // Each file owns its MongoMemoryReplSet; four workers bound both memory and wall time.
+  maxWorkers: 4,
 };

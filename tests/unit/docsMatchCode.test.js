@@ -158,7 +158,8 @@ describe('README.md', () => {
 
   it('describes the CI gates as they run, not as pending (BE-12-T04)', () => {
     for (const command of [
-      'node node_modules/jest/bin/jest.js --runInBand --coverage',
+      'node node_modules/jest/bin/jest.js --config jest.coverage.config.js --coverage',
+      'node node_modules/jest/bin/jest.js --config jest.budgets.config.js --runInBand',
       'node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json',
       'npm audit --omit=dev --audit-level=high',
       'git diff --check HEAD^ HEAD',
