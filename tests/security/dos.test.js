@@ -66,14 +66,14 @@ describe('BE-01 DoS regression suite', () => {
   describe('BE-01-T01 email', () => {
     const hostile = payloads.hostileEmail(99_000);
 
-    it('isValidEmail refuses a megabyte in under 50 ms', () => {
+    it('[budget] isValidEmail refuses a megabyte in under 50 ms', () => {
       const { value, ms } = syncMs(() => isValidEmail(payloads.hostileEmail(1_000_000)));
       record('T01 isValidEmail 1 MB', syncOutcome(ms));
       expect(value).toBe(false);
       expect(ms).toBeLessThan(50);
     });
 
-    it('a logged-out login with a 100 KB email answers 401, median under 50 ms', async () => {
+    it('[budget] a logged-out login with a 100 KB email answers 401, median under 50 ms', async () => {
       await request.post('/api/auth/login').send({ email: 'warm@up.co', password: 'password123' });
       const samples = [];
       const outcome = await measureBudget(async () => {
@@ -98,7 +98,7 @@ describe('BE-01 DoS regression suite', () => {
       ['/api/auth/register', { name: 'Test Owner', password: 'password123', cafeName: 'Test Cafe' }, 400],
       ['/api/auth/resend-verification', {}, 200],
       ['/api/auth/forgot-password', {}, 200],
-    ])('%s answers a 100 KB email at once', async (route, body, status) => {
+    ])('[budget] %s answers a 100 KB email at once', async (route, body, status) => {
       const outcome = await measureBudget(() => request.post(route).send({ ...body, email: hostile }));
       record(`T01 ${route} 100 KB`, outcome);
       expect(outcome.result.status).toBe(status);
@@ -106,7 +106,7 @@ describe('BE-01 DoS regression suite', () => {
       expect(outcome.maxLoopDelayMs).toBeLessThan(100);
     });
 
-    it('the column-mapping privacy check reads a megabyte header in under 50 ms', async () => {
+    it('[budget] the column-mapping privacy check reads a megabyte header in under 50 ms', async () => {
       const { proposeColumnMapping } = jest.requireActual('../../src/services/anthropic.service');
       await proposeColumnMapping(['Date', 'Flat White', '45.00'], [], {});
       const outcome = await measureBudget(() => proposeColumnMapping([payloads.hostileEmail(1_000_000), 'Flat White', '45.00'], [], {}));
@@ -121,7 +121,7 @@ describe('BE-01 DoS regression suite', () => {
       ['T02 10 MB single line', () => payloads.singleLineCsv(10 * 1024 * 1024 - 64), /longer than/],
       ['T02 email-shaped 200k header', () => payloads.emailHeaderCsv(200_000), /./],
       ['T02 widest line under the cap', () => payloads.singleLineCsv(parserLimits().maxRowBytes - 1), /column limit/],
-    ])('%s is a 400 inside the budget', async (name, build, message) => {
+    ])('[budget] %s is a 400 inside the budget', async (name, build, message) => {
       const buffer = build();
       const outcome = await measureBudget(() => stage(buffer, 'dos.csv'));
       record(name, outcome);
@@ -141,7 +141,7 @@ describe('BE-01 DoS regression suite', () => {
       ['T03 cell at XFD1048576', () => payloads.coordinateBombXlsx()],
       ['T03 cell at "XFD 1048576"', () => payloads.coordinateBombXlsx('XFD 1048576')],
       ['T03 1 MB of unterminated <c tags', () => payloads.unterminatedTagsXlsx()],
-    ])('%s is a 400 before the sheet is read', async (name, build) => {
+    ])('[budget] %s is a 400 before the sheet is read', async (name, build) => {
       const workbook = build();
       if (!name.includes('unterminated')) expect(workbook.length).toBeLessThan(2048); // static-checks: allow conditional-expect it.each row: the three bombs are tiny files, the unterminated row is 1 MB by design
       const outcome = await measureBudget(() => stage(workbook, 'dos.xlsx'));
@@ -158,7 +158,7 @@ describe('BE-01 DoS regression suite', () => {
 
   // BE-01-T04 was re-scoped (no worker): the sheet is read as a stream that never builds a DOM, and the DOM-built parts are size-limited.
   describe('BE-01-T04 bounded XLSX DOM', () => {
-    it('a workbook with 17 MB of sheet XML stages with the API heap flat', async () => {
+    it('[budget] a workbook with 17 MB of sheet XML stages with the API heap flat', async () => {
       await stage(payloads.dimensionBombXlsx(), 'warm.xlsx'); // warm the reader
       const workbook = payloads.heavySheetXlsx();
       const outcome = await measureBudget(() => stage(workbook, 'heavy-10k-x-25.xlsx'));
@@ -173,7 +173,7 @@ describe('BE-01 DoS regression suite', () => {
       await expectUp();
     }, 60_000);
 
-    it('a workbook whose styles part is 16 MB is a 400 before it is built', async () => {
+    it('[budget] a workbook whose styles part is 16 MB is a 400 before it is built', async () => {
       const outcome = await measureBudget(() => stage(payloads.stylesBombXlsx(), 'styles-bomb.xlsx'));
       record('T04 16 MB styles part', outcome);
       expect(outcome.result.status).toBe(400);
@@ -189,14 +189,14 @@ describe('BE-01 DoS regression suite', () => {
     it.each([
       ['T05 digit run then newline', payloads.ADVERSARIAL_ITEMS_CELL],
       ['T05 repeated markers then newline', payloads.REPEATED_MARKERS_CELL],
-    ])('%s parses in under 20 ms', (name, cell) => {
+    ])('[budget] %s parses in under 20 ms', (name, cell) => {
       parsePackedItems(cell);
       const { ms } = syncMs(() => parsePackedItems(cell));
       record(name, syncOutcome(ms), { chars: cell.length });
       expect(ms).toBeLessThan(20);
     });
 
-    it('a 2,000-row workbook of the adversarial cell confirms no slower than a benign cell of the same size', async () => {
+    it('[budget] a 2,000-row workbook of the adversarial cell confirms no slower than a benign cell of the same size', async () => {
       // The grammar's budget is the delta against a same-size benign cell (BE-01-T05, ISSUES #11): the import path itself costs
       // ~3 ms a row on this host, so the confirm must fit 2 s or, on a host slower than that, the benign time plus 500 ms.
       const control = await stage(payloads.packedItemsXlsx(2000, payloads.BENIGN_10K_CELL, 'B'), 'benign-2k.xlsx');
@@ -215,7 +215,7 @@ describe('BE-01 DoS regression suite', () => {
   });
 
   describe('BE-01-T06 menu matching', () => {
-    it('the crafted menu reconciliation page answers inside the budget', async () => {
+    it('[budget] the crafted menu reconciliation page answers inside the budget', async () => {
       await Item.insertMany(payloads.craftedMenu(user.activeCafeId, normalizeItemName));
       const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
       const outcome = await measureBudget(() => request.get('/api/items/reconciliation?limit=100').set(auth()));
@@ -229,7 +229,7 @@ describe('BE-01 DoS regression suite', () => {
   });
 
   describe('BE-01-T07 upload surface', () => {
-    it('200 heavy uploads list in a small body', async () => {
+    it('[budget] 200 heavy uploads list in a small body', async () => {
       const row = Object.fromEntries([0, 1].map((index) => [`Column ${index}`, 'x'.repeat(10_000)]));
       await Upload.insertMany(Array.from({ length: 200 }, (_, index) => ({
         cafeId: user.activeCafeId, uploadedBy: user.id || user._id, fileName: `heavy-${index}.csv`, fileSize: 1,
@@ -246,7 +246,7 @@ describe('BE-01 DoS regression suite', () => {
       expect(outcome.maxLoopDelayMs).toBeLessThan(250);
     });
 
-    it('a 50 MB form field is a 413', async () => {
+    it('[budget] a 50 MB form field is a 413', async () => {
       const outcome = await measureBudget(() => request.post('/api/transactions/upload').set(auth())
         .field('note', 'x'.repeat(50 * 1024 * 1024))
         .attach('file', Buffer.from('Receipt,Items\nR1,1 x Latte\n'), 'small.csv'));
@@ -257,7 +257,7 @@ describe('BE-01 DoS regression suite', () => {
       await expectUp();
     }, 60_000);
 
-    it('a thousand form fields are a 413', async () => {
+    it('[budget] a thousand form fields are a 413', async () => {
       const outcome = await measureBudget(() => {
         let pending = request.post('/api/transactions/upload').set(auth());
         for (let index = 0; index < 1000; index += 1) pending = pending.field(`f${index}`, 'x'.repeat(1024));
@@ -271,7 +271,7 @@ describe('BE-01 DoS regression suite', () => {
   });
 
   describe('BE-01-T08 reserved names', () => {
-    it('items named like prototype keys import and read back without touching a prototype', async () => {
+    it('[budget] items named like prototype keys import and read back without touching a prototype', async () => {
       const staged = await stage(Buffer.from(payloads.RESERVED_NAMES_CSV), 'reserved-names.csv');
       const outcome = await measureBudget(async () => {
         const confirmed = await confirm(staged.body.uploadId, payloads.RESERVED_NAMES_MAPPING);

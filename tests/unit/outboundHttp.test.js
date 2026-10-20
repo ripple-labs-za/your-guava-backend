@@ -83,7 +83,7 @@ describe('outbound HTTP policy', () => {
     expect(config.params).toEqual({ limit: 50 });
   });
 
-  it('fails a stalled call at the total deadline with a named, logged error', async () => {
+  it('[budget] fails a stalled call at the total deadline with a named, logged error', async () => {
     process.env.OUTBOUND_YOCO_TIMEOUT_MS = '100';
     const start = process.hrtime.bigint();
 
@@ -138,7 +138,7 @@ describe('outbound HTTP policy', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('settles at the deadline even when the work ignores the abort signal', async () => {
+  it('[budget] settles at the deadline even when the work ignores the abort signal', async () => {
     process.env.OUTBOUND_RESEND_TIMEOUT_MS = '100';
     const start = process.hrtime.bigint();
     await expect(withDeadline('resend', () => new Promise(() => {})))

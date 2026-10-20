@@ -18,7 +18,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -31,7 +31,7 @@ jobs:
       - name: Install from the lockfile
         run: npm ci
       - name: Tests with the coverage gate
-        run: node node_modules/jest/bin/jest.js --runInBand --coverage
+        run: node node_modules/jest/bin/jest.js --config jest.coverage.config.js --coverage
       - name: Static checks, including the per-file coverage floor
         run: node scripts/static-checks.mjs --coverage-summary coverage/coverage-summary.json
       - name: Whitespace in this change
@@ -42,6 +42,24 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - name: Audit dev dependencies (reported, not blocking; they are not in the image)
         run: npm audit --audit-level=high || echo "::warning::dev-dependency advisories above; they do not ship in the image"
+
+  # Coverage instrumentation changes elapsed time and heap growth. Judge every tagged resource test
+  # with its original thresholds in a separate, uninstrumented and serial job.
+  budgets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install from the lockfile
+        run: npm ci
+      - name: Plain timing and heap budgets
+        run: node node_modules/jest/bin/jest.js --config jest.budgets.config.js --runInBand
 
   image:
     runs-on: ubuntu-latest

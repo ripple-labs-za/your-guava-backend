@@ -129,7 +129,7 @@ describe('a stray inch mark does not swallow the rows after it', () => {
     expect(result.rows.map((row) => row.receiptId)).toEqual(expect.arrayContaining(['U2', 'U3']));
   });
 
-  it('prepares 10 MB of inch marks in linear time', () => {
+  it('[budget] prepares 10 MB of inch marks in linear time', () => {
     const { prepareCsv } = require('../../src/services/parser/csvStructure');
     const line = `X1,2026-09-01,12:00,1 x 12" "Pizza" 9",120.00${LF}`;
     const file = Buffer.from(`Receipt,Date,Time,Items,Total${LF}${line.repeat(Math.floor(10e6 / line.length))}`);
@@ -141,7 +141,7 @@ describe('a stray inch mark does not swallow the rows after it', () => {
     expect(prepared.expectedRecords).toBe(Math.floor(10e6 / line.length));
   });
 
-  it('refuses 10 MB of never-closing quotes in linear time with a 400', () => {
+  it('[budget] refuses 10 MB of never-closing quotes in linear time with a 400', () => {
     const { prepareCsv } = require('../../src/services/parser/csvStructure');
     const line = `"abc,def${LF}`;
     const file = Buffer.from(`A,B${LF}${line.repeat(Math.floor(10e6 / line.length))}`);
@@ -231,7 +231,7 @@ describe('a file with no quotation marks at all', () => {
     expect(normaliseCsvQuotes(Buffer.from(`"x",${text}`), ',', opts).records).toBe(records + (firstLineEmpty ? 1 : 0));
   });
 
-  it('scans 10 MB of one quote-free line quickly', () => {
+  it('[budget] scans 10 MB of one quote-free line quickly', () => {
     const buffer = Buffer.alloc(10 * 1024 * 1024, 'a');
     const started = performance.now();
     expect(normaliseCsvQuotes(buffer, ',', opts).records).toBe(1);
@@ -245,7 +245,7 @@ describe('review of BE-03-T08', () => {
   const { decodeCsvBuffer } = require('../../src/services/parser/encoding');
   const MAP3 = { date: 'Date', items: 'Items', total: 'Total' };
 
-  it('counts the records of 2 MB of short LF-only lines in linear time', () => {
+  it('[budget] counts the records of 2 MB of short LF-only lines in linear time', () => {
     const buffer = Buffer.from('a,b\n'.repeat(512 * 1024));
     const started = performance.now();
     expect(normaliseCsvQuotes(buffer, ',', { maxQuotedFieldBytes: 1024 }).records).toBe(512 * 1024);
@@ -292,7 +292,7 @@ describe('review of BE-03-T08', () => {
     expect(decoded.buffer.toString('utf8')).toBe('Items\n1 x Crème brûlée\n2 × Latte\n1 x Café\n');
   });
 
-  it('refuses 10 MB of quotation marks inside the heap guard', () => {
+  it('[budget] refuses 10 MB of quotation marks inside the heap guard', () => {
     const buffer = Buffer.alloc(10 * 1024 * 1024, '"');
     const heapBefore = process.memoryUsage().heapUsed;
     let thrown = null;
@@ -365,7 +365,7 @@ describe('second review of BE-03-T08', () => {
     expect(result.rows).toHaveLength(1500);
   });
 
-  it('decodes 10 MB of stray bytes around one UTF-8 pair inside the heap guard', () => {
+  it('[budget] decodes 10 MB of stray bytes around one UTF-8 pair inside the heap guard', () => {
     const file = Buffer.concat([Buffer.alloc(10 * 1024 * 1024, 0xe9), Buffer.from('é')]);
     const heapBefore = process.memoryUsage().heapUsed;
     const decoded = decodeCsvBuffer(file);
@@ -373,7 +373,7 @@ describe('second review of BE-03-T08', () => {
     expect(decoded.buffer.subarray(-4).toString('utf8')).toBe('éé');
   });
 
-  it('keeps the heap guard on 10 MB of "a"b lines', () => {
+  it('[budget] keeps the heap guard on 10 MB of "a"b lines', () => {
     const file = Buffer.from(`A,B${LF}${`"a"b${LF}`.repeat(2 * 1024 * 1024)}`);
     const heapBefore = process.memoryUsage().heapUsed;
     try { prepareCsv(file, parserLimits()); } catch (error) { expect(error).toMatchObject({ statusCode: 400 }); }

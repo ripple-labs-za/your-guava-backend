@@ -3,7 +3,7 @@ const { PassThrough } = require('stream');
 const followRedirects = require('follow-redirects');
 const { outboundGet } = require('../../src/utils/http');
 
-it('accepts a six-second time to first byte under a twenty-second total through real follow-redirects', async () => {
+it('[budget] accepts a six-second time to first byte under a twenty-second total through real follow-redirects', async () => {
   const keys = ['OUTBOUND_CONNECT_TIMEOUT_MS', 'OUTBOUND_YOCO_TIMEOUT_MS'];
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   process.env.OUTBOUND_CONNECT_TIMEOUT_MS = '5000';

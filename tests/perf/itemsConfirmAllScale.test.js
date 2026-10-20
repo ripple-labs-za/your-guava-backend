@@ -31,7 +31,7 @@ const seed = async (cafeId, { names, sales, linesPerSale }) => {
 it.each([
   ['the cap: 2,000 waiting items, 20,000 sales', { names: 2_000, sales: 20_000, linesPerSale: 2 }],
   ['a year-sized first import: 300 items, 100,000 sales', { names: 300, sales: 100_000, linesPerSale: 3 }],
-])('%s', async (label, shape) => {
+])('[budget] %s', async (label, shape) => {
   const { token, user } = await createTestUser();
   const cafeId = new mongoose.Types.ObjectId(String(user.activeCafeId));
   const waiting = await seed(cafeId, shape);

@@ -249,7 +249,7 @@ describe('server startup cleanup', () => {
     });
   const nextTick = () => new Promise((resolve) => setImmediate(resolve));
 
-  it.each([1400, 6000])('drains a reused keep-alive socket after a %i ms request without waiting for idle timeout', async (requestMs) => {
+  it.each([1400, 6000])('[budget] drains a reused keep-alive socket after a %i ms request without waiting for idle timeout', async (requestMs) => {
     const http = require('http');
     const previousPort = process.env.PORT;
     process.env.PORT = '0';

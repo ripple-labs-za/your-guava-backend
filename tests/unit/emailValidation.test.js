@@ -49,7 +49,7 @@ describe('isValidEmail', () => {
     }
   });
 
-  it('answers a megabyte of hostile input at once', () => {
+  it('[budget] answers a megabyte of hostile input at once', () => {
     // "a@" + dots + "@" is the input that made the legacy pattern try every dot
     // as the split point: 1.4 s at 40,000 characters, quadratic beyond that.
     const hostile = [`a@${'.'.repeat(1_000_000)}@`, `a@${'b.'.repeat(500_000)} `, `${'a'.repeat(1_000_000)}@b.c`];

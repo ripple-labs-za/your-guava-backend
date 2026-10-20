@@ -25,7 +25,7 @@ afterEach(async () => {
   await clearDB();
 });
 
-it('answers the reconciliation page for a crafted menu in under 1 s', async () => {
+it('[budget] answers the reconciliation page for a crafted menu in under 1 s', async () => {
   const { token, user } = await createTestUser();
   const cafeId = user.activeCafeId;
   const matched = Array.from({ length: 100 }, (_, c) => {

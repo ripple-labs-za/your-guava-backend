@@ -85,7 +85,7 @@ describe('menu item AI review hardening', () => {
     expect(result.reason).not.toContain('0800123456');
   });
 
-  it('strips a contact detail from a long reason without stalling', async () => {
+  it('[budget] strips a contact detail from a long reason without stalling', async () => {
     // One unbroken 60,000-character token: the unanchored scan used to restart
     // an unbounded [^\s@]+ at every character looking for an "@", which is
     // quadratic in the token's length.

@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 describe('a stalled provider fails in bounded time with a named error', () => {
-  it('Resend: a stalled send resolves { sent: false, timedOut: true } and passes a signal to the SDK', async () => {
+  it('[budget] Resend: a stalled send resolves { sent: false, timedOut: true } and passes a signal to the SDK', async () => {
     mockResendSend.mockImplementation((_payload, options) => stallUntilAborted(options?.signal));
     const start = process.hrtime.bigint();
     const outcome = await settleWithin(
@@ -148,7 +148,7 @@ describe('a stalled provider fails in bounded time with a named error', () => {
     expect(refresh.error).toMatchObject({ name: 'OutboundTimeoutError', service });
   });
 
-  it('Xero: a stalled connections lookup rejects instead of returning a token without its tenant', async () => {
+  it('[budget] Xero: a stalled connections lookup rejects instead of returning a token without its tenant', async () => {
     axios.post.mockResolvedValue({ data: { access_token: 'access-1', refresh_token: 'refresh-1', expires_in: 3600 } });
     axios.get.mockImplementation((_url, config) => stallUntilAborted(config?.signal));
     const start = process.hrtime.bigint();

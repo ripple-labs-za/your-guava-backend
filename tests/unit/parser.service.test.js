@@ -932,7 +932,7 @@ describe('xlsx workbook reading', () => {
       ['one real cell at A10000000 and no declared size', {
         extraRowsXml: '<row r="10000000"><c r="A10000000" t="inlineStr"><is><t>x</t></is></c></row>',
       }],
-    ])('refuses %s with a 400, and the API keeps its memory', async (_label, options) => {
+    ])('[budget] refuses %s with a 400, and the API keeps its memory', async (_label, options) => {
       const bomb = xlsxWith(SALES, options);
       expect(bomb.length).toBeLessThan(4096);
       let thrown;

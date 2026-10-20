@@ -232,7 +232,7 @@ describe('Auth API', () => {
       ['/api/auth/register', { name: 'Test Owner', password: 'password123', cafeName: 'Test Cafe' }, 400],
       ['/api/auth/resend-verification', {}, 200],
       ['/api/auth/forgot-password', {}, 200],
-    ])('%s answers at once', async (path, body, status) => {
+    ])('[budget] %s answers at once', async (path, body, status) => {
       const started = Date.now();
       const response = await request.post(path).send({ ...body, email: hostile });
       const elapsedMs = Date.now() - started;
@@ -241,7 +241,7 @@ describe('Auth API', () => {
       expect(elapsedMs).toBeLessThan(1000);
     });
 
-    it('a team invite answers at once', async () => {
+    it('[budget] a team invite answers at once', async () => {
       const owner = await createTestUser({ name: 'Invite Owner', email: 'invite-owner@yourguava.com' });
       const started = Date.now();
       const response = await request
@@ -254,7 +254,7 @@ describe('Auth API', () => {
       expect(elapsedMs).toBeLessThan(1000);
     });
 
-    it('login answers a 100 KB email with 401 in under 50 ms (median of 5)', async () => {
+    it('[budget] login answers a 100 KB email with 401 in under 50 ms (median of 5)', async () => {
       // One warm-up call so connection set-up and JIT are not in the sample.
       await request.post('/api/auth/login').send({ email: 'warm@up.co', password: 'password123' });
       const samples = [];
@@ -271,7 +271,7 @@ describe('Auth API', () => {
       expect(Math.max(...samples)).toBeLessThan(250);
     });
 
-    it('a billing-email change answers a 100 KB address at once', async () => {
+    it('[budget] a billing-email change answers a 100 KB address at once', async () => {
       const owner = await createTestUser({ name: 'Billing Owner', email: 'billing-owner@yourguava.com' });
       const started = process.hrtime.bigint();
       const response = await request

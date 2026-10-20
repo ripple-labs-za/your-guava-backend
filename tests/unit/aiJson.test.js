@@ -27,7 +27,7 @@ describe('extractJson', () => {
     expect(extractJson(text, expect_)).toEqual(expected);
   });
 
-  it('stays fast on hostile input', () => {
+  it('[budget] stays fast on hostile input', () => {
     const started = process.hrtime.bigint();
     expect(extractJson('['.repeat(100_000), 'array')).toBeUndefined();
     expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(250);

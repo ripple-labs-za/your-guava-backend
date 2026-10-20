@@ -36,7 +36,7 @@ describe('POST /api/transactions/upload refuses impossible spreadsheet sizes', (
     ['dos-dimension.xlsx', { dimension: 'A1:XFD1048576', deflate: true }],
     ['dos-last-cell.xlsx', { extraRowsXml: '<row r="1048576"><c r="XFD1048576" t="inlineStr"><is><t>x</t></is></c></row>', deflate: true }],
     ['dos-spaced-last-cell.xlsx', { extraRowsXml: '<row r="1048576"><c r="XFD 1048576" t="inlineStr"><is><t>x</t></is></c></row>', deflate: true }],
-  ])('%s is a 400 and the API stays up', async (name, options) => {
+  ])('[budget] %s is a 400 and the API stays up', async (name, options) => {
     const outcome = await measureBudget(() => request
       .post('/api/transactions/upload')
       .set('Authorization', `Bearer ${token}`)

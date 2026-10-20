@@ -21,7 +21,7 @@ describe('CSV reader limits', () => {
     expect(normaliseHeader('', 3)).toBe('Column 4');
   });
 
-  it('clips a long header in preview, so no check downstream reads more than 200 characters', async () => {
+  it('[budget] clips a long header in preview, so no check downstream reads more than 200 characters', async () => {
     const header = `a@${'.'.repeat(120_000)}@`; // under the 128 KB line cap, so it is read, then clipped
     const outcome = await measureBudget(() => previewBuffer(Buffer.from(`${header},Total${LF}1,2${LF}`), 'csv'));
     expect(outcome.error).toBeUndefined();
@@ -43,7 +43,7 @@ describe('CSV reader limits', () => {
     })).rejects.toMatchObject({ statusCode: 400, message: columnLimitMessage() });
   });
 
-  it('refuses the widest line under the byte cap in under 1 s and 50 MB', async () => {
+  it('[budget] refuses the widest line under the byte cap in under 1 s and 50 MB', async () => {
     const outcome = await measureBudget(() => previewBuffer(singleLine(parserLimits().maxRowBytes - 1), 'csv'));
     report('widest line under the cap', outcome);
     expect(outcome.error).toMatchObject({ statusCode: 400, message: columnLimitMessage() });
@@ -51,7 +51,7 @@ describe('CSV reader limits', () => {
     expect(outcome.heapGrowthMb).toBeLessThan(50);
   });
 
-  it('refuses a 10 MB single-line CSV in preview in under 1 s and 50 MB', async () => {
+  it('[budget] refuses a 10 MB single-line CSV in preview in under 1 s and 50 MB', async () => {
     const outcome = await measureBudget(() => previewBuffer(singleLine(TEN_MB_LINE), 'csv'));
     report('preview 10 MB line', outcome);
     expect(outcome.error).toMatchObject({ statusCode: 400, code: 'CSV_ROW_TOO_LONG' });
@@ -59,7 +59,7 @@ describe('CSV reader limits', () => {
     expect(outcome.heapGrowthMb).toBeLessThan(50);
   });
 
-  it('refuses the same file at confirm as a 400, not a 500', async () => {
+  it('[budget] refuses the same file at confirm as a 400, not a 500', async () => {
     const outcome = await measureBudget(() => parseBuffer(singleLine(TEN_MB_LINE), { columnMapping: MAPPING, fileExt: 'csv' }));
     report('parse 10 MB line', outcome);
     expect(outcome.error).toMatchObject({ statusCode: 400, code: 'CSV_ROW_TOO_LONG' });

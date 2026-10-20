@@ -129,7 +129,7 @@ describe('insight replies the model wraps in prose', () => {
 });
 
 describe('stalled streams', () => {
-  it('ends a stream that stalls before its first delta, refunds it and logs it with the request id', async () => {
+  it('[budget] ends a stream that stalls before its first delta, refunds it and logs it with the request id', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     process.env.AI_STREAM_IDLE_TIMEOUT_MS = '1000';
     const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
@@ -158,7 +158,7 @@ describe('stalled streams', () => {
     expect(logSpy).toHaveBeenCalledWith('ai_call_failed', expect.objectContaining({ operation: 'streamBusinessChatResponse', status: null, type: 'AiStreamTimeoutError', requestId: response.headers['x-request-id'] }));
   });
 
-  it('ends a stream that stalls after its first delta within the idle limit and charges it (D-015)', async () => {
+  it('[budget] ends a stream that stalls after its first delta within the idle limit and charges it (D-015)', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
     process.env.AI_STREAM_IDLE_TIMEOUT_MS = '1000';
     jest.spyOn(logger, 'error').mockImplementation(() => {});

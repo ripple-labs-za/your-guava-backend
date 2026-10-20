@@ -37,7 +37,7 @@ describe('an XLSX that declares an impossible size is refused before it is read'
   it.each([
     ['declares A1:XFD1048576', dimensionBomb],
     ['holds one cell at XFD1048576', coordinateBomb],
-  ])('refuses a 1 KB workbook that %s, before allocation, within 500 ms and 20 MB', async (label, build) => {
+  ])('[budget] refuses a 1 KB workbook that %s, before allocation, within 500 ms and 20 MB', async (label, build) => {
     const workbook = build();
     expect(workbook.length).toBeLessThan(2048);
     if (EVIDENCE && label.startsWith('declares')) fs.writeFileSync(path.join(EVIDENCE, 'dos-dimension.xlsx'), workbook);
@@ -73,7 +73,7 @@ describe('an XLSX that declares an impossible size is refused before it is read'
     expect(allocate).not.toHaveBeenCalled();
   });
 
-  it('refuses a sheet of unterminated tags in linear time, as a 400', async () => {
+  it('[budget] refuses a sheet of unterminated tags in linear time, as a 400', async () => {
     // 5e9c444's [^>]*? ran past "<", so this made its scan quadratic. About 1 MB of tags.
     // The XML parser stops at the first unescaped "<" in an attribute; that is a
     // broken file, which is the owner's problem to hear about, not a 500.
@@ -109,7 +109,7 @@ describe('an XLSX that declares an impossible size is refused before it is read'
     expect(allocate).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts a declared size whose cost is exactly the budget', async () => {
+  it('[budget] accepts a declared size whose cost is exactly the budget', async () => {
     // rows x (columns + 8) = 100,000 x (92 + 8) = 10,000,000 slots: allocated
     // (about 80 MB, then freed); the reader then trims the empty rows, as it
     // does for a real export that overstates its size (A1:Z65536).

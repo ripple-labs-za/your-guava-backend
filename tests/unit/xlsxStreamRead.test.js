@@ -111,7 +111,7 @@ describe('sheet 1 is streamed, not built as a DOM', () => {
     console.log(`corpus parity: ${files.length} workbooks`);
   });
 
-  it('reads a 10,000 x 25 inline-string sheet (16 MB of XML) inside 250 MB of heap', async () => {
+  it('[budget] reads a 10,000 x 25 inline-string sheet (16 MB of XML) inside 250 MB of heap', async () => {
     // The DOM the reader built for this sheet grew the heap by ~1,100 MB (evidence/BE-01-T04/stream-vs-dom.txt); what is
     // measured here includes the 250,000-cell result itself and whatever garbage the collector has not yet reclaimed.
     const rows = [Array.from({ length: 25 }, (_, index) => `C${index}`)];
@@ -129,7 +129,7 @@ describe('sheet 1 is streamed, not built as a DOM', () => {
     expect(outcome.elapsedMs).toBeLessThan(20_000);
   });
 
-  it('reads a 10,000 x 16 shared-string export, the shape of a real Excel file, inside 100 MB of heap', async () => {
+  it('[budget] reads a 10,000 x 16 shared-string export, the shape of a real Excel file, inside 100 MB of heap', async () => {
     const rows = [Array.from({ length: 16 }, (_, index) => `Column ${index}`)];
     for (let r = 0; r < 10_000; r += 1) rows.push(Array.from({ length: 16 }, (_, c) => (c % 3 ? `text ${r % 50}` : String(r * c))));
     const workbook = xlsxWith(rows, { sharedStrings: true, deflate: true });
@@ -140,7 +140,7 @@ describe('sheet 1 is streamed, not built as a DOM', () => {
     expect(outcome.heapGrowthMb).toBeLessThan(100);
   });
 
-  it('reads a workbook whose shared-string table is 600,000 entries (a large second tab would make one) inside 150 MB', async () => {
+  it('[budget] reads a workbook whose shared-string table is 600,000 entries (a large second tab would make one) inside 150 MB', async () => {
     const items = Array.from({ length: 600_000 }, (_, i) => `<si><t>s${i}</t></si>`).join('');
     const sst = `${XML_HEAD}<sst xmlns="${MAIN_NS}" count="600000" uniqueCount="600000">${items}</sst>`;
     const sheet = `${XML_HEAD}<worksheet xmlns="${MAIN_NS}"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>599999</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="s"><v>2</v></c></row></sheetData></worksheet>`;

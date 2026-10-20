@@ -59,7 +59,7 @@ describe('upload history and multipart limits', () => {
     expect(detail.body.upload.sampleRows.length).toBeGreaterThan(0);
   });
 
-  it('lists 200 uploads with heavy previews in a response under 256 KB', async () => {
+  it('[budget] lists 200 uploads with heavy previews in a response under 256 KB', async () => {
     const heavyRow = Object.fromEntries([0, 1].map((index) => [`Column ${index}`, 'x'.repeat(10_000)]));
     await Upload.insertMany(Array.from({ length: 200 }, (_, index) => ({
       cafeId: user.activeCafeId,

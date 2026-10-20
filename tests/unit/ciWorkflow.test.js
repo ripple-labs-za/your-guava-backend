@@ -17,7 +17,7 @@ describe('backend CI workflow', () => {
   });
 
   it('runs the tests with coverage, then the static checks, before any audit', () => {
-    const tests = indexOf(/run: node node_modules\/jest\/bin\/jest\.js --runInBand --coverage$/);
+    const tests = indexOf(/run: node node_modules\/jest\/bin\/jest\.js --config jest\.coverage\.config\.js --coverage$/);
     const checks = indexOf(/run: node scripts\/static-checks\.mjs --coverage-summary coverage\/coverage-summary\.json$/);
     const audit = indexOf(/run: npm audit --omit=dev --audit-level=high$/);
     expect(tests).toBeGreaterThan(-1);

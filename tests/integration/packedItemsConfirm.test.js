@@ -45,7 +45,7 @@ afterEach(async () => {
   await clearDB();
 });
 
-it('confirms 10,000 rows of the adversarial Items cell in under 5 s', async () => {
+it('[budget] confirms 10,000 rows of the adversarial Items cell in under 5 s', async () => {
   const { token } = await createTestUser();
   const importFile = async (buffer, name) => {
     const stage = await request.post('/api/transactions/upload').set('Authorization', `Bearer ${token}`).attach('file', buffer, name);

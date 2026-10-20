@@ -230,7 +230,7 @@ describe('stream deadlines', () => {
     return seen;
   };
 
-  it('aborts a stream that goes quiet for longer than the idle limit', async () => {
+  it('[budget] aborts a stream that goes quiet for longer than the idle limit', async () => {
     const timeouts = [];
     const started = process.hrtime.bigint();
     await expect(drain(quietAfter([{ type: 'message_start' }]), {
@@ -242,7 +242,7 @@ describe('stream deadlines', () => {
     expect(elapsedMs).toBeLessThan(2_000);
   });
 
-  it('aborts a stream that keeps trickling past its overall deadline', async () => {
+  it('[budget] aborts a stream that keeps trickling past its overall deadline', async () => {
     const started = process.hrtime.bigint();
     await expect(drain(trickle(50), { idleMs: 1_000, maxDurationMs: 300, onTimeout: () => {} }))
       .rejects.toMatchObject({ code: 'AI_PROVIDER_TIMEOUT', phase: 'deadline' });

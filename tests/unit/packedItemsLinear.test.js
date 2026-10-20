@@ -63,7 +63,7 @@ describe('packed item grammar is linear', () => {
   it.each([
     ['a 10,000-character digit run before a newline', ADVERSARIAL],
     ['2,495 repeated "1 x " markers before a newline', REPEATED_MARKERS],
-  ])('parses %s in under 20 ms', (label, cell) => {
+  ])('[budget] parses %s in under 20 ms', (label, cell) => {
     expect(cell.length).toBeLessThanOrEqual(10_000);
     parsePackedItems(cell); // warm-up: the budget is for steady state, not compilation
     const { value, ms } = timedMs(() => parsePackedItems(cell));

@@ -88,7 +88,7 @@ describe('import cost', () => {
     } finally { insert.mockRestore(); }
   });
 
-  it('H5: a 10,000-row confirm does not stall the event loop for 250 ms at a time', async () => {
+  it('[budget] H5: a 10,000-row confirm does not stall the event loop for 250 ms at a time', async () => {
     const { token } = await createTestUser();
     const stage = await request.post('/api/transactions/upload').set('Authorization', `Bearer ${token}`)
       .attach('file', yocoCsv(10_000), 'yoco-10k.csv');
@@ -235,7 +235,7 @@ it('H6: remapping a completed upload replaces its sums instead of adding them ag
   expect(await Transaction.countDocuments({ cafeId: user.activeCafeId })).toBe(120);
 });
 
-it('readmission: deleting a 10k-row overlapping upload keeps the event loop responsive', async () => {
+it('[budget] readmission: deleting a 10k-row overlapping upload keeps the event loop responsive', async () => {
   const { token } = await createTestUser();
   const original = yocoCsv(10_000, { prefix: 'READMIT' });
   const lines = original.toString().trimEnd().split('\n');

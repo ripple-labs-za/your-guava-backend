@@ -172,7 +172,7 @@ describe('forecast performance', () => {
     });
   });
 
-  it('builds a week from one projected transaction read, within budget', async () => {
+  it('[budget] builds a week from one projected transaction read, within budget', async () => {
     await Organization.findByIdAndUpdate(user.orgId, { plan: 'pro' });
     await Cafe.updateOne({ _id: cafe._id }, { $set: { forecastSettings: { history: { maxWeeks: 16 }, learning: { enabled: true } } } });
     expect(await seedBusyCafe(cafe._id)).toBe(5600);

@@ -113,7 +113,7 @@ describe('bounded fuzzy matching', () => {
     expect(prepared.budget.exhausted).toBe(false);
   });
 
-  it('ranks 2,000 review items against 2,000 candidates in under 1 s', () => {
+  it('[budget] ranks 2,000 review items against 2,000 candidates in under 1 s', () => {
     const random = randomFrom(7);
     const pool = menu(random, 2000, 2);
     const items = reviewItems(random, 2000);
@@ -131,7 +131,7 @@ describe('bounded fuzzy matching', () => {
     expect(median).toBeLessThan(1000);
   });
 
-  it('bounds a crafted menu of 100 candidates with 50 near-identical 200-character aliases', () => {
+  it('[budget] bounds a crafted menu of 100 candidates with 50 near-identical 200-character aliases', () => {
     const long = (seed) => `${'a'.repeat(190)}${String(seed).padStart(10, '0')}`;
     const pool = Array.from({ length: 100 }, (_, c) => ({
       _id: `c${c}`, name: long(c * 1000), aliases: Array.from({ length: 50 }, (_, a) => long(c * 1000 + a + 1)),

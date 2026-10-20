@@ -28,7 +28,7 @@ describe('every caller of the email check answers hostile input at once', () => 
     await proposeColumnMapping(['Date', 'Flat White', '45.00'], [], {});
   });
 
-  it('isValidEmail refuses a megabyte of dots in under 50 ms', async () => {
+  it('[budget] isValidEmail refuses a megabyte of dots in under 50 ms', async () => {
     const { value, ms } = await timed(() => isValidEmail(hostile));
     console.log(`isValidEmail 1 MB: ${ms.toFixed(2)} ms`);
     expect(value).toBe(false);
@@ -38,7 +38,7 @@ describe('every caller of the email check answers hostile input at once', () => 
   it.each([
     ['User', () => new User({ name: 'X', email: hostile, password: 'password123' })],
     ['TeamInvitation', () => new TeamInvitation({ email: hostile, name: 'X' })],
-  ])('the %s model validator refuses a megabyte in under 50 ms', async (label, build) => {
+  ])('[budget] the %s model validator refuses a megabyte in under 50 ms', async (label, build) => {
     const doc = build();
     const { value, ms } = await timed(() => doc.validateSync(['email']));
     console.log(`${label} validateSync 1 MB: ${ms.toFixed(2)} ms`);
@@ -46,7 +46,7 @@ describe('every caller of the email check answers hostile input at once', () => 
     expect(ms).toBeLessThan(BUDGET_MS);
   });
 
-  it('the column-mapping privacy check reads a megabyte header in under 50 ms', async () => {
+  it('[budget] the column-mapping privacy check reads a megabyte header in under 50 ms', async () => {
     // '45.00' makes the headers look headerless, so the call returns before
     // any provider client exists; the hostile header is checked first.
     const { value, ms } = await timed(() => proposeColumnMapping([hostile, 'Flat White', '45.00'], [], {}));
@@ -55,7 +55,7 @@ describe('every caller of the email check answers hostile input at once', () => 
     expect(ms).toBeLessThan(BUDGET_MS);
   });
 
-  it('the budget is tight enough to catch the pattern it replaced', () => {
+  it('[budget] the budget is tight enough to catch the pattern it replaced', () => {
     const LEGACY_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const probe = `a@${'.'.repeat(20_000)}@`;
     const started = process.hrtime.bigint();
