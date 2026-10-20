@@ -10,6 +10,7 @@ const emailService = require('../../services/email.service');
 const { isValidEmail } = require('../../utils/email');
 const { passwordInputError, passwordTooLong } = require('../../utils/password');
 const { runAfterResponse } = require('../../utils/afterResponse');
+const { refusalBody } = require('../../utils/errorCodes');
 const authThrottle = require('../../services/authThrottle.service');
 const { generateOpaqueToken, sha256Hex, normalizedOpaqueToken, clearRefreshCookie } = require('../../utils/authPrimitives');
 
@@ -218,7 +219,7 @@ const changePassword = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.statusCode && error.statusCode < 500) {
-      return res.status(error.statusCode).json({ success: false, ...(error.code ? { code: error.code } : {}), message: error.message });
+      return res.status(error.statusCode).json(refusalBody(error));
     }
     next(error);
   } finally {

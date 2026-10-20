@@ -11,6 +11,7 @@ const emailService = require('../../services/email.service');
 const { passwordTooLong } = require('../../utils/password');
 const { recordAccessAudit } = require('./audit');
 const { clearRefreshCookie } = require('../../utils/authPrimitives');
+const { refusalBody } = require('../../utils/errorCodes');
 
 // POST /api/team/transfer-ownership - Atomically make one manager the sole owner.
 const transferOwnership = async (req, res, next) => {
@@ -143,7 +144,7 @@ const transferOwnership = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.statusCode && error.statusCode < 500) {
-      return res.status(error.statusCode).json({ success: false, ...(error.code ? { code: error.code } : {}), message: error.message });
+      return res.status(error.statusCode).json(refusalBody(error));
     }
     return next(error);
   } finally {
