@@ -14,7 +14,7 @@ const repair = (name, description, report, apply, pending) => ({
 
 module.exports = [
   {
-    name: 'improvement-tickets-per-org', kind: 'contract', mode: 'manual',
+    name: 'improvement-tickets-per-org', kind: 'contract', mode: 'auto',
     description: 'Replace the global ticket index after ensuring its per-organisation replacement',
     async check() {
       const collection = mongoose.connection.db.collection('improvements');
