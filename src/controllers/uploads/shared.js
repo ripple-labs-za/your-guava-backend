@@ -26,6 +26,10 @@ const sanitizeRowErrors = (rowErrors) =>
   (Array.isArray(rowErrors) ? rowErrors : []).slice(0, parser.MAX_ROW_ERRORS).map((rowError) => ({
     rowNumber: rowError?.rowNumber,
     reason: String(rowError?.reason || 'Could not import row').slice(0, 500),
+    // This one rejection needs the original till date for the owner to find it in their file.
+    // Other errors still expose no raw cells; even here only one bounded string is public.
+    ...(/^Date \d{4}-\d{2}-\d{2} is far outside the rest of this file \(/.test(rowError?.reason || '')
+      && typeof rowError?.raw?.date === 'string' ? { raw: { date: rowError.raw.date.slice(0, 160) } } : {}),
   }));
 
 const confirmationResponse = (upload, { replayed = false } = {}) => ({

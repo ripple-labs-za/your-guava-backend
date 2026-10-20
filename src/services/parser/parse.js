@@ -37,7 +37,7 @@ const ordinalDateKey = (ordinal) => new Date(ordinal * DAY_MS).toISOString().sli
  * 10,000 sales (BE-03-T09). Rows outside the file's densest window become row errors when they are at most 5% of
  * its rows; a file that really spans more than the limit is still refused, naming its two furthest-apart rows.
  */
-const excludeOutlierDates = (rows, { maxDays, timezone, rowErrors }) => {
+const excludeOutlierDates = (rows, { maxDays, timezone, rowErrors, rawRows, dateColumn }) => {
   const ordinals = rows.map((row) => zonedDayOrdinal(row.date, timezone));
   let earliest = 0;
   let latest = 0;
@@ -52,6 +52,8 @@ const excludeOutlierDates = (rows, { maxDays, timezone, rowErrors }) => {
       + `(${ordinalDateKey(ordinals[latest])}) are the furthest apart; export a shorter period.`);
   }
   const inside = [];
+  // Retain only the mapped source date, never the receipt or the rest of the source row.
+  const sourceDates = new Map(rawRows.map((raw, index) => [sourceRowNumber(raw, index), raw[dateColumn]]));
   let errors = 0;
   for (const [index, row] of rows.entries()) {
     if (ordinals[index] >= window.start && ordinals[index] <= window.end) {
@@ -63,7 +65,7 @@ const excludeOutlierDates = (rows, { maxDays, timezone, rowErrors }) => {
     errors += sourceRows.length;
     addRowError(rowErrors, sourceRows[0], `Date ${ordinalDateKey(ordinals[index])} is far outside the rest of this file `
       + `(${ordinalDateKey(window.start)} to ${ordinalDateKey(window.end)}). Check the till's clock for this sale.`,
-    { receiptId: row.receiptId });
+    { date: sourceDates.get(sourceRows[0]) });
   }
   return { rows: inside, errors };
 };
@@ -72,12 +74,12 @@ const excludeOutlierDates = (rows, { maxDays, timezone, rowErrors }) => {
  * The rows the date-range limit allows. It runs before refunds are netted: a sale and its refund share a day, so an
  * outlier pair leaves together, where netting first counted the refund both as netted and as an outlier row.
  */
-const keepWithinDateLimit = (rows, { maxDays, timezone, rowErrors }) => {
+const keepWithinDateLimit = (rows, { maxDays, timezone, rowErrors, rawRows, dateColumn }) => {
   const { firstDate, lastDate } = dateSpan(rows);
   if (!firstDate || zonedDayOrdinal(lastDate, timezone) - zonedDayOrdinal(firstDate, timezone) + 1 <= maxDays) {
     return { rows, errors: 0 };
   }
-  return excludeOutlierDates(rows, { maxDays, timezone, rowErrors });
+  return excludeOutlierDates(rows, { maxDays, timezone, rowErrors, rawRows, dateColumn });
 };
 
 const readPackedRows = (rawRows, columnMapping, timezone, parseContext, rowErrors) => {
@@ -160,7 +162,7 @@ const parseBuffer = async (
   let errors = 0;
   let rowErrors = [];
   let nettedRefundRows = 0;
-  const dateLimit = { maxDays: limits.maxDateRangeDays, timezone: resolvedTimezone };
+  const dateLimit = { maxDays: limits.maxDateRangeDays, timezone: resolvedTimezone, rawRows, dateColumn: columnMapping.date };
 
   if (itemsMode === 'line-per-row') {
     const grouped = groupLinePerRow(rawRows, columnMapping, resolvedTimezone, parseContext);
