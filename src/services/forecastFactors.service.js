@@ -1,5 +1,6 @@
 const { normalisePlanId, planRank } = require('./billingPlans.service');
 const { loadSheddingProviderStatus } = require('../utils/signals');
+const { weatherQueryForCafe } = require('./weather.service');
 
 const DEFAULT_FORECAST_SETTINGS = {
   history: {
@@ -140,10 +141,8 @@ const getFactorEntitlements = (plan = 'starter') => {
   };
 };
 
-const hasWeatherLocation = (cafe) => {
-  const { lat, lng, city, address } = cafe?.location || {};
-  return (Number.isFinite(lat) && Number.isFinite(lng)) || Boolean(String(city || address || '').trim());
-};
+// Same rule as the lookup itself (coordinates or city; a street address alone is never sent to the provider).
+const hasWeatherLocation = (cafe) => Boolean(weatherQueryForCafe(cafe));
 
 /**
  * Whether each factor can actually act for this cafe now (F-1): `connected` (a live provider answers), `built_in` (calendar
@@ -162,7 +161,7 @@ const getFactorStatus = (cafe, plan = 'starter', { now = Date.now() } = {}) => {
     if (SOUTH_AFRICA_SIGNAL_KEYS.includes(key) && !southAfrica) return entry('not_available', NOT_IN_COUNTRY);
     if (key === 'weather') {
       if (!process.env.WEATHER_API_KEY) return entry('not_connected', 'Not connected: the weather provider is not set up');
-      if (!hasWeatherLocation(cafe)) return entry('needs_location', "Add the cafe's address in Settings so weather can be looked up");
+      if (!hasWeatherLocation(cafe)) return entry('needs_location', "Add the cafe's city in Settings so weather can be looked up");
       return entry('connected');
     }
     if (key === 'loadShedding') {
