@@ -64,6 +64,8 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // Issuance writes this counter inside its transaction to serialize reset links across processes.
+    passwordResetSequence: { type: Number, default: 0, select: false },
   },
   { timestamps: true }
 );

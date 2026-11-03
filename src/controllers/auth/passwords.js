@@ -28,18 +28,31 @@ const deliverPasswordReset = async (normalizedEmail) => {
   const user = await User.findOne({ email: normalizedEmail }).select('_id email name').lean();
   if (!user) return;
   const resetToken = generateOpaqueToken();
-  const record = await PasswordResetToken.create({
-    userId: user._id,
-    tokenHash: sha256Hex(resetToken),
-    expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
-  });
-  // Create first, then revoke only the older pending links (lower _id): requests a moment apart run these steps side
-  // by side after their responses, and revoke-then-create let each revoke the others before they existed, leaving
-  // several live links (UAT-01-S05). Whatever the interleaving, the newest link is the one that stays.
-  await PasswordResetToken.updateMany(
-    { userId: user._id, status: 'pending', _id: { $lt: record._id } },
-    { $set: { status: 'revoked', revokedAt: new Date() } }
-  );
+  let record;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      // A write to the same user makes competing transactions conflict and retry with a fresh snapshot.
+      // ObjectIds from different processes do not establish issuance order. Revocation and creation must commit together.
+      const holder = await User.updateOne(
+        { _id: user._id }, { $inc: { passwordResetSequence: 1 } }, { session }
+      );
+      if (holder.matchedCount !== 1) return;
+      await PasswordResetToken.updateMany(
+        { userId: user._id, status: 'pending' },
+        { $set: { status: 'revoked', revokedAt: new Date() } },
+        { session }
+      );
+      [record] = await PasswordResetToken.create([{
+        userId: user._id,
+        tokenHash: sha256Hex(resetToken),
+        expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
+      }], { session });
+    });
+  } finally {
+    await session.endSession();
+  }
+  if (!record) return;
   const result = await emailService.sendPasswordResetEmail({ user, resetToken, expiresAt: record.expiresAt });
   if (!emailService.deliveryAccepted(result)) {
     await PasswordResetToken.updateOne(
