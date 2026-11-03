@@ -14,6 +14,7 @@ const {
   updateForecastActualsForRange,
   BACKTEST_BASIS_NOTE,
 } = require('../services/forecast.service');
+const { weeklyAccuracy } = require('../services/forecast/accuracy');
 const { meterGuavaCredits, historyBackfillCreditsPerDay } = require('../services/usage.service');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const {
@@ -422,12 +423,14 @@ const getAccuracy = async (req, res, next) => {
       accuracy: { $exists: true, $ne: null },
       actualsUpdatedAt: { $exists: true, $ne: null },
     };
-    const [scored, excludedInsufficientDays] = await Promise.all([
+    const [scored, excludedInsufficientDays, weekly] = await Promise.all([
       Forecast.find({ ...window, 'availability.status': { $ne: 'insufficient_data' } })
         .sort({ date: -1 })
         .select('date dateKey origin modelVersion accuracy itemAccuracy totalPredictedRevenue actualRevenue actualTransactionCount actualsUpdatedAt')
         .lean(),
       Forecast.countDocuments({ ...window, 'availability.status': 'insufficient_data' }),
+      // L-4: the same scored-day definition by week, oldest first (#117).
+      weeklyAccuracy(cafeId, timezone),
     ]);
 
     // A backfilled day was scored against sales the model had not seen, so it
@@ -472,6 +475,7 @@ const getAccuracy = async (req, res, next) => {
       liveCount: live.length,
       backtestCount: backtest.length,
       liveFrom: earliestLive ? new Date(earliestLive.date).toISOString() : null,
+      weekly,
       forecasts: chosen.map((forecast) => forecastForApi(forecast, timezone)),
     });
   } catch (error) {
