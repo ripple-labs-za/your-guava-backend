@@ -242,7 +242,7 @@ describe('signals utility', () => {
       await expect(getLoadSheddingStage('Cape Town')).resolves.toEqual({
         available: false,
         stage: null,
-        unavailableReason: 'Load-shedding service is not configured',
+        unavailableReason: 'Not connected: the load-shedding provider is not set up',
       });
 
       process.env.ESKOMSEPUSH_API_KEY = 'test-eskom-key';
@@ -267,7 +267,7 @@ describe('signals utility', () => {
       await expect(getLoadSheddingStage('Johannesburg')).resolves.toEqual({
         available: false,
         stage: null,
-        unavailableReason: 'Load-shedding data is temporarily unavailable',
+        unavailableReason: 'Not connected: the load-shedding provider is not responding',
         transient: true,
       });
       errorSpy.mockRestore();

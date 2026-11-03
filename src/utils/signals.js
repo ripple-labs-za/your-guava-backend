@@ -373,16 +373,27 @@ const fetchLoadSheddingStatus = async () => {
 
 const unknownStage = (unavailableReason, extra = {}) => ({ available: false, stage: null, unavailableReason, ...extra });
 
+// F-1: an unconfigured or failing provider is "Not connected", never a silent neutral day.
+const LOAD_SHEDDING_NOT_SET_UP = 'Not connected: the load-shedding provider is not set up';
+const LOAD_SHEDDING_NOT_RESPONDING = 'Not connected: the load-shedding provider is not responding';
+
+// Whether load shedding can reach its provider now: { connected, state, reason } for the Factors status.
+const loadSheddingProviderStatus = (now = Date.now()) => {
+  if (!process.env.ESKOMSEPUSH_API_KEY) return { connected: false, state: 'not_connected', reason: LOAD_SHEDDING_NOT_SET_UP };
+  if (statusRetryAt > now) return { connected: false, state: 'not_connected', reason: LOAD_SHEDDING_NOT_RESPONDING };
+  return { connected: true, state: 'connected', reason: '' };
+};
+
 // Current stage for the cafe's area (unchanged contract).
 const getLoadSheddingStage = async (city) => {
-  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage('Load-shedding service is not configured');
+  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage(LOAD_SHEDDING_NOT_SET_UP);
   try {
     const area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
     return Number.isFinite(area?.stage)
       ? { available: true, stage: area.stage }
       : unknownStage('Load-shedding provider returned no stage for this area');
   } catch {
-    return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
+    return unknownStage(LOAD_SHEDDING_NOT_RESPONDING, { transient: true });
   }
 };
 
@@ -403,12 +414,12 @@ const getLoadSheddingForDate = async (city, dateKey, timezone, now = new Date())
   const offset = dayNumber(dateKey) - dayNumber(zonedDateKey(now, timezone));
   if (offset < 0) return unknownStage('Load-shedding history is not recorded for past dates');
   if (offset > LOAD_SHEDDING_SCHEDULE_DAYS) return unknownStage('EskomSePush publishes at most 7 days ahead');
-  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage('Load-shedding service is not configured');
+  if (!process.env.ESKOMSEPUSH_API_KEY) return unknownStage(LOAD_SHEDDING_NOT_SET_UP);
   let area;
   try {
     area = (await fetchLoadSheddingStatus())[loadSheddingAreaForCity(city)];
   } catch {
-    return unknownStage('Load-shedding data is temporarily unavailable', { transient: true });
+    return unknownStage(LOAD_SHEDDING_NOT_RESPONDING, { transient: true });
   }
   if (!Number.isFinite(area?.stage)) return unknownStage('Load-shedding provider returned no stage for this area');
   const [year, month, day] = dateKey.split('-').map(Number);
@@ -492,6 +503,9 @@ module.exports = {
   getSchoolCalendarForYear,
   isSchoolHoliday,
   getLoadSheddingStage,
+  loadSheddingProviderStatus,
+  LOAD_SHEDDING_NOT_SET_UP,
+  LOAD_SHEDDING_NOT_RESPONDING,
   clearLoadSheddingCache,
   getSignalsForDate,
 };

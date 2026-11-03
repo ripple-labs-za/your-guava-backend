@@ -1,4 +1,5 @@
 const { normalisePlanId, planRank } = require('./billingPlans.service');
+const { loadSheddingProviderStatus } = require('../utils/signals');
 
 const DEFAULT_FORECAST_SETTINGS = {
   history: {
@@ -68,7 +69,7 @@ const FACTOR_CATALOG = [
     label: 'Payday',
     section: 'payday',
     requiredPlan: 'growth',
-    summary: 'Month-end payday windows lift demand.',
+    summary: 'Paydays lift demand: the 25th, the last business day of the month and the 1st, each moved to the business day before when it falls on a weekend or public holiday.',
   },
   {
     key: 'events',
@@ -103,9 +104,23 @@ const FACTOR_CATALOG = [
     label: 'Learning correction',
     section: 'learning',
     requiredPlan: 'pro',
-    summary: 'Past forecast errors correct future item, factor, and overall demand.',
+    summary: 'Past forecast errors correct future demand. The overall correction runs on every plan; per-item and per-factor corrections are on Pro.',
   },
 ];
+
+// South African calendar and power signals (public and school holidays, paydays, load shedding) describe South Africa only.
+const SOUTH_AFRICA_SIGNAL_KEYS = ['loadShedding', 'holiday', 'payday'];
+const NOT_IN_COUNTRY = 'Not available in your country';
+const SOUTH_AFRICA_NAMES = /^(za|zaf|rsa|south africa|republic of south africa|suid-afrika)$/i;
+// The cafe model defaults the country to South Africa, so a blank country is treated as South African.
+const isSouthAfricanCafe = (cafe) => {
+  const country = String(cafe?.location?.country ?? '').trim();
+  return country === '' || SOUTH_AFRICA_NAMES.test(country);
+};
+
+// The combined weather, power, calendar and event multiplier on one item is held inside this range (F-5).
+// Trading hours and learning are applied outside it: a closure must still reach zero.
+const FACTOR_LIMIT = Object.freeze({ min: 0.5, max: 1.6 });
 
 // Legacy 'free' organisations receive the same Starter entitlements as billing.
 const planAllows = (plan, requiredPlan) => planRank(plan) >= planRank(requiredPlan);
@@ -123,6 +138,39 @@ const getFactorEntitlements = (plan = 'starter') => {
     unlockedKeys: factors.filter((factor) => factor.unlocked).map((factor) => factor.key),
     lockedKeys: factors.filter((factor) => !factor.unlocked).map((factor) => factor.key),
   };
+};
+
+const hasWeatherLocation = (cafe) => {
+  const { lat, lng, city, address } = cafe?.location || {};
+  return (Number.isFinite(lat) && Number.isFinite(lng)) || Boolean(String(city || address || '').trim());
+};
+
+/**
+ * Whether each factor can actually act for this cafe now (F-1): `connected` (a live provider answers), `built_in` (calendar
+ * or owner-entered data, nothing to connect), `not_connected` (its provider is not set up or not responding),
+ * `needs_location`, `not_available` (outside South Africa) or `locked` (plan). Never reports a provider it cannot reach as live.
+ */
+const getFactorStatus = (cafe, plan = 'starter', { now = Date.now() } = {}) => {
+  const southAfrica = isSouthAfricanCafe(cafe);
+  return FACTOR_CATALOG.map(({ key, label }) => {
+    const entry = (state, reason = '') => ({ key, label, state, connected: state === 'connected' || state === 'built_in', reason });
+    // L-5: the overall learning correction runs on every plan; only its item and factor corrections are Pro.
+    if (key === 'learning' && !factorUnlocked(plan, key)) {
+      return entry('built_in', 'Overall correction on; per-factor and per-item learning on Pro');
+    }
+    if (!factorUnlocked(plan, key)) return entry('locked', 'Not on your plan');
+    if (SOUTH_AFRICA_SIGNAL_KEYS.includes(key) && !southAfrica) return entry('not_available', NOT_IN_COUNTRY);
+    if (key === 'weather') {
+      if (!process.env.WEATHER_API_KEY) return entry('not_connected', 'Not connected: the weather provider is not set up');
+      if (!hasWeatherLocation(cafe)) return entry('needs_location', "Add the cafe's address in Settings so weather can be looked up");
+      return entry('connected');
+    }
+    if (key === 'loadShedding') {
+      const provider = loadSheddingProviderStatus(now);
+      return entry(provider.state, provider.reason);
+    }
+    return entry('built_in');
+  });
 };
 
 const factorUnlocked = (plan, key) => {
@@ -263,8 +311,12 @@ const applyPlanEntitlements = (settings, plan = 'starter') => {
 const getSavedForecastSettings = (cafe) =>
   normalizeForecastSettings(cafe?.forecastSettings || {});
 
-const getForecastSettings = (cafe, plan = 'starter') =>
-  applyPlanEntitlements(getSavedForecastSettings(cafe), plan);
+// `region` is not a stored setting: normalizeForecastSettings drops it, so the Factors page echoing this view back cannot save it.
+const getForecastSettings = (cafe, plan = 'starter') => {
+  const effective = applyPlanEntitlements(getSavedForecastSettings(cafe), plan);
+  effective.region = { southAfrica: isSouthAfricanCafe(cafe) };
+  return effective;
+};
 
 const sameSettings = (left, right) => {
   if (Array.isArray(left) || Array.isArray(right)) {
@@ -481,7 +533,7 @@ const paydayFactor = (isPayday, settings) =>
     label: 'Payday',
     active: Boolean(settings.enabled && isPayday),
     adjustmentPct: settings.pct,
-    reason: isPayday ? 'payday window' : '',
+    reason: isPayday ? 'payday' : '',
   });
 
 const eventImpactPct = (event, settings) => {
@@ -515,30 +567,58 @@ const eventsFactor = (events, settings) => {
   });
 };
 
-const buildGlobalFactors = ({ signals, weather, events, settings }) => [
-  weatherSummaryFactor(weather, settings.weather),
-  loadSheddingFactor(signals.loadSheddingStage, settings.loadShedding, {
-    available: signals.loadSheddingAvailable,
-    unavailableReason: signals.loadSheddingUnavailableReason,
-  }),
-  holidayFactor(signals.isPublicHoliday, signals.isSchoolHoliday, settings.holiday),
-  paydayFactor(signals.isPayday, settings.payday),
-  eventsFactor(events, settings.events),
-];
+const FACTOR_LABELS = { holiday: 'Holiday', payday: 'Payday', loadShedding: 'Load shedding' };
 
-const buildItemFactors = ({ category, signals, weather, events, settings }) => [
-  weatherItemFactor(category, weather, settings.weather),
-  loadSheddingFactor(signals.loadSheddingStage, settings.loadShedding, {
-    available: signals.loadSheddingAvailable,
-    unavailableReason: signals.loadSheddingUnavailableReason,
-  }),
-  holidayFactor(signals.isPublicHoliday, signals.isSchoolHoliday, settings.holiday),
-  paydayFactor(signals.isPayday, settings.payday),
-  eventsFactor(events, settings.events),
-];
+// The South African signals for one day, or each one inactive with the country reason when the cafe is elsewhere (F-4).
+const regionalFactors = (signals, settings) => {
+  if (settings.region?.southAfrica === false) {
+    return SOUTH_AFRICA_SIGNAL_KEYS.map((key) => factor({ key, label: FACTOR_LABELS[key], reason: NOT_IN_COUNTRY }));
+  }
+  return [
+    loadSheddingFactor(signals.loadSheddingStage, settings.loadShedding, {
+      available: signals.loadSheddingAvailable,
+      unavailableReason: signals.loadSheddingUnavailableReason,
+    }),
+    holidayFactor(signals.isPublicHoliday, signals.isSchoolHoliday, settings.holiday),
+    paydayFactor(signals.isPayday, settings.payday),
+  ];
+};
 
 const multiplyFactors = (factors) =>
   factors.reduce((product, current) => product * (Number(current.multiplier) || 1), 1);
+
+// Holds the item's combined factor multiplier inside FACTOR_LIMIT. The entry's multiplier is bounded/raw, so multiplying
+// the whole breakdown gives the bounded figure, and the breakdown shows the limit was applied and from what.
+const factorLimitFactor = (factors) => {
+  const raw = multiplyFactors(factors);
+  const bounded = Math.min(FACTOR_LIMIT.max, Math.max(FACTOR_LIMIT.min, raw));
+  if (!(raw > 0) || bounded === raw) return null;
+  return {
+    key: 'factorLimit',
+    label: 'Combined factor limit',
+    active: true,
+    adjustmentPct: Number(((bounded / raw - 1) * 100).toFixed(2)),
+    multiplier: Number((bounded / raw).toFixed(6)),
+    effect: `held at x${bounded}`,
+    reason: `Combined factors x${Number(raw.toFixed(3))} held at x${bounded}; factors are kept within x${FACTOR_LIMIT.min} to x${FACTOR_LIMIT.max}`,
+  };
+};
+
+const buildGlobalFactors = ({ signals, weather, events, settings }) => [
+  weatherSummaryFactor(weather, settings.weather),
+  ...regionalFactors(signals, settings),
+  eventsFactor(events, settings.events),
+];
+
+const buildItemFactors = ({ category, signals, weather, events, settings }) => {
+  const factors = [
+    weatherItemFactor(category, weather, settings.weather),
+    ...regionalFactors(signals, settings),
+    eventsFactor(events, settings.events),
+  ];
+  const limit = factorLimitFactor(factors);
+  return limit ? [...factors, limit] : factors;
+};
 
 module.exports = {
   validateForecastSettingsInput,
@@ -556,4 +636,8 @@ module.exports = {
   buildItemFactors,
   multiplyFactors,
   eventImpactPct,
+  isSouthAfricanCafe,
+  getFactorStatus,
+  FACTOR_LIMIT,
+  NOT_IN_COUNTRY,
 };

@@ -93,7 +93,7 @@ describe('load-shedding lookups', () => {
     await getLoadSheddingStage('Johannesburg');
     const second = await getLoadSheddingStage('Johannesburg');
 
-    expect(second).toEqual(expect.objectContaining({ available: false, unavailableReason: 'Load-shedding data is temporarily unavailable' }));
+    expect(second).toEqual(expect.objectContaining({ available: false, unavailableReason: 'Not connected: the load-shedding provider is not responding' }));
     expect(axios.get).toHaveBeenCalledTimes(1);
     errorSpy.mockRestore();
   });

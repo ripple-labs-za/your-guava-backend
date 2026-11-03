@@ -128,7 +128,7 @@ describe('bounded review regressions for calendars and shared load shedding', ()
       getLoadSheddingForDate('Johannesburg', `2026-09-${22 + index}`, 'Africa/Johannesburg', now)));
     expect(axios.get).toHaveBeenCalledTimes(1);
     expect(logged).toHaveBeenCalledTimes(1);
-    for (const result of results) expect(result).toEqual({ available: false, stage: null, transient: true, unavailableReason: 'Load-shedding data is temporarily unavailable' });
+    for (const result of results) expect(result).toEqual({ available: false, stage: null, transient: true, unavailableReason: 'Not connected: the load-shedding provider is not responding' });
     await getLoadSheddingForDate('Johannesburg', '2026-09-23', 'Africa/Johannesburg', now);
     expect(logged).toHaveBeenCalledTimes(1);
     expect(axios.get).toHaveBeenCalledTimes(1);

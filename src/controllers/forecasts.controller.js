@@ -21,6 +21,7 @@ const {
   validateForecastSettingsInput,
   applyForecastSettingsUpdate,
   getFactorEntitlements,
+  getFactorStatus,
   getForecastSettings,
   getSavedForecastSettings,
 } = require('../services/forecastFactors.service');
@@ -357,6 +358,8 @@ const getFactors = async (req, res, next) => {
       effective,
       savedSettings: getSavedForecastSettings(cafe),
       entitlements: getFactorEntitlements(plan),
+      // Whether each factor can act now: a live provider, built in, not connected, not available here, or locked (F-1).
+      status: getFactorStatus(cafe, plan),
     });
   } catch (error) {
     next(error);
@@ -399,6 +402,7 @@ const updateFactors = async (req, res, next) => {
       effective,
       savedSettings,
       entitlements: getFactorEntitlements(plan),
+      status: getFactorStatus(cafe, plan),
     });
   } catch (error) {
     next(error);
