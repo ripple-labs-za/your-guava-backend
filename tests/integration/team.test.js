@@ -257,7 +257,7 @@ describe('Team API', () => {
 
       expect(res.status).toBe(402);
       expect(res.body.message).toBe('Seat limit reached on the Starter plan. Upgrade your plan or remove a member.');
-      expect(res.body.code).not.toBe('BILLING_REQUIRED');
+      expect(res.body.code).toBe('SEAT_LIMIT_REACHED');
       expect(res.body.seats).toEqual(expect.objectContaining({ plan: 'starter', used: 2, included: 2, remaining: 0 }));
     });
 
@@ -519,7 +519,7 @@ describe('Team API', () => {
         .set('Authorization', `Bearer ${ownerToken}`);
       expect(resent.status).toBe(402);
       expect(resent.body.message).toBe('Seat limit reached on the Starter plan. Upgrade your plan or remove a member.');
-      expect(resent.body.code).not.toBe('BILLING_REQUIRED');
+      expect(resent.body.code).toBe('SEAT_LIMIT_REACHED');
       const after = await TeamInvitation.findById(invited.body.invitation.id).select('+tokenHash').lean();
       expect(after.tokenHash).toBe(before.tokenHash);
       expect(after.expiresAt).toEqual(before.expiresAt);

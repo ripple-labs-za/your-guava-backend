@@ -11,6 +11,7 @@
  * engineer.
  */
 const ERROR_CODES = Object.freeze({
+  SEAT_LIMIT_REACHED: { status: 402, client: true, meaning: 'The organisation has no available team seats on its current plan' },
   ACCOUNTING_INTEGRATIONS_NOT_AVAILABLE: { status: 503, client: true, meaning: 'Accounting integrations are switched off on this server' },
   AI_CHAT_FAILED: { status: 200, client: true, meaning: 'A streamed answer failed after the stream opened (SSE error event)' },
   AI_CHAT_INVALID_INPUT: { status: 400, client: true, meaning: 'The Ask Guava question or history is not in a usable shape' },

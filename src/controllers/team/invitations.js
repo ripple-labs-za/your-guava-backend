@@ -135,6 +135,7 @@ const inviteManager = async (req, res, next) => {
           `Seat limit reached on the ${plan.name} plan. Upgrade your plan or remove a member.`
         );
         error.statusCode = 402;
+        error.code = 'SEAT_LIMIT_REACHED';
         error.seats = {
           plan: plan.id,
           used,
@@ -229,11 +230,7 @@ const inviteManager = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.statusCode === 402 && error?.seats) {
-      return res.status(402).json({
-        success: false,
-        message: error.message,
-        seats: error.seats,
-      });
+      return res.status(402).json(refusalBody(error, { seats: error.seats }));
     }
     if (error?.code === 11000) {
       return res.status(409).json({
@@ -487,6 +484,7 @@ const resendInvitation = async (req, res, next) => {
       if (used >= plan.includedSeats) {
         const error = new Error(`Seat limit reached on the ${plan.name} plan. Upgrade your plan or remove a member.`);
         error.statusCode = 402;
+        error.code = 'SEAT_LIMIT_REACHED';
         throw error;
       }
 
@@ -546,7 +544,7 @@ const resendInvitation = async (req, res, next) => {
     });
   } catch (error) {
     if (error?.isInvitationError || (error?.statusCode && error.statusCode < 500)) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
+      return res.status(error.statusCode).json(refusalBody(error));
     }
     if (error?.code === 11000) {
       return res.status(409).json({ success: false, message: 'An invitation is already pending for this email' });
