@@ -28,6 +28,8 @@ const PLAN_DAYS = 7;
 const STALE_RUNNING_MS = 60 * 60 * 1000;
 const CAFE_PAGE_SIZE = 200;
 
+// Erasure finds these rows by this prefix (cafeJobKey in migrations/erase-organization.js): a new JobRun key holding a
+// cafe id must be added to the cafeJobKey erasure scope.
 const runKey = (cafeId, dateKey) => `nightly:${cafeId}:${dateKey}`;
 
 // W-2: the forecast baseline reads eight weeks of history, so those sales days need observed weather too. Filled a

@@ -40,6 +40,9 @@ const POLICIES = Object.freeze({
   Shift: { action: 'delete', scope: 'cafe' },
   LeaveRequest: { action: 'delete', scope: 'cafe' },
   LeaveBalance: { action: 'delete', scope: 'cafe' },
+  // Release 3: each cafe's kept weather days, and the nightly job's per-cafe run records (keyed nightly:<cafeId>:<day>).
+  WeatherDay: { action: 'delete', scope: 'cafe' },
+  JobRun: { action: 'delete', scope: 'cafeJobKey' },
   UsageLedger: { action: 'delete', scope: 'orgOrCafe' },
   AuthSession: { action: 'delete', scope: 'user' },
   PasswordResetToken: { action: 'delete', scope: 'user' },
@@ -109,6 +112,10 @@ function filterFor(scope, { orgId, cafeIds, userIds, emails }) {
     case 'organization': return { _id: orgId };
     case 'org': return { orgId };
     case 'cafe': return cafes;
+    // Exact prefixes from the organisation's own ObjectIds (hex only), so no other cafe's key can match.
+    case 'cafeJobKey': return cafeIds.length
+      ? { key: { $regex: `^nightly:(${cafeIds.map((id) => String(id).replace(/[^a-f0-9]/gi, '')).join('|')}):` } }
+      : { _id: { $in: [] } };
     case 'orgOrCafe': return { $or: [{ orgId }, cafes] };
     case 'user': return users;
     case 'cafeOrUser': return { $or: [cafes, users] };

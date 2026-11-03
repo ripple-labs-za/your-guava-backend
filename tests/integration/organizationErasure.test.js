@@ -83,15 +83,16 @@ test('apply erases every scoped model, deletes stored files, anonymizes invoices
         familyId: `erase-${name}`, reference: `erase-${name}`, r2Key: 'erasure/test.csv',
         amount: 100, currency: 'ZAR', provider: 'mock', kind: 'plan', status: 'paid',
         providerPayload: { email: 'erase@example.test' }, card: { last4: '1234' },
-        checkoutUrl: 'https://private.example', futurePersonalField: 'private' },
+        checkoutUrl: 'https://private.example', futurePersonalField: 'private', key: `nightly:${cafeId}:2026-11-02` },
       { orgId: foreignOrg, cafeId: foreignCafe, userId: foreignUser, staffId: foreignUser,
-        tokenHash: `keep-${name}`, stateHash: `keep-${name}`, familyId: `keep-${name}`, reference: `keep-${name}` },
+        tokenHash: `keep-${name}`, stateHash: `keep-${name}`, familyId: `keep-${name}`, reference: `keep-${name}`,
+        key: `nightly:${foreignCafe}:2026-11-02` },
     ];
     // Scope fields follow the actual schema: a Transaction has cafeId but no
-    // orgId/userId. A wrong scope must fail even though generic fixtures could
-    // accidentally make it work.
+    // orgId/userId, and a JobRun carries its cafe only inside its key. A wrong
+    // scope must fail even though generic fixtures could accidentally make it work.
     for (const row of records) {
-      for (const field of ['orgId', 'cafeId', 'userId']) {
+      for (const field of ['orgId', 'cafeId', 'userId', 'key']) {
         if (!model.schema.path(field)) delete row[field];
       }
     }
