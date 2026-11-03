@@ -1,7 +1,9 @@
 const logger = require('../../src/utils/logger');
 const mockAnthropicMessageCreate = jest.fn();
+const mockAnthropicFetch = jest.fn();
 
 jest.mock('@anthropic-ai/sdk', () => jest.fn().mockImplementation(() => ({
+  fetch: mockAnthropicFetch,
   messages: { create: mockAnthropicMessageCreate },
 })));
 
@@ -40,6 +42,7 @@ describe('menu item AI review hardening', () => {
   beforeEach(() => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     mockAnthropicMessageCreate.mockReset();
+    mockAnthropicFetch.mockReset();
     logSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
   });
 
@@ -69,6 +72,20 @@ describe('menu item AI review hardening', () => {
     const prompt = request.messages[0].content;
     expect(prompt).toContain('<untrusted_menu_review>');
     expect(prompt.match(/<\/untrusted_menu_review>/g)).toHaveLength(1);
+  });
+
+  it('records dispatch on an aborted review even when the provider returns no token usage', async () => {
+    const controller = new AbortController();
+    mockAnthropicFetch.mockImplementation(async () => {
+      controller.abort();
+      throw Object.assign(new Error('Request was aborted.'), { name: 'AbortError' });
+    });
+    mockAnthropicMessageCreate.mockImplementation(async () => {
+      const client = require('@anthropic-ai/sdk').mock.results.at(-1).value;
+      return client.fetch('http://stub.invalid/messages', { signal: controller.signal });
+    });
+    await expect(suggestMenuItemReview('cafe-1', ITEM, [], { ...usageContext, signal: controller.signal }))
+      .rejects.toMatchObject({ providerDiagnostics: { providerRequestSent: true, operation: 'menu_item_ai_review' } });
   });
 
   it('does not put a model-authored contact detail on the approval card', async () => {

@@ -272,7 +272,8 @@ const refundAndFinishUsage = async ({
   creditAllocation,
   providerDiagnostics,
 }) => {
-  const consumed = Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
+  const consumed = providerDiagnostics?.providerRequestSent === true ||
+    Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
   // A reconciler may already have released this hold. Count its provider usage without refunding twice.
   if (consumed) {
     const recovered = await UsageLedger.updateOne(
@@ -299,7 +300,6 @@ const refundAndFinishUsage = async ({
         { new: true, session }
       );
 
-      const consumed = Number(providerDiagnostics?.inputTokens) > 0 || Number(providerDiagnostics?.outputTokens) > 0;
       const finished = await UsageLedger.updateOne(
         { ...usageAttemptFilter(ledger), status: 'reserved' },
         {
