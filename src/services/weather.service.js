@@ -1,5 +1,8 @@
+const mongoose = require('mongoose');
 const logger = require('../utils/logger');
 const { outboundGet } = require('../utils/http');
+const { DATE_ONLY_RE, safeTimezone, zonedDateKey } = require('../utils/timezone');
+const WeatherDay = require('../models/WeatherDay.model');
 
 // In-memory cache: { key -> { data, fetchedAt } }
 const weatherCache = new Map();
@@ -36,7 +39,8 @@ const startOfDay = (date) => {
 
 const isPastDate = (date) => startOfDay(date).getTime() < startOfDay(new Date()).getTime();
 
-const cacheKeyFor = (lat, lng, dateStr) => `${lat},${lng},${dateStr}`;
+// `query` is what WeatherAPI is asked for: "lat,lng", or a place name for a cafe without coordinates (F-2).
+const cacheKeyFor = (query, dateStr) => `${query},${dateStr}`;
 
 const readCache = (cacheKey) => {
   const cached = weatherCache.get(cacheKey);
@@ -94,11 +98,11 @@ const normaliseDay = (dayData) => {
   };
 };
 
-const rememberDay = (lat, lng, dayData) => {
+const rememberDay = (query, dayData) => {
   const result = normaliseDay(dayData);
   if (!result || !dayData.date) return null;
 
-  const key = cacheKeyFor(lat, lng, dayData.date);
+  const key = cacheKeyFor(query, dayData.date);
   weatherCache.delete(key);
   weatherCache.set(key, { data: result, fetchedAt: Date.now() });
   while (weatherCache.size > WEATHER_CACHE_MAX_ENTRIES) weatherCache.delete(weatherCache.keys().next().value);
@@ -128,7 +132,12 @@ const runDedupe = async (pendingKey, fn) => {
  */
 let warnedUnconfigured = false;
 
-const getWeatherForecast = async (lat, lng, date) => {
+/**
+ * The same lookup for a place query ("lat,lng" or a place name). `date` is a Date (its server-local calendar day, as
+ * processLocalCalendarDate builds it) or a "YYYY-MM-DD" key. With `timezone`, past or future is decided by the cafe's
+ * own local date (F-6), not the server's.
+ */
+const getWeatherForQuery = async (query, date, { timezone } = {}) => {
   const apiKey = process.env.WEATHER_API_KEY;
   const baseUrl = process.env.WEATHER_API_URL;
 
@@ -141,20 +150,23 @@ const getWeatherForecast = async (lat, lng, date) => {
     return unavailableWeatherSignal('Weather service is not configured');
   }
 
-  const targetDate = new Date(date);
-  if (Number.isNaN(targetDate.getTime())) {
+  const isKey = typeof date === 'string' && DATE_ONLY_RE.test(date);
+  const targetDate = isKey ? null : new Date(date);
+  if (!isKey && Number.isNaN(targetDate.getTime())) {
     return unavailableWeatherSignal('Weather date is invalid');
   }
-  const dateStr = toDateKey(targetDate);
-  const cacheKey = cacheKeyFor(lat, lng, dateStr);
+  const dateStr = isKey ? date : toDateKey(targetDate);
+  const cacheKey = cacheKeyFor(query, dateStr);
 
   const cached = readCache(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const useHistory = isPastDate(targetDate);
-  const pendingKey = useHistory ? `history:${cacheKey}` : `forecast:${lat},${lng}`;
+  const useHistory = timezone
+    ? dateStr < zonedDateKey(new Date(), safeTimezone(timezone))
+    : isPastDate(isKey ? new Date(`${dateStr}T12:00:00`) : targetDate);
+  const pendingKey = useHistory ? `history:${cacheKey}` : `forecast:${query}`;
   const retryAt = failedWeatherRequests.get(pendingKey);
   if (retryAt && retryAt > Date.now()) {
     return { ...unavailableWeatherSignal('Weather data is temporarily unavailable'), transient: true };
@@ -166,12 +178,12 @@ const getWeatherForecast = async (lat, lng, date) => {
         params: useHistory
           ? {
               key: apiKey,
-              q: `${lat},${lng}`,
+              q: query,
               dt: dateStr,
             }
           : {
               key: apiKey,
-              q: `${lat},${lng}`,
+              q: query,
               days: 7,
             },
       })
@@ -181,13 +193,19 @@ const getWeatherForecast = async (lat, lng, date) => {
     // The requested day present but rejected by normaliseDay is a different
     // failure from the day being absent, and says so (BE-12-T03).
     let requestedDayRejected = false;
+    let lastReturnedDay = null;
     for (const forecastDay of forecastDays) {
-      const kept = rememberDay(lat, lng, forecastDay);
+      const kept = rememberDay(query, forecastDay);
       if (!kept && forecastDay?.date === dateStr) requestedDayRejected = true;
+      if (typeof forecastDay?.date === 'string' && (!lastReturnedDay || forecastDay.date > lastReturnedDay)) lastReturnedDay = forecastDay.date;
     }
 
     const result = readCache(cacheKey);
     if (!result) {
+      // F-3: the account's plan decides how many days the provider returns; a later day is not a provider fault.
+      if (!useHistory && !requestedDayRejected && lastReturnedDay && dateStr > lastReturnedDay) {
+        return unavailableWeatherSignal('Weather not available yet');
+      }
       return unavailableWeatherSignal(requestedDayRejected
         ? 'Weather provider returned implausible values for this date'
         : 'Weather provider returned no data for this date');
@@ -202,6 +220,88 @@ const getWeatherForecast = async (lat, lng, date) => {
   }
 };
 
+const getWeatherForecast = (lat, lng, date, options) => getWeatherForQuery(`${lat},${lng}`, date, options);
+
+const validCoordinates = (lat, lng) => Number.isFinite(lat) && Number.isFinite(lng)
+  && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+
+/**
+ * What to ask WeatherAPI for this cafe: its coordinates, or (F-2) its city with the country, as a place name
+ * WeatherAPI resolves itself. The street address is never sent: a city is enough for the day's weather. Null when the
+ * cafe has neither, and Factors asks for the location.
+ */
+const weatherQueryForCafe = (cafe) => {
+  const location = cafe?.location || {};
+  if (validCoordinates(location.lat, location.lng)) return `${location.lat},${location.lng}`;
+  const text = (value, max) => (typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : '');
+  const place = text(location.city, 120);
+  if (!place) return null;
+  const country = text(location.country, 120);
+  return country && !place.toLowerCase().includes(country.toLowerCase()) ? `${place}, ${country}` : place;
+};
+
+const snapshotOf = (signal) => {
+  const snapshot = { available: true, fetchedAt: new Date() };
+  for (const field of ['temp', 'maxTemp', 'humidity', 'precipMm', 'chanceOfRain']) {
+    if (Number.isFinite(signal[field])) snapshot[field] = signal[field];
+  }
+  if (typeof signal.condition === 'string') snapshot.condition = signal.condition.slice(0, 200);
+  if (typeof signal.isRain === 'boolean') snapshot.isRain = signal.isRain;
+  return snapshot;
+};
+
+/**
+ * W-1: keep one day's weather for one cafe. `kind` is 'forecast' (taken while the day is ahead) or 'observed'
+ * (history once the day has closed). Only real provider readings are stored. Never throws: storing weather must not
+ * fail the forecast or the nightly job that called it.
+ */
+const saveWeatherDay = async ({ cafeId, dateKey, kind, signal, query }) => {
+  if (!mongoose.isValidObjectId(cafeId) || typeof dateKey !== 'string' || !DATE_ONLY_RE.test(dateKey)) return false;
+  if (!['forecast', 'observed'].includes(kind) || signal?.available !== true) return false;
+  const set = { [kind]: snapshotOf(signal), source: 'weatherapi', ...(query ? { query: String(query).slice(0, 200) } : {}) };
+  try {
+    await WeatherDay.updateOne({ cafeId, dateKey }, { $set: set }, { upsert: true });
+    return true;
+  } catch (error) {
+    if (error?.code === 11000) {
+      // Two writers inserted the same day at once; the record exists now, so set the field on it.
+      try {
+        await WeatherDay.updateOne({ cafeId, dateKey }, { $set: set });
+        return true;
+      } catch (retryError) {
+        logger.warn('weather_day_save_failed', logger.errorFields(retryError));
+        return false;
+      }
+    }
+    logger.warn('weather_day_save_failed', logger.errorFields(error));
+    return false;
+  }
+};
+
+/** Observed weather for a closed cafe-local day, fetched once and kept. */
+const observeWeatherForDay = async (cafe, dateKey) => {
+  const timezone = safeTimezone(cafe?.timezone);
+  if (typeof dateKey !== 'string' || !DATE_ONLY_RE.test(dateKey) || dateKey >= zonedDateKey(new Date(), timezone)) {
+    return { status: 'open' };
+  }
+  const query = weatherQueryForCafe(cafe);
+  if (!query) return { status: 'no_location' };
+  const already = await WeatherDay.findOne({ cafeId: cafe._id, dateKey, 'observed.available': true }).select('_id').lean();
+  if (already) return { status: 'already' };
+  const signal = await getWeatherForQuery(query, dateKey, { timezone });
+  if (signal?.available !== true) return { status: 'unavailable', reason: signal?.unavailableReason };
+  return { status: (await saveWeatherDay({ cafeId: cafe._id, dateKey, kind: 'observed', signal, query })) ? 'observed' : 'unsaved' };
+};
+
+/** dateKey -> observed snapshot, for the days that have one. */
+const loadObservedWeatherByDateKey = async (cafeId, dateKeys) => {
+  // An id that is not an ObjectId has no stored days; the read must not throw into forecasting.
+  if (!mongoose.isValidObjectId(cafeId) || !dateKeys?.length) return new Map();
+  const docs = await WeatherDay.find({ cafeId, dateKey: { $in: dateKeys }, 'observed.available': true })
+    .select('dateKey observed').lean();
+  return new Map(docs.map((doc) => [doc.dateKey, doc.observed]));
+};
+
 const clearWeatherCache = () => {
   weatherCache.clear();
   pendingWeatherRequests.clear();
@@ -210,4 +310,5 @@ const clearWeatherCache = () => {
 
 module.exports = {
   _test: { cacheSize: () => weatherCache.size, WEATHER_CACHE_MAX_ENTRIES, WEATHER_FAILURE_TTL_MS },
-  getWeatherForecast, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };
+  getWeatherForecast, getWeatherForQuery, weatherQueryForCafe, saveWeatherDay, observeWeatherForDay,
+  loadObservedWeatherByDateKey, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };

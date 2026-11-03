@@ -665,9 +665,10 @@ describe('Forecasts API', () => {
       expect(row.revenueAccuracy).toEqual(expect.any(Number));
       expect(row.transactionCount).toBe(1);
       expect(row.weather).toEqual(expect.objectContaining({ condition: expect.any(String) }));
-      // A registered cafe has no coordinates, so the generator never calls the weather service.
+      // A registered cafe has no coordinates. With a city it is looked up by city (F-2), and the suite has no weather
+      // key; without one it needs a location. Either way no weather is invented.
       expect(row.weather).toEqual(expect.objectContaining({
-        available: false, unavailableReason: 'Cafe coordinates are not configured',
+        available: false, unavailableReason: expect.stringMatching(/^(Location needed|Weather service is not configured)$/),
       }));
       expect(row.signals.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Local Market' })]));
       expect(row.activeFactors).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'events' })]));

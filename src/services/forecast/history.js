@@ -5,6 +5,7 @@ const {
 } = require('../../utils/timezone');
 const Event = require('../../models/Event.model');
 const Forecast = require('../../models/Forecast.model');
+const { loadObservedWeatherByDateKey } = require('../weather.service');
 const { isPayday, isPublicHoliday, isSchoolHoliday } = require('../../utils/signals');
 const { demandLines } = require('../../utils/demand');
 
@@ -207,10 +208,18 @@ const loadEventsByDateKey = async (cafeId, fromKey, toKeyExclusive, timezone) =>
 
 const loadStoredSignalsByDateKey = async (cafeId, dateKeys) => {
   if (dateKeys.length === 0) return new Map();
-  const docs = await Forecast.find({ cafeId, dateKey: { $in: dateKeys } })
-    .select('dateKey signals.weather signals.loadSheddingStage signals.loadSheddingAvailable')
-    .lean();
-  return new Map(docs.map((doc) => [doc.dateKey, doc.signals || {}]));
+  const [docs, observedByKey] = await Promise.all([
+    Forecast.find({ cafeId, dateKey: { $in: dateKeys } })
+      .select('dateKey signals.weather signals.loadSheddingStage signals.loadSheddingAvailable')
+      .lean(),
+    loadObservedWeatherByDateKey(cafeId, dateKeys),
+  ]);
+  const byKey = new Map(docs.map((doc) => [doc.dateKey, doc.signals || {}]));
+  // W-1: a closed day is de-weathered with the weather that happened, not the forecast made for it.
+  for (const [dateKey, observed] of observedByKey) {
+    byKey.set(dateKey, { ...(byKey.get(dateKey) || {}), weather: { ...observed, observed: true } });
+  }
+  return byKey;
 };
 
 const historicalCalendarSignals = (dateKey, timezone) => {

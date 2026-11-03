@@ -316,6 +316,7 @@ async function syncHistory(cafe, range) {
     });
     signal.throwIfAborted();
     await Cafe.findByIdAndUpdate(cafe._id, { dataUploaded: true, lastSyncAt: new Date() });
+    if (progress.imported > 0) await scoreSyncedDays(cafe, range.start, range.end);
     return { ...progress, truncated };
   };
   try {
@@ -538,7 +539,21 @@ async function processWebhookEvent(payload = {}) {
 
   // Update last sync time
   await Cafe.findByIdAndUpdate(cafe._id, { lastSyncAt: new Date() });
+  // A late order for a closed day changes that day's actuals; today's day is scored by the nightly job.
+  const orderDate = new Date(order?.created_at || order?.closed_at);
+  if (result.imported > 0 && !Number.isNaN(orderDate.getTime())) await scoreSyncedDays(cafe, orderDate, orderDate);
   return { status: 'synced', ...result };
+}
+
+// #76: POS syncs fill actuals the way uploads do, so a Yoco cafe's forecasts are scored and calibration learns.
+// Scoring never fails the sync: the nightly job scores the same closed days again.
+async function scoreSyncedDays(cafe, first, last) {
+  try {
+    const { updateForecastActualsForRange } = require('./forecast/actuals');
+    await updateForecastActualsForRange(cafe._id, first, last, { timezone: cafe.timezone });
+  } catch (error) {
+    logger.warn('yoco_actuals_failed', logger.errorFields(error));
+  }
 }
 
 const isYocoId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[^A-Za-z0-9_.:-]/.test(value);

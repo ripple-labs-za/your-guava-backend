@@ -28,6 +28,11 @@ const MIN_ITEM_CALIBRATION_SAMPLES = 20;
 // history gets half of MAX, a very low-volume line gets almost none.
 const ITEM_CALIBRATION_MAX_SHRINK = 0.5;
 const ITEM_CALIBRATION_VOLUME_PRIOR = 300;
+// Per-cafe factor effects (L-1): a factor's learned correction is trusted in proportion to the scored days behind it,
+// shrink = n / (n + PRIOR), so it starts near the default effect and moves toward the cafe's own as days accumulate.
+const FACTOR_SHRINK_PRIOR_DAYS = 20;
+// Not demand factors: the learning correction itself, and the combined-factor bound (Lane 2, F-5).
+const NON_LEARNABLE_FACTOR_KEYS = new Set(['learning', 'factorLimit']);
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -123,7 +128,7 @@ const calibrationFromForecasts = (pastForecasts) => {
       const predicted = rawPredictedQty(item);
       if (item.actualQty == null || !Number.isFinite(predicted) || predicted <= 0) continue;
 
-      const activeFactors = (item.factors || []).filter((factor) => factor.active && factor.key !== 'learning');
+      const activeFactors = (item.factors || []).filter((factor) => factor.active && !NON_LEARNABLE_FACTOR_KEYS.has(factor.key));
 
       dailyPredicted += predicted;
       dailyActual += item.actualQty;
@@ -192,11 +197,13 @@ const calibrationFromForecasts = (pastForecasts) => {
     .filter((bucket) => bucket.sampleSize >= MIN_FACTOR_CALIBRATION_SAMPLES && bucket.sumPredicted > 0)
     .map((bucket) => {
       const averageRatio = residualise(bucketRatio(bucket));
+      const shrink = bucket.sampleSize / (bucket.sampleSize + FACTOR_SHRINK_PRIOR_DAYS);
       return {
         key: bucket.key,
         label: bucket.label,
-        multiplier: Number(calibratedMultiplier(averageRatio, 0.6, 0.8, 1.2).toFixed(4)),
+        multiplier: Number(calibratedMultiplier(averageRatio, shrink, 0.8, 1.2).toFixed(4)),
         sampleSize: bucket.sampleSize,
+        shrink: Number(shrink.toFixed(3)),
         averageRatio: Number(averageRatio.toFixed(4)),
       };
     });
@@ -230,7 +237,11 @@ const calibrationFromForecasts = (pastForecasts) => {
   };
 };
 
-const calibrationMultiplierForItem = (calibration, itemName, factors) => {
+/**
+ * The learning multiplier for one item. `ownerOverrides` holds factor keys whose effect the owner set by hand in the
+ * factor rules: the owner's number wins, so the cafe's learned effect for that factor is not stacked on top of it.
+ */
+const calibrationMultiplierForItem = (calibration, itemName, factors, { ownerOverrides } = {}) => {
   let multiplier = calibration.overallMultiplier || 1;
 
   const itemCalibration = (calibration.itemMultipliers || []).find((entry) => entry.itemName === itemName);
@@ -240,7 +251,7 @@ const calibrationMultiplierForItem = (calibration, itemName, factors) => {
   // residual instead of multiplying several corrections learned from the same
   // underlying outcome.
   const factorCalibration = factors
-    .filter((factor) => factor.active)
+    .filter((factor) => factor.active && !NON_LEARNABLE_FACTOR_KEYS.has(factor.key) && !ownerOverrides?.has(factor.key))
     .map((factor) => (calibration.factorMultipliers || []).find((entry) => entry.key === factor.key))
     .filter(Boolean)
     .sort((a, b) => Math.abs(b.multiplier - 1) - Math.abs(a.multiplier - 1))[0];
@@ -250,6 +261,7 @@ const calibrationMultiplierForItem = (calibration, itemName, factors) => {
 };
 
 module.exports = {
-  appliedLearningMultiplier, rawPredictedQty, OVERALL_SHRINK_PRIOR_DAYS,
+  appliedLearningMultiplier, rawPredictedQty, OVERALL_SHRINK_PRIOR_DAYS, FACTOR_SHRINK_PRIOR_DAYS,
+  MIN_OVERALL_CALIBRATION_SAMPLES, MIN_FACTOR_CALIBRATION_SAMPLES,
   CALIBRATION_LOOKBACK_DAYS, clamp, buildLearningFactor, calibrationFromForecasts, computeForecastCalibration, calibrationMultiplierForItem,
 };

@@ -10,13 +10,16 @@ const Cafe = require('../../models/Cafe.model');
 const Organization = require('../../models/Organization.model');
 const { clearApiCache } = require('../../middleware/cache.middleware');
 const { getSignalsForDate } = require('../../utils/signals');
-const { getWeatherForecast, unavailableWeatherSignal, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT } = require('../weather.service');
+const {
+  getWeatherForQuery, weatherQueryForCafe, saveWeatherDay, unavailableWeatherSignal, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT,
+} = require('../weather.service');
 const {
   safeTimezone, zonedDayStart, addZonedDays, zonedDayOfWeek, zonedDayOrdinal, processLocalCalendarDate,
   zonedDateKey,
 } = require('../../utils/timezone');
 const {
   getForecastSettings, getFactorEntitlements, factorUnlocked, buildGlobalFactors, buildItemFactors, multiplyFactors,
+  DEFAULT_FORECAST_SETTINGS, normalizeForecastSettings,
 } = require('../forecastFactors.service');
 const { resolveDaySchedule, parseTime } = require('../../utils/tradingHours');
 const {
@@ -200,6 +203,27 @@ const describeClosedDay = (trading, { salesCount = 0, observedWeeks = 0, maxWeek
 // Only what the forecast reads. rawName, prices-at-sale, review status and ids are left in the database.
 const TRANSACTION_HISTORY_PROJECTION = 'date dayOfWeek hour hourKnown items.menuItemStatus items.name items.quantity items.unitPrice';
 
+// Factor sections whose effect is a percentage the owner can set by hand. Their keys are the factor keys.
+const OVERRIDABLE_FACTOR_SECTIONS = ['weather', 'holiday', 'payday', 'events', 'loadShedding'];
+
+/**
+ * Who learns what (L-5, owner 3 Nov: predictions adjust as actuals arrive, on every plan).
+ * - The overall bias correction runs on every plan unless the owner switched learning off in the factor rules.
+ * - Per-factor and per-item corrections stay on Pro.
+ * - A factor the owner set by hand keeps the owner's effect: no learned correction is stacked on it.
+ */
+const learningPolicy = (cafe, plan) => {
+  const saved = normalizeForecastSettings(cafe?.forecastSettings || {});
+  const switchedOn = saved.learning?.enabled !== false;
+  const ownerOverrides = new Set(OVERRIDABLE_FACTOR_SECTIONS.filter((section) => cafe?.forecastSettings?.[section] != null
+    && JSON.stringify(saved[section]) !== JSON.stringify(DEFAULT_FORECAST_SETTINGS[section])));
+  return {
+    learningEnabled: factorUnlocked(plan, 'learning') && switchedOn,
+    biasCorrectionEnabled: switchedOn,
+    ownerOverrides,
+  };
+};
+
 const loadForecastContext = async (cafeId) => {
   const cafe = await Cafe.findById(cafeId).lean();
   if (!cafe) {
@@ -215,7 +239,7 @@ const loadForecastContext = async (cafeId) => {
     plan,
     settings,
     entitlements: getFactorEntitlements(plan),
-    learningEnabled: factorUnlocked(plan, 'learning') && settings.learning.enabled,
+    ...learningPolicy(cafe, plan),
     timezone: safeTimezone(cafe.timezone),
     inputsVersion: Number(cafe.forecastInputsVersion) || 0,
   };
@@ -223,7 +247,7 @@ const loadForecastContext = async (cafeId) => {
 
 // Read each data set once, retaining the exact historical window for every target.
 const loadForecastInputs = async (cafeId, targets, context, { completedDaysOnly = false, fullExisting = false } = {}) => {
-  const { timezone, settings, learningEnabled } = context;
+  const { timezone, settings, learningEnabled, biasCorrectionEnabled } = context;
   const first = targets[0];
   const last = targets[targets.length - 1];
   const afterFirst = addZonedDays(first, 1, timezone);
@@ -276,7 +300,7 @@ const loadForecastInputs = async (cafeId, targets, context, { completedDaysOnly 
     const key = zonedDateKey(target, timezone);
     const calibrationStart = addZonedDays(target, -CALIBRATION_LOOKBACK_DAYS, timezone);
     const stockStart = addZonedDays(target, -30, timezone);
-    calibrationByKey.set(key, learningEnabled ? calibrationFromForecasts(outcomeDocs.filter((doc) =>
+    calibrationByKey.set(key, (learningEnabled || biasCorrectionEnabled) ? calibrationFromForecasts(outcomeDocs.filter((doc) =>
       doc.date >= calibrationStart && doc.date < target && doc.actualsUpdatedAt != null && doc.origin !== 'backfill'
       && doc.availability?.status !== 'insufficient_data')) : null);
     stockPairsByKey.set(key, stockPairsFromForecasts(outcomeDocs.filter((doc) =>
@@ -298,7 +322,9 @@ const loadForecastInputs = async (cafeId, targets, context, { completedDaysOnly 
 };
 
 const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {}) => {
-  const { cafe, timezone, inputsVersion, plan, settings, entitlements, learningEnabled } = context;
+  const { cafe, timezone, inputsVersion, plan, settings, entitlements, learningEnabled, biasCorrectionEnabled, ownerOverrides } = context;
+  const correctionOn = learningEnabled || biasCorrectionEnabled === true;
+  const correctionOffReason = 'Learning is switched off in the factor rules';
   const nextTarget = addZonedDays(target, 1, timezone);
   const targetDayOfWeek = zonedDayOfWeek(target, timezone);
   const historyWindowStart = addZonedDays(target, -settings.history.maxWeeks * 7, timezone);
@@ -315,11 +341,8 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
     if (!lastTransactionDate || date > lastTransactionDate) lastTransactionDate = date;
   }
 
-  // Get cafe location for weather
-  const lat = cafe.location?.lat;
-  const lng = cafe.location?.lng;
-  const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) &&
-    lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  // Coordinates, else the cafe's city or address (F-2); past or future by the cafe's own date (F-6).
+  const weatherQuery = weatherQueryForCafe(cafe);
   const localCalendarDate = processLocalCalendarDate(target, timezone);
 
   // Fetch signals, weather, and events in parallel
@@ -329,10 +352,17 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
   const latestSale = inputs.latestSaleByKey?.get(targetKey) || inputs.latestSale;
   const [signals, weather] = await Promise.all([
     getSignalsForDate(localCalendarDate, { city: cafe.location?.city, timezone }),
-    hasCoordinates ? getWeatherForecast(lat, lng, localCalendarDate) : Promise.resolve(null),
+    weatherQuery ? getWeatherForQuery(weatherQuery, targetKey, { timezone }) : Promise.resolve(null),
   ]);
   const events = eventsByKey.get(targetKey) || [];
-  const weatherSignal = weather || unavailableWeatherSignal('Cafe coordinates are not configured');
+  // Neither coordinates nor a city: the owner must set the cafe's location (Factors shows "Location needed").
+  const weatherSignal = weather || unavailableWeatherSignal('Location needed');
+  // W-1: keep every reading. A day still ahead keeps its latest forecast; a closed day's lookup is history.json,
+  // which is the observed weather.
+  if (weatherSignal.available === true) {
+    const kind = targetKey < zonedDateKey(new Date(), timezone) ? 'observed' : 'forecast';
+    await saveWeatherDay({ cafeId: cafe._id, dateKey: targetKey, kind, signal: weatherSignal, query: weatherQuery });
+  }
   const transientSignal = weatherSignal.transient === true || signals.loadSheddingTransient === true;
   const retryAfter = transientSignal ? new Date(Date.now() + SIGNAL_RETRY_AFTER_MS) : null;
 
@@ -391,8 +421,8 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
     calibration.overallMultiplier || 1,
     calibration.sampleSize || 0,
     {
-      enabled: learningEnabled,
-      reason: 'Learning correction is available on the Pro plan',
+      enabled: correctionOn,
+      reason: correctionOffReason,
     }
   );
   const storedForecastFactors = [...forecastFactors, tradingFactor, globalLearningFactor];
@@ -446,13 +476,16 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
     const baselineBuckets = winsoriseBuckets(deFactorItemBuckets(buckets, historyKeys, pastDayMultiplier(category)));
     const baseQty = weightedAverage(baselineBuckets, settings.history);
     const factors = buildItemFactors({ category, signals, weather: weatherSignal, events, settings });
-    const learningMultiplier = learningEnabled ? calibrationMultiplierForItem(calibration, name, factors) : 1;
+    // Pro: overall, per-item and per-factor corrections. Every other plan: the overall bias correction alone (L-5).
+    const learningMultiplier = learningEnabled
+      ? calibrationMultiplierForItem(calibration, name, factors, { ownerOverrides })
+      : correctionOn ? clamp(calibration.overallMultiplier || 1, 0.7, 1.3) : 1;
     const learningFactor = buildLearningFactor(
       learningMultiplier,
       calibration.sampleSize || 0,
       {
-        enabled: learningEnabled,
-        reason: 'Learning correction is available on the Pro plan',
+        enabled: correctionOn,
+        reason: correctionOffReason,
       }
     );
     const storedItemFactors = [...factors, learningFactor];
@@ -700,5 +733,5 @@ module.exports = {
   inFlightGenerations: () => inFlight.size,
   TRANSACTION_HISTORY_PROJECTION, loadForecastContext, loadForecastInputs, buildAndSaveForecast, generateForecastsForDates,
   invalidatePlanningForecasts, SIGNAL_RETRY_AFTER_MS,
-  FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
+  learningPolicy, FORECAST_MODEL_VERSION, MAX_STORED_FORECAST_ITEMS, MIN_HOURLY_PROFILE_UNITS, hourlyClosedShare, getTradingAvailability, describeClosedDay, generateForecast, generateWeekForecast,
 };

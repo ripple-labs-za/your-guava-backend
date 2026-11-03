@@ -37,6 +37,8 @@ const User = require('./models/User.model');
 const Item = require('./models/Item.model');
 const Improvement = require('./models/Improvement.model');
 const LeaveBalance = require('./models/LeaveBalance.model');
+const WeatherDay = require('./models/WeatherDay.model');
+const JobRun = require('./models/JobRun.model');
 const { reconcilePendingPayments } = require('./services/billingPayments.service');
 const { reconcileStaleUsageReservations } = require('./services/usage.service');
 
@@ -175,6 +177,31 @@ const scheduleBillingReminders = () => {
   billingReminderTimer.unref();
 };
 
+// L-2: score yesterday, keep its observed weather, recalibrate the coming week. Each cafe-day is claimed once in
+// JobRun, so a tick that finds nothing to do costs one Cafe read.
+const { runNightlyLearning } = require('./services/forecast/nightly');
+let nightlyLearningTimer;
+let nightlyLearningStartTimer;
+let nightlyLearningPromise;
+const runNightlyLearningJob = () => {
+  if (nightlyLearningPromise) return nightlyLearningPromise;
+  nightlyLearningPromise = (async () => {
+    try {
+      const summary = await runNightlyLearning();
+      if (summary.done > 0 || summary.failed > 0) logger.info('nightly_learning_summary', summary);
+    } catch (error) {
+      logger.error('nightly_learning_sweep_failed', logger.errorFields(error));
+    }
+  })().finally(() => { nightlyLearningPromise = undefined; });
+  return nightlyLearningPromise;
+};
+const scheduleNightlyLearning = () => {
+  nightlyLearningStartTimer = setTimeout(() => void runNightlyLearningJob(), 60 * 1000);
+  nightlyLearningStartTimer.unref();
+  nightlyLearningTimer = setInterval(() => void runNightlyLearningJob(), 15 * 60 * 1000);
+  nightlyLearningTimer.unref();
+};
+
 const cleanupFailedStart = async () => {
   const partialServer = httpServer;
   httpServer = undefined;
@@ -233,6 +260,8 @@ const start = async () => {
         Item.init(),
         Improvement.init(),
         LeaveBalance.init(),
+        WeatherDay.init(),
+        JobRun.init(),
       ]), indexTimeoutMs, 'index initialisation');
     } catch (error) {
       if (error.code !== 'DEADLINE_EXCEEDED') throw error;
@@ -259,6 +288,7 @@ const start = async () => {
     schedulePaymentReconciliation();
     scheduleUsageReconciliation();
     scheduleBillingReminders();
+    scheduleNightlyLearning();
     // The loop's own lag, logged per window and shown on /api/ready. Started
     // here, not in app.js, so suites that load the app never start an interval.
     startEventLoopMonitor({
@@ -287,6 +317,8 @@ const shutdown = (signal = 'shutdown', { exitProcess = false, exitCode } = {}) =
     if (paymentReconciliationTimer) clearInterval(paymentReconciliationTimer);
     if (usageReconciliationTimer) clearInterval(usageReconciliationTimer);
     if (billingReminderTimer) clearInterval(billingReminderTimer);
+    if (nightlyLearningTimer) clearInterval(nightlyLearningTimer);
+    if (nightlyLearningStartTimer) clearTimeout(nightlyLearningStartTimer);
     stopEventLoopMonitor();
 
     const timeoutMs = boundedInteger(
