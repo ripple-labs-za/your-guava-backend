@@ -214,11 +214,14 @@ const OVERRIDABLE_FACTOR_SECTIONS = ['weather', 'holiday', 'payday', 'events', '
  */
 const learningPolicy = (cafe, plan) => {
   const saved = normalizeForecastSettings(cafe?.forecastSettings || {});
-  const switchedOn = saved.learning?.enabled !== false;
+  const unlocked = factorUnlocked(plan, 'learning');
+  // W-04: the learning switch is Pro-only, so on another plan a stored `false` was never the owner's choice (plan
+  // entitlements write it). There it is ignored and the overall correction runs; on Pro the owner's switch decides.
+  const switchedOn = !unlocked || saved.learning?.enabled !== false;
   const ownerOverrides = new Set(OVERRIDABLE_FACTOR_SECTIONS.filter((section) => cafe?.forecastSettings?.[section] != null
     && JSON.stringify(saved[section]) !== JSON.stringify(DEFAULT_FORECAST_SETTINGS[section])));
   return {
-    learningEnabled: factorUnlocked(plan, 'learning') && switchedOn,
+    learningEnabled: unlocked && switchedOn,
     biasCorrectionEnabled: switchedOn,
     ownerOverrides,
   };

@@ -103,6 +103,12 @@ describe('who learns what (L-5)', () => {
     expect(learningPolicy({}, 'pro')).toMatchObject({ learningEnabled: true, biasCorrectionEnabled: true });
   });
 
+  // W-04 (walk): Starter cafes carry a stored learning.enabled=false they could never have set (the switch is Pro-only).
+  it('runs the overall correction on a Starter cafe whose stored settings say learning is off', () => {
+    expect(learningPolicy({ forecastSettings: { learning: { enabled: false } } }, 'starter'))
+      .toMatchObject({ learningEnabled: false, biasCorrectionEnabled: true });
+  });
+
   it('stops learning when the owner switches it off', () => {
     expect(learningPolicy({ forecastSettings: { learning: { enabled: false } } }, 'pro'))
       .toMatchObject({ learningEnabled: false, biasCorrectionEnabled: false });
