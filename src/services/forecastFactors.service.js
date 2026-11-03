@@ -191,11 +191,16 @@ const validateForecastSettingsInput = (input) => {
   return null;
 };
 
+// ISSUES #14: a settings key named __proto__ (or constructor/prototype) is never merged, so it cannot replace a merged
+// object's prototype; JSON.parse creates such a key as an own property, so Object.entries does yield it.
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 const mergeDeep = (base, override) => {
   const merged = clone(base);
   if (!isPlainObject(override)) return merged;
 
   for (const [key, value] of Object.entries(override)) {
+    if (UNSAFE_KEYS.has(key)) continue;
     if (isPlainObject(value) && isPlainObject(merged[key])) {
       merged[key] = mergeDeep(merged[key], value);
     } else if (value !== undefined && !(isPlainObject(merged[key]) && !isPlainObject(value))) {
