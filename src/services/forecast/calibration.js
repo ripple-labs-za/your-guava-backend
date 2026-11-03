@@ -105,7 +105,7 @@ const computeForecastCalibration = async (cafeId, targetDate, timezone) => {
     origin: { $ne: 'backfill' },
     'availability.status': { $ne: 'insufficient_data' },
   })
-    .select('date items')
+    .select('date items forecastCoverage.totalRawPredictedQty forecastCoverage.totalActualQty')
     .lean();
 
   return calibrationFromForecasts(pastForecasts);
@@ -150,8 +150,17 @@ const calibrationFromForecasts = (pastForecasts) => {
       }
     }
 
-    if (hasActual && dailyPredicted > 0) {
+    // L-3: the overall bias is measured on the whole menu when the forecast recorded it (raw predicted total, before
+    // learning, against everything sold); older forecasts fall back to their stored top items.
+    const coverage = forecast.forecastCoverage || {};
+    const fullMenu = Number.isFinite(coverage.totalRawPredictedQty) && coverage.totalRawPredictedQty > 0
+      && Number.isFinite(coverage.totalActualQty);
+    if (fullMenu) {
+      accumulateTotals(overall, coverage.totalActualQty, coverage.totalRawPredictedQty);
+    } else if (hasActual && dailyPredicted > 0) {
       accumulateTotals(overall, dailyActual, dailyPredicted);
+    }
+    if (hasActual && dailyPredicted > 0) {
       dailyObservations.push({
         factorTotals: [...dailyFactorTotals.values()],
       });

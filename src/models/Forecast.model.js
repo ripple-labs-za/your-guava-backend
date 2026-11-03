@@ -159,6 +159,10 @@ const forecastSchema = new mongoose.Schema(
       itemCount: { type: Number, default: 0 },
       storedItemCount: { type: Number, default: 0 },
       totalPredictedQty: { type: Number, default: 0 },
+      // L-3: the full menu, so calibration is not limited to the stored top items. The predicted total before any
+      // learning correction was applied, and (once the day is scored) everything that sold against it.
+      totalRawPredictedQty: { type: Number },
+      totalActualQty: { type: Number },
       includesAllRevenue: { type: Boolean, default: false },
       accuracyMethod: { type: String },
       // Every item this forecast predicted, not only the stored top items: scoring a day after the owner ignored a line

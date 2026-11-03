@@ -144,6 +144,7 @@ const scoreForecastDay = (forecast, transactions, { itemIndex }) => {
     forecast.actualRevenue = undefined;
     forecast.actualTransactionCount = undefined;
     forecast.actualsUpdatedAt = undefined;
+    if (forecast.forecastCoverage) forecast.set('forecastCoverage.totalActualQty', undefined);
     forecast.markModified('items');
     return 'cleared';
   }
@@ -225,6 +226,8 @@ const scoreForecastDay = (forecast, transactions, { itemIndex }) => {
   forecast.itemAccuracy = itemAccuracy !== null ? parseFloat(itemAccuracy.toFixed(1)) : undefined;
   forecast.actualRevenue = parseFloat(actualRevenue.toFixed(2));
   forecast.actualTransactionCount = transactions.length;
+  // L-3: everything that sold against the full-menu forecast, so calibration sees the long tail too.
+  if (forecast.forecastCoverage) forecast.set('forecastCoverage.totalActualQty', Number(totalActual.toFixed(2)));
   forecast.actualsUpdatedAt = new Date();
   return 'scored';
 };

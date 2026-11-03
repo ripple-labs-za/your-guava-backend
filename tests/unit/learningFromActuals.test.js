@@ -38,6 +38,37 @@ describe('a forecast moves toward actuals as days are scored', () => {
   });
 });
 
+describe('the whole menu counts (L-3)', () => {
+  it('measures the overall bias on the full-menu totals, not only the stored top items', () => {
+    // The stored top items sold exactly as forecast, but the long tail sold 60% above: full menu 200 raw vs 260 sold.
+    const day = () => ({ ...scoredDay(1), forecastCoverage: { totalRawPredictedQty: 200, totalActualQty: 260 } });
+    const fullMenu = calibrationFromForecasts(Array.from({ length: 14 }, day));
+    const topItemsOnly = calibrationFromForecasts(days(14, 1));
+    expect(topItemsOnly.overallMultiplier).toBe(1);
+    expect(fullMenu.overallMultiplier).toBeGreaterThan(1);
+  });
+
+  it('scoring records everything sold against the full menu, and clears it when the sales go', () => {
+    const { scoreForecastDay } = require('../../src/services/forecast/actuals');
+    const doc = {
+      items: [{ itemName: 'Flat White', expectedQty: 10, predictedQty: 10, factors: [] }],
+      forecastCoverage: { totalPredictedQty: 12, totalRawPredictedQty: 12, includesAllRevenue: true, predictedItemNames: ['Flat White', 'Scone'] },
+      set(pathName, value) { const [head, tail] = pathName.split('.'); this[head] = { ...this[head], [tail]: value }; },
+      markModified() {},
+    };
+    const sale = (name, quantity) => ({ total: 30, items: [{ name, quantity, unitPrice: 30 }] });
+    expect(scoreForecastDay(doc, [sale('Flat White', 9), sale('Scone', 4)], { itemIndex: new Map() })).toBe('scored');
+    expect(doc.forecastCoverage.totalActualQty).toBe(13);
+    expect(scoreForecastDay(doc, [], { itemIndex: new Map() })).toBe('cleared');
+    expect(doc.forecastCoverage.totalActualQty).toBeUndefined();
+  });
+
+  it('falls back to the stored items for forecasts made before the totals were recorded', () => {
+    const legacy = calibrationFromForecasts(days(14, 1.3));
+    expect(legacy.overallMultiplier).toBeGreaterThan(1);
+  });
+});
+
 describe("per-cafe factor effects (L-1)", () => {
   it('trusts a factor effect in proportion to its scored days', () => {
     // Weather days sold 20% above the forecast while the rest matched it. The same mix at both sizes, so the measured

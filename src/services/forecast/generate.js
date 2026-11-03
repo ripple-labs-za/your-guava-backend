@@ -288,7 +288,7 @@ const loadForecastInputs = async (cafeId, targets, context, { completedDaysOnly 
     loadEventsByDateKey(cafeId, zonedDateKey(historyStart, timezone), zonedDateKey(afterLast, timezone), timezone),
     loadStoredSignalsByDateKey(cafeId, historyKeys),
     Forecast.find({ cafeId, date: { $gte: addZonedDays(first, -CALIBRATION_LOOKBACK_DAYS, timezone), $lt: last }, calibrationExcluded: { $ne: true } })
-      .select('date items actualsUpdatedAt origin availability.status calibrationExcluded').lean(),
+      .select('date items actualsUpdatedAt origin availability.status calibrationExcluded forecastCoverage.totalRawPredictedQty forecastCoverage.totalActualQty').lean(),
     existingQuery.lean(),
   ]);
   const names = [...new Set(transactions.flatMap((tx) => (tx.items || []).map((line) => line.name).filter(Boolean)))];
@@ -430,6 +430,7 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
   const predictedQtyByItem = new Map();
   let totalPredictedRevenue = 0;
   let totalPredictedQty = 0;
+  let totalRawPredictedQty = 0;
 
   const noStoredWeather = { available: false, condition: 'Unavailable', unavailableReason: 'No weather stored for this day' };
   const pastDayMultiplierCache = new Map();
@@ -500,6 +501,7 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
     const avgPrice = itemDoc?.avgPrice || historicalPriceMap.get(name) || 0;
     totalPredictedRevenue += expectedQty * avgPrice;
     totalPredictedQty += expectedQty;
+    totalRawPredictedQty += appliedLearning > 0 ? expectedQty / appliedLearning : expectedQty;
 
     if (itemIndex < MAX_STORED_FORECAST_ITEMS) {
       forecastItems.push({
@@ -609,6 +611,7 @@ const buildAndSaveForecast = async (cafeId, target, context, inputs, options = {
           itemCount: forecastItemNames.length,
           storedItemCount: forecastItems.length,
           totalPredictedQty: Number(totalPredictedQty.toFixed(2)),
+          totalRawPredictedQty: Number(totalRawPredictedQty.toFixed(2)),
           includesAllRevenue: true,
           accuracyMethod: 'aggregate_quantity',
           predictedItemNames: forecastItemNames,
