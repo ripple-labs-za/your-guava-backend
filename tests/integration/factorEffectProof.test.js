@@ -274,6 +274,23 @@ describe('factor status: the Factors page never presents an unreachable provider
     }
   });
 
+  // W-05: a stored forecast does not keep the old plan's locks after a plan change; it is rebuilt under the current plan.
+  it('regenerates the week after a plan change so factor locks follow the current plan', async () => {
+    signals.getSignalsForDate.mockResolvedValue({ ...QUIET_SIGNALS, dayOfWeek: 1 });
+    weatherService.getWeatherForecast.mockResolvedValue(MILD);
+    if (weatherService.getWeatherForQuery) weatherService.getWeatherForQuery.mockResolvedValue(MILD);
+    const lockOf = (res, key) => res.body.forecasts[0].factorEntitlements.factors.find((entry) => entry.key === key).unlocked;
+    await Organization.updateMany({}, { plan: 'starter' });
+    const before = await supertest(app).get('/api/forecasts/week').set('Authorization', `Bearer ${token}`);
+    expect(before.status).toBe(200);
+    expect(lockOf(before, 'payday')).toBe(false);
+    await Organization.updateMany({}, { plan: 'growth' });
+    require('../../src/middleware/cache.middleware').clearApiCache({ cafeId: cafe._id });
+    const after = await supertest(app).get('/api/forecasts/week').set('Authorization', `Bearer ${token}`);
+    expect(after.body.forecasts[0].factorEntitlements.plan).toBe('growth');
+    expect(lockOf(after, 'payday')).toBe(true);
+  });
+
   it('a Starter cafe sees learning as on (overall correction), not locked', async () => {
     await Organization.updateMany({}, { plan: 'starter' });
     const status = await statusOf();

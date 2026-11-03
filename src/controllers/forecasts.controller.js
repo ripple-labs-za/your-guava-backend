@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const Forecast = require('../models/Forecast.model');
 const Cafe = require('../models/Cafe.model');
 const Organization = require('../models/Organization.model');
+const { normalisePlanId } = require('../services/billingPlans.service');
 const Transaction = require('../models/Transaction.model');
 const {
   FORECAST_MODEL_VERSION,
@@ -63,9 +64,16 @@ const HISTORY_ROW_PROJECTION = [
 // the figure twenty points. See DECISIONS D-004.
 const LIVE_ACCURACY_MIN_DAYS = 5;
 const GENERATE_HORIZON_DAYS = 13;
+// The org's current plan rides along so a forecast built under another plan is regenerated (W-05): its factor locks and
+// numbers must follow the plan the cafe is on now, not the one it was on when the forecast was stored.
 const getCafeForecastState = async (cafeId) => {
-  const cafe = await Cafe.findById(cafeId).select('timezone forecastInputsVersion').lean();
-  return { timezone: safeTimezone(cafe?.timezone), inputsVersion: Number(cafe?.forecastInputsVersion) || 0 };
+  const cafe = await Cafe.findById(cafeId).select('timezone forecastInputsVersion orgId').lean();
+  const org = cafe?.orgId ? await Organization.findById(cafe.orgId).select('plan').lean() : null;
+  return {
+    timezone: safeTimezone(cafe?.timezone),
+    inputsVersion: Number(cafe?.forecastInputsVersion) || 0,
+    plan: normalisePlanId(org?.plan || 'starter'),
+  };
 };
 
 const clampHistoryDays = (value) => {
@@ -102,8 +110,9 @@ const hasPlanningFactorPayload = (forecast) => {
   return (forecast.items || []).every((item) => Array.isArray(item.factors) && item.factors.length > 0);
 };
 
-const needsPlanningRefresh = (forecast, timezone, { inputsVersion = 0, now = new Date() } = {}) => {
+const needsPlanningRefresh = (forecast, timezone, { inputsVersion = 0, plan = null, now = new Date() } = {}) => {
   if (!forecast) return true;
+  if (plan && forecast.factorEntitlements?.plan && forecast.factorEntitlements.plan !== plan) return true;
   if (hasMatchedActuals(forecast)) return true;
   if (forecast.modelVersion !== FORECAST_MODEL_VERSION) return true;
   if ((Number(forecast.inputsVersion) || 0) < inputsVersion) return true;
@@ -227,9 +236,9 @@ const buildHistoryRow = (forecast, actual = {}, timezone) => {
   };
 };
 
-const generatePlanningDay = async (cafeId, day, timezone, inputsVersion) => {
+const generatePlanningDay = async (cafeId, day, timezone, inputsVersion, plan) => {
   const { forecasts, failures } = await generateForecastsForDates(cafeId, [day], {
-    origin: 'live', reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }),
+    origin: 'live', reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion, plan }),
   });
   if (failures.length) throw new Error(failures[0].message);
   clearApiCache({ cafeId });
@@ -239,13 +248,13 @@ const generatePlanningDay = async (cafeId, day, timezone, inputsVersion) => {
 const getToday = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
+    const { timezone, inputsVersion, plan } = await getCafeForecastState(cafeId);
     const today = zonedDayStart(new Date(), timezone);
 
     let forecast = await Forecast.findOne({ cafeId, date: today });
 
-    if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
-      forecast = await generatePlanningDay(cafeId, today, timezone, inputsVersion);
+    if (needsPlanningRefresh(forecast, timezone, { inputsVersion, plan })) {
+      forecast = await generatePlanningDay(cafeId, today, timezone, inputsVersion, plan);
     }
 
     return res.status(200).json({ success: true, forecast: forecastForApi(forecast, timezone) });
@@ -257,7 +266,7 @@ const getToday = async (req, res, next) => {
 const getWeek = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
+    const { timezone, inputsVersion, plan } = await getCafeForecastState(cafeId);
     const today = zonedDayStart(new Date(), timezone);
     const nextWeek = addZonedDays(today, 7, timezone);
 
@@ -274,11 +283,11 @@ const getWeek = async (req, res, next) => {
       (_, index) => addZonedDays(today, index, timezone)
     );
     const stale = targetDates.filter((date) => needsPlanningRefresh(
-      existingByDate.get(zonedDateKey(date, timezone)), timezone, { inputsVersion }
+      existingByDate.get(zonedDateKey(date, timezone)), timezone, { inputsVersion, plan }
     ));
     const { forecasts: rebuilt, failures } = stale.length > 0
       ? await generateForecastsForDates(cafeId, stale, { origin: 'live',
-        reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion }) })
+        reuse: (forecast) => !needsPlanningRefresh(forecast, timezone, { inputsVersion, plan }) })
       : { forecasts: [], failures: [] };
     if (rebuilt.length > 0) clearApiCache({ cafeId });
     const staleKeys = new Set(stale.map((date) => zonedDateKey(date, timezone)));
@@ -722,13 +731,13 @@ const getHistory = async (req, res, next) => {
 const getTomorrow = async (req, res, next) => {
   try {
     const cafeId = activeCafeId(req);
-    const { timezone, inputsVersion } = await getCafeForecastState(cafeId);
+    const { timezone, inputsVersion, plan } = await getCafeForecastState(cafeId);
     const tomorrow = addZonedDays(new Date(), 1, timezone);
 
     let forecast = await Forecast.findOne({ cafeId, date: tomorrow });
 
-    if (needsPlanningRefresh(forecast, timezone, { inputsVersion })) {
-      forecast = await generatePlanningDay(cafeId, tomorrow, timezone, inputsVersion);
+    if (needsPlanningRefresh(forecast, timezone, { inputsVersion, plan })) {
+      forecast = await generatePlanningDay(cafeId, tomorrow, timezone, inputsVersion, plan);
     }
 
     return res.status(200).json({ success: true, forecast: forecastForApi(forecast, timezone) });
