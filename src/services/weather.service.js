@@ -287,7 +287,18 @@ const saveWeatherDay = async ({ cafeId, dateKey, kind, signal, query }) => {
   }
 };
 
-/** W-2: the provider will never give this day (its plan does not cover it). Recorded once; additive. */
+// A plan refusal is re-checked after this long, so a cafe whose WeatherAPI plan is upgraded gets those days filled.
+const NOT_ON_PLAN_RECHECK_DAYS = 30;
+
+/** The days that need no lookup: observed weather kept, or a plan refusal recorded within the recheck period. */
+const knownObservedWeather = (now = new Date()) => ({
+  $or: [
+    { 'observed.available': true },
+    { 'observedUnavailable.at': { $gte: new Date(now.getTime() - NOT_ON_PLAN_RECHECK_DAYS * 864e5) } },
+  ],
+});
+
+/** W-2: the provider's plan does not cover this day. Recorded once, re-checked after NOT_ON_PLAN_RECHECK_DAYS; additive. */
 const markObservedUnavailable = async ({ cafeId, dateKey, reason, query }) => {
   if (!mongoose.isValidObjectId(cafeId) || typeof dateKey !== 'string' || !DATE_ONLY_RE.test(dateKey)) return false;
   try {
@@ -312,9 +323,8 @@ const observeWeatherForDay = async (cafe, dateKey) => {
   }
   const query = weatherQueryForCafe(cafe);
   if (!query) return { status: 'no_location' };
-  const known = await WeatherDay.findOne({
-    cafeId: cafe._id, dateKey, $or: [{ 'observed.available': true }, { observedUnavailable: { $exists: true } }],
-  }).select('observed.available observedUnavailable').lean();
+  const known = await WeatherDay.findOne({ cafeId: cafe._id, dateKey, ...knownObservedWeather() })
+    .select('observed.available observedUnavailable').lean();
   if (known) return { status: known.observed?.available ? 'already' : 'not_on_plan' };
   const signal = await getWeatherForQuery(query, dateKey, { timezone });
   if (signal?.planRefused) {
@@ -343,4 +353,5 @@ const clearWeatherCache = () => {
 module.exports = {
   _test: { cacheSize: () => weatherCache.size, WEATHER_CACHE_MAX_ENTRIES, WEATHER_FAILURE_TTL_MS },
   getWeatherForecast, getWeatherForQuery, weatherQueryForCafe, saveWeatherDay, observeWeatherForDay, markObservedUnavailable,
+  knownObservedWeather, NOT_ON_PLAN_RECHECK_DAYS,
   loadObservedWeatherByDateKey, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT, WEATHER_NOT_ON_PLAN };

@@ -9,7 +9,7 @@ const JobRun = require('../../models/JobRun.model');
 const Transaction = require('../../models/Transaction.model');
 const WeatherDay = require('../../models/WeatherDay.model');
 const { addZonedDays, getZonedDateParts, safeTimezone, zonedDateKey, zonedDayStart } = require('../../utils/timezone');
-const { observeWeatherForDay, weatherQueryForCafe } = require('../weather.service');
+const { knownObservedWeather, observeWeatherForDay, weatherQueryForCafe } = require('../weather.service');
 const { updateForecastActualsForRange } = require('./actuals');
 const { generateForecastsForDates } = require('./generate');
 
@@ -44,10 +44,9 @@ const backfillObservedWeather = async (cafe, todayStart, timezone, { maxDays = M
   ]);
   const keys = saleDays.map((day) => day._id);
   if (keys.length === 0) return { status: 'no_sales' };
-  // Kept for ever, or refused by the provider's plan: neither is asked for again.
-  const known = new Set((await WeatherDay.find({
-    cafeId: cafe._id, dateKey: { $in: keys }, $or: [{ 'observed.available': true }, { observedUnavailable: { $exists: true } }],
-  }).select('dateKey').lean()).map((doc) => doc.dateKey));
+  // Kept for ever, or refused by the provider's plan within the recheck period: neither is asked for now.
+  const known = new Set((await WeatherDay.find({ cafeId: cafe._id, dateKey: { $in: keys }, ...knownObservedWeather() })
+    .select('dateKey').lean()).map((doc) => doc.dateKey));
   const pending = keys.filter((key) => !known.has(key)).sort().reverse();
   const tally = { pending: pending.length };
   for (const key of pending.slice(0, maxDays)) {

@@ -153,6 +153,18 @@ describe('observed weather for the eight-week baseline (W-2)', () => {
     expect(historyCallsFor(key(-30))).toBe(1);
   });
 
+  it('re-checks a plan refusal after 30 days, so an upgraded plan fills the day', async () => {
+    for (const offset of [-10, -20]) await saleOn(offset);
+    const refusedAt = (daysAgo) => ({ reason: 'Weather not available on the weather plan', at: new Date(Date.now() - daysAgo * 864e5) });
+    await WeatherDay.create({ cafeId: cafe._id, dateKey: key(-10), observedUnavailable: refusedAt(31) });
+    await WeatherDay.create({ cafeId: cafe._id, dateKey: key(-20), observedUnavailable: refusedAt(10) });
+
+    expect(await backfillObservedWeather(cafe, today(), TZ)).toMatchObject({ pending: 1, observed: 1 });
+    expect(historyCallsFor(key(-10))).toBe(1);
+    expect(historyCallsFor(key(-20))).toBe(0);
+    expect((await WeatherDay.findOne({ cafeId: cafe._id, dateKey: key(-10) }).lean()).observed).toMatchObject({ available: true, temp: 30 });
+  });
+
   it('does nothing without a weather key', async () => {
     for (const offset of [-10, -20]) await saleOn(offset);
     delete process.env.WEATHER_API_KEY;
