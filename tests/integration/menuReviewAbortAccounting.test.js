@@ -26,25 +26,26 @@ const review = (owner, controller, key) => suggestMenuItemReview(owner.user.acti
   signal: controller.signal, idempotencyPrefix: key,
 });
 const clientFor = (send) => {
-  const client = { fetch: jest.fn(send) };
+  const transport = jest.fn(send);
+  const client = { fetch: transport };
   // Mirrors the SDK transport boundary: pre-aborted calls never dispatch fetch.
   client.messages = { create: jest.fn((_body, { signal }) => {
     if (signal?.aborted) return Promise.reject(abortError());
     return client.fetch('http://stub.invalid/messages', { signal });
   }) };
   createAnthropicClient.mockReturnValue(client);
-  return client;
+  return { client, transport };
 };
 
 it('refunds an abandoned menu review but counts provider dispatches against the daily cap', async () => {
   process.env.ANTHROPIC_API_KEY = 'test-only';
-  process.env.AI_USER_DAILY_CREDIT_LIMIT = '2';
+  process.env.AI_USER_DAILY_CREDIT_LIMIT = '10';
   const owner = await createTestUser();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const controller = new AbortController();
-    const client = clientFor(async () => { controller.abort(); throw abortError(); });
+    const { transport } = clientFor(async () => { controller.abort(); throw abortError(); });
     await expect(review(owner, controller, `abort-${attempt}`)).rejects.toMatchObject({ name: 'AbortError' });
-    expect(client.fetch).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(1);
   }
   const rows = await UsageLedger.find({ orgId: owner.user.orgId }).lean();
   expect(rows).toHaveLength(2);
@@ -53,7 +54,7 @@ it('refunds an abandoned menu review but counts provider dispatches against the 
   expect((await Organization.findById(owner.user.orgId)).aiCredits.used).toBe(0);
   const run = jest.fn();
   await expect(meterGuavaCredits({ orgId: owner.user.orgId, userId: owner.user.id,
-    featureKey: 'menu_item_ai_review', idempotencyKey: 'over-cap', run,
+    featureKey: 'menu_item_ai_review', credits: 9, idempotencyKey: 'over-cap', run,
   })).rejects.toMatchObject({ code: 'AI_USER_DAILY_BUDGET_REACHED' });
   expect(run).not.toHaveBeenCalled();
 });
@@ -63,9 +64,9 @@ it('does not record provider consumption when the review was cancelled before di
   const owner = await createTestUser();
   const controller = new AbortController();
   controller.abort();
-  const client = clientFor(async () => { throw new Error('must not send'); });
+  const { transport } = clientFor(async () => { throw new Error('must not send'); });
   await expect(review(owner, controller, 'pre-aborted')).rejects.toMatchObject({ name: 'AbortError' });
-  expect(client.fetch).not.toHaveBeenCalled();
+  expect(transport).not.toHaveBeenCalled();
   const row = await UsageLedger.findOne({ orgId: owner.user.orgId }).lean();
   expect(row.status).toBe('refunded');
   expect(row.providerConsumedRuns || 0).toBe(0);
