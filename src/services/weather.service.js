@@ -13,6 +13,7 @@ const WEATHER_FAILURE_TTL_MS = 2 * 60 * 1000;
 const failedWeatherRequests = new Map();
 const RAIN_MIN_MM = 1;
 const RAIN_MIN_CHANCE_PCT = 70;
+const WEATHER_NOT_ON_PLAN = 'Weather not available on the weather plan';
 
 const unavailableWeatherSignal = (unavailableReason = 'Weather data is unavailable') => ({
   available: false,
@@ -212,6 +213,14 @@ const getWeatherForQuery = async (query, date, { timezone } = {}) => {
     }
     return result;
   } catch (error) {
+    // W-2: a history date the account's plan does not cover is refused with 403 / error 2009 ("does not have access to
+    // the resource"). That is a fact about the plan, not a passing fault: say so, and callers never ask again.
+    const providerStatus = error?.response?.status;
+    const providerCode = error?.response?.data?.error?.code;
+    if (useHistory && (providerStatus === 403 || providerCode === 2009)) {
+      logger.warn('weather_history_not_on_plan', { status: providerStatus, code: providerCode });
+      return { ...unavailableWeatherSignal(WEATHER_NOT_ON_PLAN), planRefused: true };
+    }
     failedWeatherRequests.delete(pendingKey);
     failedWeatherRequests.set(pendingKey, Date.now() + WEATHER_FAILURE_TTL_MS);
     while (failedWeatherRequests.size > 500) failedWeatherRequests.delete(failedWeatherRequests.keys().next().value);
@@ -278,7 +287,24 @@ const saveWeatherDay = async ({ cafeId, dateKey, kind, signal, query }) => {
   }
 };
 
-/** Observed weather for a closed cafe-local day, fetched once and kept. */
+/** W-2: the provider will never give this day (its plan does not cover it). Recorded once; additive. */
+const markObservedUnavailable = async ({ cafeId, dateKey, reason, query }) => {
+  if (!mongoose.isValidObjectId(cafeId) || typeof dateKey !== 'string' || !DATE_ONLY_RE.test(dateKey)) return false;
+  try {
+    await WeatherDay.updateOne({ cafeId, dateKey }, {
+      $set: { observedUnavailable: { reason: String(reason).slice(0, 200), at: new Date() }, source: 'weatherapi', ...(query ? { query } : {}) },
+    }, { upsert: true });
+    return true;
+  } catch (error) {
+    logger.warn('weather_day_save_failed', logger.errorFields(error));
+    return false;
+  }
+};
+
+/**
+ * Observed weather for a closed cafe-local day, fetched once and kept. A day the plan refused is never asked for again;
+ * a missing key or a passing fault records nothing, so the day is tried on a later night.
+ */
 const observeWeatherForDay = async (cafe, dateKey) => {
   const timezone = safeTimezone(cafe?.timezone);
   if (typeof dateKey !== 'string' || !DATE_ONLY_RE.test(dateKey) || dateKey >= zonedDateKey(new Date(), timezone)) {
@@ -286,9 +312,15 @@ const observeWeatherForDay = async (cafe, dateKey) => {
   }
   const query = weatherQueryForCafe(cafe);
   if (!query) return { status: 'no_location' };
-  const already = await WeatherDay.findOne({ cafeId: cafe._id, dateKey, 'observed.available': true }).select('_id').lean();
-  if (already) return { status: 'already' };
+  const known = await WeatherDay.findOne({
+    cafeId: cafe._id, dateKey, $or: [{ 'observed.available': true }, { observedUnavailable: { $exists: true } }],
+  }).select('observed.available observedUnavailable').lean();
+  if (known) return { status: known.observed?.available ? 'already' : 'not_on_plan' };
   const signal = await getWeatherForQuery(query, dateKey, { timezone });
+  if (signal?.planRefused) {
+    await markObservedUnavailable({ cafeId: cafe._id, dateKey, reason: signal.unavailableReason, query });
+    return { status: 'not_on_plan' };
+  }
   if (signal?.available !== true) return { status: 'unavailable', reason: signal?.unavailableReason };
   return { status: (await saveWeatherDay({ cafeId: cafe._id, dateKey, kind: 'observed', signal, query })) ? 'observed' : 'unsaved' };
 };
@@ -310,5 +342,5 @@ const clearWeatherCache = () => {
 
 module.exports = {
   _test: { cacheSize: () => weatherCache.size, WEATHER_CACHE_MAX_ENTRIES, WEATHER_FAILURE_TTL_MS },
-  getWeatherForecast, getWeatherForQuery, weatherQueryForCafe, saveWeatherDay, observeWeatherForDay,
-  loadObservedWeatherByDateKey, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT };
+  getWeatherForecast, getWeatherForQuery, weatherQueryForCafe, saveWeatherDay, observeWeatherForDay, markObservedUnavailable,
+  loadObservedWeatherByDateKey, unavailableWeatherSignal, clearWeatherCache, RAIN_MIN_MM, RAIN_MIN_CHANCE_PCT, WEATHER_NOT_ON_PLAN };

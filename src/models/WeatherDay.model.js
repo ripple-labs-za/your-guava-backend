@@ -23,6 +23,10 @@ const weatherDaySchema = new mongoose.Schema({
   query: { type: String, maxlength: 200 },
   forecast: { type: weatherSnapshotSchema },
   observed: { type: weatherSnapshotSchema },
+  // W-2: the provider will never give this day (its plan does not cover it), so it is never asked for again.
+  observedUnavailable: {
+    type: new mongoose.Schema({ reason: { type: String, maxlength: 200 }, at: { type: Date } }, { _id: false }),
+  },
 }, { timestamps: true });
 
 weatherDaySchema.index({ cafeId: 1, dateKey: 1 }, { unique: true });

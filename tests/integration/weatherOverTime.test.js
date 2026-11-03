@@ -104,6 +104,65 @@ describe('cafe-local dates and location fallback (F-2, F-6)', () => {
   });
 });
 
+describe('observed weather for the eight-week baseline (W-2)', () => {
+  const Transaction = require('../../src/models/Transaction.model');
+  const { backfillObservedWeather } = require('../../src/services/forecast/nightly');
+  const today = () => zonedDayStart(new Date(), TZ);
+  const saleOn = (offset) => {
+    const date = new Date(addZonedDays(today(), offset, TZ).getTime() + 12 * 3600e3);
+    return Transaction.create({
+      cafeId: cafe._id, date, dayOfWeek: date.getUTCDay(), status: 'approved', total: 60,
+      items: [{ name: 'Flat White', quantity: 2, unitPrice: 30 }],
+    });
+  };
+  const historyCallsFor = (dateKey) => axios.get.mock.calls
+    .filter(([url, config]) => url.endsWith('/history.json') && config.params.dt === dateKey).length;
+
+  it('fills observed weather for every sales day the baseline reads, beyond the week of catch-up', async () => {
+    for (const offset of [-10, -20, -30, -50]) await saleOn(offset);
+    const result = await backfillObservedWeather(cafe, today(), TZ);
+    expect(result).toMatchObject({ pending: 4, observed: 4 });
+    const observed = await WeatherDay.find({ cafeId: cafe._id, 'observed.available': true }).lean();
+    expect(observed.map((doc) => doc.dateKey).sort()).toEqual([key(-50), key(-30), key(-20), key(-10)]);
+    // A second night finds nothing left to ask for.
+    jest.clearAllMocks();
+    stubProvider();
+    expect(await backfillObservedWeather(cafe, today(), TZ)).toMatchObject({ pending: 0 });
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+
+  it('records days the weather plan does not cover and never asks for them again', async () => {
+    for (const offset of [-10, -30]) await saleOn(offset);
+    const cutoff = key(-14);
+    axios.get.mockImplementation(async (url, config) => {
+      if (url.endsWith('/history.json') && config.params.dt < cutoff) {
+        throw Object.assign(new Error('Request failed with status code 403'), {
+          response: { status: 403, data: { error: { code: 2009, message: 'API key does not have access to the resource.' } } },
+        });
+      }
+      if (url.endsWith('/history.json')) return { data: { forecast: { forecastday: [day(config.params.dt, 30, 33)] } } };
+      return { data: { forecast: { forecastday: [] } } };
+    });
+    expect(await backfillObservedWeather(cafe, today(), TZ)).toMatchObject({ observed: 1, not_on_plan: 1 });
+    const refused = await WeatherDay.findOne({ cafeId: cafe._id, dateKey: key(-30) }).lean();
+    expect(refused.observedUnavailable).toMatchObject({ reason: 'Weather not available on the weather plan' });
+    expect(refused.observed).toBeUndefined();
+
+    clearWeatherCache();
+    await backfillObservedWeather(cafe, today(), TZ);
+    expect(historyCallsFor(key(-30))).toBe(1);
+  });
+
+  it('does nothing without a weather key', async () => {
+    for (const offset of [-10, -20]) await saleOn(offset);
+    delete process.env.WEATHER_API_KEY;
+    clearWeatherCache();
+    expect(await backfillObservedWeather(cafe, today(), TZ)).toMatchObject({ unavailable: 1 });
+    expect(await WeatherDay.countDocuments({ cafeId: cafe._id })).toBe(0);
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+});
+
 describe('nightly learning job (L-2)', () => {
   it('scores, keeps a week of observed weather and rebuilds the plan, once per cafe-day', async () => {
     const first = await runNightlyForCafe(cafe);

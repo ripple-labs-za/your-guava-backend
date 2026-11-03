@@ -2,11 +2,14 @@
 // against what was sold, keep the observed weather for each of them (W-1), and regenerate the coming week so the plan
 // carries the newest calibration. In-process and idempotent: each cafe-day is claimed through a unique JobRun key, so it
 // runs once however many ticks (or processes) see it. Railway runs one replica; the key would hold with more.
+const mongoose = require('mongoose');
 const logger = require('../../utils/logger');
 const Cafe = require('../../models/Cafe.model');
 const JobRun = require('../../models/JobRun.model');
+const Transaction = require('../../models/Transaction.model');
+const WeatherDay = require('../../models/WeatherDay.model');
 const { addZonedDays, getZonedDateParts, safeTimezone, zonedDateKey, zonedDayStart } = require('../../utils/timezone');
-const { observeWeatherForDay } = require('../weather.service');
+const { observeWeatherForDay, weatherQueryForCafe } = require('../weather.service');
 const { updateForecastActualsForRange } = require('./actuals');
 const { generateForecastsForDates } = require('./generate');
 
@@ -26,6 +29,35 @@ const CAFE_PAGE_SIZE = 200;
 const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 
 const runKey = (cafeId, dateKey) => `nightly:${cafeId}:${dateKey}`;
+
+// W-2: the forecast baseline reads eight weeks of history, so those sales days need observed weather too. Filled a
+// bounded number of days per night, newest first: a new cafe's baseline has its weather within a few nights.
+const BACKFILL_WEEKS = 8;
+const MAX_BACKFILL_DAYS_PER_NIGHT = 28;
+
+const backfillObservedWeather = async (cafe, todayStart, timezone, { maxDays = MAX_BACKFILL_DAYS_PER_NIGHT } = {}) => {
+  if (!weatherQueryForCafe(cafe)) return { status: 'no_location' };
+  const from = addZonedDays(todayStart, -BACKFILL_WEEKS * 7, timezone);
+  const saleDays = await Transaction.aggregate([
+    { $match: { cafeId: new mongoose.Types.ObjectId(String(cafe._id)), status: 'approved', date: { $gte: from, $lt: todayStart } } },
+    { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone } } } },
+  ]);
+  const keys = saleDays.map((day) => day._id);
+  if (keys.length === 0) return { status: 'no_sales' };
+  // Kept for ever, or refused by the provider's plan: neither is asked for again.
+  const known = new Set((await WeatherDay.find({
+    cafeId: cafe._id, dateKey: { $in: keys }, $or: [{ 'observed.available': true }, { observedUnavailable: { $exists: true } }],
+  }).select('dateKey').lean()).map((doc) => doc.dateKey));
+  const pending = keys.filter((key) => !known.has(key)).sort().reverse();
+  const tally = { pending: pending.length };
+  for (const key of pending.slice(0, maxDays)) {
+    const result = await observeWeatherForDay(cafe, key);
+    tally[result.status] = (tally[result.status] || 0) + 1;
+    // No key, or a passing provider fault: stop for tonight rather than ask again for every remaining day.
+    if (result.status === 'unavailable') break;
+  }
+  return tally;
+};
 
 /** True when this call now owns the key. A done key, or one running and fresh, is never taken. */
 const claimRun = async (key, now) => {
@@ -67,11 +99,13 @@ const runNightlyForCafe = async (cafe, now = new Date()) => {
       const result = await observeWeatherForDay(cafe, zonedDateKey(addZonedDays(todayStart, -back, timezone), timezone));
       weather[result.status] = (weather[result.status] || 0) + 1;
     }
+    // 2b. W-2: observed weather for the sales days the eight-week baseline reads.
+    const backfill = await backfillObservedWeather(cafe, todayStart, timezone);
     // 3. Recalibrate: the coming week is rebuilt from the newest scored days and the observed weather.
     const days = Array.from({ length: PLAN_DAYS }, (_, offset) => addZonedDays(todayStart, offset, timezone));
     const plan = await generateForecastsForDates(cafe._id, days, { origin: 'live' });
     const summary = {
-      scored: scoring.scored || 0, cleared: scoring.cleared || 0, weather,
+      scored: scoring.scored || 0, cleared: scoring.cleared || 0, weather, backfill,
       regenerated: plan?.forecasts?.length || 0, failures: plan?.failures?.length || 0,
     };
     await finishRun(key, 'done', { summary });
@@ -114,5 +148,6 @@ const runNightlyLearning = async ({ now = new Date() } = {}) => {
 };
 
 module.exports = {
+  backfillObservedWeather, BACKFILL_WEEKS, MAX_BACKFILL_DAYS_PER_NIGHT,
   runNightlyLearning, runNightlyForCafe, claimRun, runKey, NIGHTLY_LOCAL_HOUR, NIGHTLY_END_HOUR, MAX_ATTEMPTS, CATCH_UP_DAYS, PLAN_DAYS,
 };
