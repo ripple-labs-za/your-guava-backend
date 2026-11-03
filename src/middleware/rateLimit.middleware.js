@@ -1,4 +1,6 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 
 const { rateLimitsEnabled } = require('../config/flags');
 
@@ -6,15 +8,44 @@ const { rateLimitsEnabled } = require('../config/flags');
 // (validateEnv). tests/integration/rateLimits.test.js runs with them on.
 const limitsOff = () => !rateLimitsEnabled();
 
-// Loose global limiter — protects against runaway clients and basic scraping.
-const globalLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  limit: 600,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: limitsOff,
-  message: { success: false, code: 'RATE_LIMITED', message: 'Too many requests, please slow down' },
-});
+/**
+ * W-11: the global budget belongs to the person, not the network. A cafe's staff behind one NAT each have their own
+ * 600 per 5 minutes. Only a token that verifies (signature and expiry, the same check authMiddleware makes) names a
+ * user; a forged, expired or malformed one is counted against the address, so it can never mint fresh buckets.
+ * Anonymous requests keep the address key (IPv6 by its /56, as the library's default does).
+ */
+const globalLimiterKey = (req) => {
+  const header = req.headers?.authorization;
+  if (typeof header === 'string' && header.startsWith('Bearer ') && process.env.JWT_SECRET) {
+    try {
+      const decoded = jwt.verify(header.slice(7), process.env.JWT_SECRET);
+      if (decoded && decoded.id != null && String(decoded.id)) return `user:${String(decoded.id)}`;
+    } catch {
+      // Not a valid access token: the address pays.
+    }
+  }
+  return `ip:${ipKeyGenerator(req.ip || '')}`;
+};
+
+// Loose global limiter — protects against runaway clients and basic scraping. Two budgets on every request: 600 per
+// 5 min per person (globalLimiterKey), and a ceiling of 3000 per 5 min per address, so five busy staff behind one NAT
+// are fine but many accounts farmed behind one address cannot multiply the budget without bound (W-11 review).
+const GLOBAL_LIMIT_MESSAGE = { success: false, code: 'RATE_LIMITED', message: 'Too many requests, please slow down' };
+const createGlobalLimiter = ({ limit = 600, addressLimit = 3000, windowMs = 5 * 60 * 1000, skip = limitsOff } = {}) => {
+  const addressCeiling = rateLimit({
+    windowMs, limit: addressLimit, standardHeaders: 'draft-7', legacyHeaders: false, skip,
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip || '')}`,
+    message: GLOBAL_LIMIT_MESSAGE,
+  });
+  const perPerson = rateLimit({
+    windowMs, limit, standardHeaders: 'draft-7', legacyHeaders: false, skip,
+    keyGenerator: globalLimiterKey,
+    message: GLOBAL_LIMIT_MESSAGE,
+  });
+  // A refusal by the ceiling answers 429 itself and never reaches the per-person budget.
+  return (req, res, next) => addressCeiling(req, res, (error) => (error ? next(error) : perPerson(req, res, next)));
+};
+const globalLimiter = createGlobalLimiter();
 
 // One bucket per auth action (identity-14): staff sharing one address can mistype a password without locking out resets and
 // signups, and each budget fits its action. Per-IP and in memory, which D-005 accepts; the per-account and per-recipient
@@ -299,6 +330,8 @@ module.exports = {
   parseLimiter,
   getLimiterOptions,
   globalLimiter,
+  createGlobalLimiter,
+  globalLimiterKey,
   authLimiters,
   createAuthLimiters,
   AUTH_LIMITS,
