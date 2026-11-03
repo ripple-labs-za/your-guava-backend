@@ -147,7 +147,8 @@ describe('forecast controller cafe-local dates', () => {
     const lean = jest.fn().mockResolvedValue([]);
     const select = jest.fn().mockReturnValue({ lean });
     const sort = jest.fn().mockReturnValue({ select });
-    mockForecastFind.mockReturnValue({ sort });
+    // The headline reads find().sort().select().lean(); the weekly series (L-4) reads find().select().lean().
+    mockForecastFind.mockReturnValue({ sort, select });
 
     const next = jest.fn();
     await controller.getAccuracy(req(), response(), next);
