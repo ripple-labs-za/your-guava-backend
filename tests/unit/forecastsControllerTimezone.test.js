@@ -35,6 +35,8 @@ jest.mock('../../src/services/forecast.service', () => ({
     forecasts: await Promise.all(dates.map((date) => mockGenerateForecast(id, date, options))), failures: [],
   }),
   updateForecastActuals: (...args) => mockUpdateForecastActuals(...args),
+  // L-4: the real weekly roll-up, reading the stubbed Forecast model.
+  weeklyAccuracy: (...args) => jest.requireActual('../../src/services/forecast/accuracy').weeklyAccuracy(...args),
 }));
 jest.mock('../../src/middleware/cache.middleware', () => ({ clearApiCache: (...args) => mockClearApiCache(...args) }));
 jest.mock('../../src/services/forecastFactors.service', () => ({

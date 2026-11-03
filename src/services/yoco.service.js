@@ -549,7 +549,7 @@ async function processWebhookEvent(payload = {}) {
 // Scoring never fails the sync: the nightly job scores the same closed days again.
 async function scoreSyncedDays(cafe, first, last) {
   try {
-    const { updateForecastActualsForRange } = require('./forecast/actuals');
+    const { updateForecastActualsForRange } = require('./forecast.service');
     await updateForecastActualsForRange(cafe._id, first, last, { timezone: cafe.timezone });
   } catch (error) {
     logger.warn('yoco_actuals_failed', logger.errorFields(error));

@@ -1,6 +1,7 @@
 const logger = require('./utils/logger');
 const {
   drainBackgroundWork,
+  isDraining,
   markDraining,
   pendingBackgroundWork,
   withDeadline,
@@ -179,20 +180,22 @@ const scheduleBillingReminders = () => {
 
 // L-2: score yesterday, keep its observed weather, recalibrate the coming week. Each cafe-day is claimed once in
 // JobRun, so a tick that finds nothing to do costs one Cafe read.
-const { runNightlyLearning } = require('./services/forecast/nightly');
+const { runNightlyLearning } = require('./services/forecast.service');
 let nightlyLearningTimer;
 let nightlyLearningStartTimer;
 let nightlyLearningPromise;
 const runNightlyLearningJob = () => {
   if (nightlyLearningPromise) return nightlyLearningPromise;
-  nightlyLearningPromise = (async () => {
+  // A shutdown never starts a run; a run in progress is background work the drain waits for (it stops between cafes).
+  if (isDraining()) return Promise.resolve();
+  nightlyLearningPromise = trackBackground('nightly_learning', (async () => {
     try {
       const summary = await runNightlyLearning();
       if (summary.done > 0 || summary.failed > 0) logger.info('nightly_learning_summary', summary);
     } catch (error) {
       logger.error('nightly_learning_sweep_failed', logger.errorFields(error));
     }
-  })().finally(() => { nightlyLearningPromise = undefined; });
+  })()).finally(() => { nightlyLearningPromise = undefined; });
   return nightlyLearningPromise;
 };
 const scheduleNightlyLearning = () => {

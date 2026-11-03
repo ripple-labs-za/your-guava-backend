@@ -4,6 +4,7 @@
 // runs once however many ticks (or processes) see it. Railway runs one replica; the key would hold with more.
 const mongoose = require('mongoose');
 const logger = require('../../utils/logger');
+const { isDraining, yieldToEventLoop } = require('../../utils/lifecycle');
 const Cafe = require('../../models/Cafe.model');
 const JobRun = require('../../models/JobRun.model');
 const Transaction = require('../../models/Transaction.model');
@@ -26,7 +27,6 @@ const PLAN_DAYS = 7;
 // A claim still "running" after this is an abandoned run (a restart mid-run) and may be taken again.
 const STALE_RUNNING_MS = 60 * 60 * 1000;
 const CAFE_PAGE_SIZE = 200;
-const yieldToEventLoop = () => new Promise((resolve) => setImmediate(resolve));
 
 const runKey = (cafeId, dateKey) => `nightly:${cafeId}:${dateKey}`;
 
@@ -130,6 +130,8 @@ const runNightlyLearning = async ({ now = new Date() } = {}) => {
     if (cafes.length === 0) break;
     afterId = cafes[cafes.length - 1]._id;
     for (const cafe of cafes) {
+      // A shutdown has begun: stop between cafes; the next night picks up whatever is left.
+      if (isDraining()) return { ...summary, stoppedForShutdown: true };
       summary.cafes += 1;
       const parts = getZonedDateParts(now, safeTimezone(cafe.timezone));
       if (!parts || parts.hour < NIGHTLY_LOCAL_HOUR || parts.hour >= NIGHTLY_END_HOUR) {

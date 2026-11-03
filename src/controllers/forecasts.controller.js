@@ -14,8 +14,8 @@ const {
   invalidatePlanningForecasts,
   updateForecastActualsForRange,
   BACKTEST_BASIS_NOTE,
+  weeklyAccuracy,
 } = require('../services/forecast.service');
-const { weeklyAccuracy } = require('../services/forecast/accuracy');
 const { meterGuavaCredits, historyBackfillCreditsPerDay } = require('../services/usage.service');
 const { clearApiCache } = require('../middleware/cache.middleware');
 const {

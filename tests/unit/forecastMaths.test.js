@@ -261,9 +261,10 @@ describe('learning correction', () => {
     const calibration = await forecastMath.computeForecastCalibration('cafe-1', TARGET, TZ);
     const weather = calibration.factorMultipliers.find((entry) => entry.key === 'weather');
 
-    // Iced latte alone: 168 / 120 = 1.4; over the day's 104 / 100 = 1.3462; 1 + 0.3462 x 0.6 capped at 1.2.
-    // The whole-day bucket read 104 / 100, residual 1.0, and learned nothing.
-    expect(weather).toEqual(expect.objectContaining({ multiplier: 1.2, averageRatio: 1.3462, sampleSize: 12 }));
+    // Iced latte alone: 168 / 120 = 1.4; over the day's 104 / 100 = 1.3462. L-1 shrinks by the days behind it,
+    // 12 / (12 + 20) = 0.375: 1 + 0.3462 x 0.375 = 1.1298. The whole-day bucket read 104 / 100, residual 1.0, and
+    // learned nothing.
+    expect(weather).toEqual(expect.objectContaining({ multiplier: 1.1298, averageRatio: 1.3462, sampleSize: 12, shrink: 0.375 }));
   });
 });
 

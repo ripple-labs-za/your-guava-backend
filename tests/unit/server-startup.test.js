@@ -27,6 +27,9 @@ const mockUserInit = jest.fn();
 const mockItemInit = jest.fn();
 const mockImprovementInit = jest.fn();
 const mockLeaveBalanceInit = jest.fn();
+const mockWeatherDayInit = jest.fn();
+const mockJobRunInit = jest.fn();
+const mockNightlyLearning = jest.fn();
 const mockDisconnect = jest.fn();
 const mockUploadCleanup = jest.fn();
 const mockUploadMaintenanceRecovery = jest.fn();
@@ -59,6 +62,10 @@ jest.mock('../../src/models/User.model', () => ({ init: mockUserInit }));
 jest.mock('../../src/models/Item.model', () => ({ init: mockItemInit }));
 jest.mock('../../src/models/Improvement.model', () => ({ init: mockImprovementInit }));
 jest.mock('../../src/models/LeaveBalance.model', () => ({ init: mockLeaveBalanceInit }));
+jest.mock('../../src/models/WeatherDay.model', () => ({ init: mockWeatherDayInit }));
+jest.mock('../../src/models/JobRun.model', () => ({ init: mockJobRunInit }));
+// The nightly learning job (L-2) is scheduled by server.js; its first tick waits 60 s, so the tests never reach it.
+jest.mock('../../src/services/forecast.service', () => ({ runNightlyLearning: mockNightlyLearning }));
 jest.mock('../../src/services/billingPayments.service', () => ({
   reconcilePendingPayments: mockPaymentReconciliation,
 }));
@@ -90,6 +97,9 @@ describe('server startup cleanup', () => {
     mockItemInit.mockResolvedValue(undefined);
     mockImprovementInit.mockResolvedValue(undefined);
     mockLeaveBalanceInit.mockResolvedValue(undefined);
+    mockWeatherDayInit.mockResolvedValue(undefined);
+    mockJobRunInit.mockResolvedValue(undefined);
+    mockNightlyLearning.mockResolvedValue({ cafes: 0, done: 0, skipped: 0, failed: 0, waiting: 0 });
     mockDisconnect.mockResolvedValue(undefined);
     mockUploadCleanup.mockResolvedValue({
       deleted: 0,
@@ -209,6 +219,8 @@ describe('server startup cleanup', () => {
       mockItemInit,
       mockImprovementInit,
       mockLeaveBalanceInit,
+      mockWeatherDayInit,
+      mockJobRunInit,
     ].forEach((init) => expect(init).toHaveBeenCalledTimes(1));
 
     listeningServer.closeIdleConnections = jest.fn();

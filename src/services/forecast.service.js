@@ -8,8 +8,12 @@ const calibration = require('./forecast/calibration');
 const stock = require('./forecast/stock');
 const generate = require('./forecast/generate');
 const actuals = require('./forecast/actuals');
+const accuracy = require('./forecast/accuracy');
+const nightly = require('./forecast/nightly');
 
 module.exports = {
+  weeklyAccuracy: accuracy.weeklyAccuracy,
+  runNightlyLearning: nightly.runNightlyLearning,
   BACKTEST_BASIS_NOTE: actuals.BACKTEST_BASIS_NOTE,
   FORECAST_MODEL_VERSION: generate.FORECAST_MODEL_VERSION,
   MIN_HISTORY_WEEKS: history.MIN_HISTORY_WEEKS,
